@@ -15,13 +15,13 @@ def _client(client: httpx.Client | None) -> httpx.Client:
 
 
 def check_link(url: str, cfg: dict, client: httpx.Client | None = None) -> None:
-    allowed = tuple(cfg["validation"]["allowed_domains"])
+    allowed = cfg["validation"]["allowed_domains"]
     try:
         r = _client(client).get(url)
     except httpx.HTTPError as exc:
         raise ValidationError(f"link inacessível: {exc}") from exc
     host = r.url.host or ""
-    if not host.endswith(allowed):
+    if not any(host == d or host.endswith("." + d) for d in allowed):
         raise ValidationError(f"link resolve para domínio inesperado: {host}")
     if r.status_code >= 500:
         raise ValidationError(f"link retornou status {r.status_code}")

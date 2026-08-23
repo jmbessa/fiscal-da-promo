@@ -3,7 +3,7 @@ import pytest
 
 from afiliado import validate
 from afiliado.errors import ValidationError
-from afiliado.models import CopyParts
+from afiliado.models import CopyParts, Post
 from tests.test_models import make_offer
 
 CFG = {
@@ -62,3 +62,30 @@ def test_check_copy():
         validate.check_copy(CopyParts("veja http://x.com", "d", "c"))
     with pytest.raises(ValidationError):  # headline longa demais
         validate.check_copy(CopyParts("a" * 61, "d", "c"))
+
+
+def test_check_link_rejects_confusable_domain():
+    def handler(request):
+        if request.url.host == "shope.ee":
+            return httpx.Response(302, headers={"location": "https://evilshopee.com.br/x"})
+        return httpx.Response(200, text="ok")
+    with pytest.raises(ValidationError):
+        validate.check_link("https://shope.ee/x", CFG, client=client_for(handler))
+
+
+def test_check_link_accepts_403_on_allowed_domain():
+    def handler(request):
+        return httpx.Response(403, text="Anti-bot")
+    validate.check_link("https://shopee.com.br/p/1", CFG, client=client_for(handler))
+
+
+def test_validate_post_checks_copy_before_network():
+    def handler(request):
+        raise AssertionError("Network request made when copy should have failed first")
+    post = Post(
+        offer=make_offer(),
+        copy=CopyParts("", "valid description", "valid cta"),  # empty headline
+        affiliate_link="https://shopee.com.br/p/1",
+    )
+    with pytest.raises(ValidationError):
+        validate.validate_post(post, CFG, client=client_for(handler))

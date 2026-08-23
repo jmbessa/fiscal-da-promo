@@ -1,0 +1,25 @@
+state:
+  path: data/state.db
+
+llm:
+  model: haiku
+
+selection:
+  posts_per_run: 3
+  min_discount_pct: 20
+  price_min_brl: 20
+  price_max_brl: 1000
+  dedupe_days: 30
+  category_ids: []        # vazio = todas as categorias
+
+shopee:
+  sort_type: 5            # valor a confirmar na doc da API (Task 14, doctor)
+  list_type: 0
+  pages: 2
+  page_size: 50
+
+validation:
+  allowed_domains: ["shopee.com.br", "shope.ee"]
+
+copy:
+  tone: "empolgado, direto, sem exageros enganosos, pt-BR"

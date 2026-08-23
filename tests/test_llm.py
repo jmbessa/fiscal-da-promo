@@ -19,6 +19,16 @@ def test_parse_json_block_invalid():
     assert llm.parse_json_block("{quebrado") is None
 
 
+def test_parse_json_block_skips_invalid_json_before():
+    # Should skip {config} and extract {"a": 1}
+    assert llm.parse_json_block('Vou usar {config} para calcular: ```json\n{"a": 1}\n```') == {"a": 1}
+
+
+def test_parse_json_block_first_only():
+    # Should return only the first JSON object, not span to the last
+    assert llm.parse_json_block('{"first": 1} depois texto {"second": 2}') == {"first": 1}
+
+
 def test_ask_json_success(monkeypatch):
     monkeypatch.setattr(llm.shutil, "which", lambda _: "claude")
     monkeypatch.setattr(llm.subprocess, "run", _fake_run('{"chosen": ["1"]}'))

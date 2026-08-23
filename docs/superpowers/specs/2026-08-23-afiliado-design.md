@@ -64,6 +64,7 @@ Afiliado/
 │   │   └── meli.py          # Mercado Livre — fase 3
 │   ├── selection.py         # filtros por regra + ranqueamento via LLM
 │   ├── copywriter.py        # LLM escreve partes criativas (JSON validado)
+│   ├── message.py           # montagem do texto final (copy + preços + link)
 │   ├── creative.py          # fase 2: imagem feed/story por template (Pillow)
 │   ├── channels/
 │   │   ├── base.py          # interface: publish(post) -> PublishResult

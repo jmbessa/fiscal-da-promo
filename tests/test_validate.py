@@ -79,6 +79,13 @@ def test_check_link_accepts_403_on_allowed_domain():
     validate.check_link("https://shopee.com.br/p/1", CFG, client=client_for(handler))
 
 
+def test_check_link_rejects_404_on_allowed_domain():
+    def handler(request):
+        return httpx.Response(404, text="Not Found")
+    with pytest.raises(ValidationError):
+        validate.check_link("https://shopee.com.br/p/1", CFG, client=client_for(handler))
+
+
 def test_validate_post_checks_copy_before_network():
     def handler(request):
         raise AssertionError("Network request made when copy should have failed first")

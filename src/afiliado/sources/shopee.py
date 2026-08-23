@@ -34,7 +34,8 @@ class ShopeeSource:
     def __init__(self, app_id: str, app_secret: str, client: httpx.Client | None = None):
         self.app_id = app_id
         self.app_secret = app_secret
-        self.client = client or httpx.Client(timeout=30)
+        self.client = client or httpx.Client(
+            timeout=30, transport=httpx.HTTPTransport(retries=3))
 
     def _post(self, payload: dict) -> dict:
         body = json.dumps(payload, separators=(",", ":"))
@@ -50,9 +51,14 @@ class ShopeeSource:
             r.raise_for_status()
         except httpx.HTTPError as exc:
             raise SourceError(f"shopee API: {exc}") from exc
-        data = r.json()
+        try:
+            data = r.json()
+        except ValueError as exc:
+            raise SourceError(f"shopee API: resposta não é JSON válido: {exc}") from exc
         if data.get("errors"):
             raise SourceError(f"shopee GraphQL: {data['errors']}")
+        if "data" not in data:
+            raise SourceError(f"shopee GraphQL: resposta sem campo 'data': {data}")
         return data["data"]
 
     def fetch_offers(self, cfg: dict) -> list[Offer]:
@@ -83,6 +89,8 @@ class ShopeeSource:
 
 
 def _parse_node(node: dict) -> Offer | None:
+    if "itemId" not in node:
+        return None
     try:
         price_cents = int(Decimal(str(node["price"])) * 100)
     except (KeyError, TypeError, InvalidOperation):

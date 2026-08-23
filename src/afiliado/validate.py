@@ -23,7 +23,7 @@ def check_link(url: str, cfg: dict, client: httpx.Client | None = None) -> None:
     host = r.url.host or ""
     if not any(host == d or host.endswith("." + d) for d in allowed):
         raise ValidationError(f"link resolve para domínio inesperado: {host}")
-    if r.status_code >= 500:
+    if r.status_code >= 400 and r.status_code != 403:
         raise ValidationError(f"link retornou status {r.status_code}")
 
 

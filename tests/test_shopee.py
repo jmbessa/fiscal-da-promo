@@ -73,3 +73,47 @@ def test_resolve_affiliate_link_raises_without_fallback():
     from tests.test_models import make_offer
     with pytest.raises(SourceError):
         source_with(handler).resolve_affiliate_link(make_offer(offer_link=""))
+
+
+def test_fetch_offers_skips_node_missing_item_id():
+    payload = {
+        "data": {
+            "productOfferV2": {
+                "nodes": [
+                    {
+                        "productName": "Sem itemId (deve ser ignorado)",
+                        "price": "99.90",
+                        "priceDiscountRate": 10,
+                        "commissionRate": "0.05",
+                        "sales": 1,
+                        "imageUrl": "https://cf.shopee.com.br/file/no-id.jpg",
+                        "productLink": "https://shopee.com.br/product/1/000",
+                        "offerLink": "",
+                        "productCatIds": [],
+                    },
+                    {
+                        "itemId": 999,
+                        "productName": "Válido",
+                        "price": "49.90",
+                        "priceDiscountRate": 20,
+                        "commissionRate": "0.10",
+                        "sales": 10,
+                        "imageUrl": "https://cf.shopee.com.br/file/ok.jpg",
+                        "productLink": "https://shopee.com.br/product/1/999",
+                        "offerLink": "https://s.shopee.com.br/ok",
+                        "productCatIds": [123],
+                    },
+                ]
+            }
+        }
+    }
+    offers = source_with(lambda r: httpx.Response(200, json=payload)).fetch_offers(CFG)
+    assert len(offers) == 1
+    assert offers[0].item_id == "999"
+
+
+def test_post_raises_source_error_on_non_json_response():
+    def handler(request):
+        return httpx.Response(200, text="<html>not json</html>")
+    with pytest.raises(SourceError):
+        source_with(handler).fetch_offers(CFG)

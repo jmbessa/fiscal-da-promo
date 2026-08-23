@@ -15,6 +15,8 @@ def _post_api(client: httpx.Client, url: str, payload: dict) -> dict:
             return r.json()
         except httpx.HTTPError as exc:
             last = str(exc)
+        except ValueError as exc:
+            return {"ok": False, "description": "resposta não-JSON"}
     return {"ok": False, "description": f"rede: {last}"}
 
 
@@ -40,7 +42,8 @@ class TelegramChannel:
                 "parse_mode": "HTML",
             })
         if data.get("ok"):
-            return PublishResult(True, str(data["result"]["message_id"]))
+            message_id = str(((data.get("result") or {}).get("message_id", "")))
+            return PublishResult(True, message_id)
         return PublishResult(False, error=str(data.get("description") or "desconhecido"))
 
 

@@ -50,3 +50,10 @@ def test_send_text_never_raises():
         raise httpx.ConnectError("down")
     client = httpx.Client(transport=httpx.MockTransport(handler))
     send_text("TOKEN", "123", "oi", client=client)  # não deve explodir
+
+
+def test_publish_non_json_response():
+    def handler(request):
+        return httpx.Response(502, content=b"<html>Bad Gateway</html>")
+    res = channel_with(handler).publish(make_post())
+    assert not res.ok and res.error and len(res.error) > 0

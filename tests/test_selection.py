@@ -56,3 +56,31 @@ def test_rank_offers_skips_llm_when_few_candidates(monkeypatch):
     cands = [make_offer(item_id="a")]
     assert selection.rank_offers(cands, [], CFG) == cands
     assert not called
+
+
+def test_rank_offers_rejects_duplicate_ids(monkeypatch):
+    cands = [
+        make_offer(item_id="0", price_original_cents=100_000),  # 75%
+        make_offer(item_id="1", price_original_cents=80_000),   # 69%
+        make_offer(item_id="2", price_original_cents=60_000),   # 58%
+        make_offer(item_id="3", price_original_cents=40_000),   # 38%
+        make_offer(item_id="4", price_original_cents=20_000),   # 20%
+    ]
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: {"chosen": ["3", "3"]})
+    ranked = selection.rank_offers(cands, [], CFG)
+    fallback = selection.order_by_discount(cands)[:2]
+    assert ranked == fallback
+    assert len(ranked) == 2
+    assert len({o.item_id for o in ranked}) == 2  # distinct offers
+
+
+def test_rank_offers_partial_valid_ids_falls_back(monkeypatch):
+    cands = [
+        make_offer(item_id="0", price_original_cents=100_000),  # 75%
+        make_offer(item_id="1", price_original_cents=80_000),   # 69%
+        make_offer(item_id="3", price_original_cents=40_000),   # 38%
+    ]
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: {"chosen": ["3", "does-not-exist"]})
+    ranked = selection.rank_offers(cands, [], CFG)
+    fallback = selection.order_by_discount(cands)[:2]
+    assert ranked == fallback

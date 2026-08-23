@@ -50,7 +50,8 @@ def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict) ->
                         model=cfg["llm"]["model"])
     if isinstance(data, dict):
         by_id = {o.item_id: o for o in candidates}
-        picked = [by_id[str(i)] for i in data.get("chosen", []) if str(i) in by_id][:n]
+        ids = list(dict.fromkeys(str(i) for i in data.get("chosen", [])))
+        picked = [by_id[i] for i in ids if i in by_id][:n]
         if len(picked) == n:
             return picked
     return order_by_discount(candidates)[:n]

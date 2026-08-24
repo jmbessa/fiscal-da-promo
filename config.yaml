@@ -35,3 +35,9 @@ copy:
 # Opcional — ausente ou vencido, o pipeline degrada para o comportamento sem watchlist.
 watchlist:
   path: data/watchlist.json
+
+# Fase 2A: canais habilitados. Seção opcional — ausente, equivale a só telegram.
+channels:
+  telegram: true
+  story_dispatch: true     # arte de story + link prontos no chat de operações
+  instagram_feed: false    # ligar após concluir docs/runbooks/meta-setup.md

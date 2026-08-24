@@ -1,7 +1,11 @@
 import argparse
 import os
 
+import httpx
+
 from afiliado import config, llm, pipeline
+from afiliado.channels.instagram_feed import GRAPH, InstagramFeedChannel
+from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
 from afiliado.sources.shopee import ShopeeSource
 from afiliado.state import StateDB
@@ -22,6 +26,45 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _shopee() -> ShopeeSource:
     return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"])
+
+
+def _build_channels(cfg: dict) -> list:
+    """Monta os canais habilitados em config.yaml a partir das envs disponíveis.
+
+    Seção `channels` ausente equivale a `{"telegram": True}` (comportamento da
+    fase 1). Canal ligado sem env necessária: aviso no stdout e segue sem ele —
+    nunca derruba o run."""
+    ch_cfg = cfg.get("channels") or {"telegram": True}
+    channels: list = []
+
+    if ch_cfg.get("telegram"):
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHANNEL_ID", "")
+        if token and chat_id:
+            channels.append(TelegramChannel(token, chat_id))
+        else:
+            print("⚠️ canal telegram ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID ausente")
+
+    if ch_cfg.get("story_dispatch"):
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
+        if token and ops:
+            channels.append(StoryDispatchChannel(token, ops))
+        else:
+            print("⚠️ canal story_dispatch ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
+
+    if ch_cfg.get("instagram_feed"):
+        ig_user = os.environ.get("IG_USER_ID", "")
+        ig_token = os.environ.get("IG_ACCESS_TOKEN", "")
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
+        if ig_user and ig_token and bot_token and ops:
+            channels.append(InstagramFeedChannel(ig_user, ig_token, bot_token, ops))
+        else:
+            print("⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
+                  "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
+
+    return channels
 
 
 def doctor(cfg: dict) -> int:
@@ -48,6 +91,26 @@ def doctor(cfg: dict) -> int:
     else:
         ok = False
         print("❌ Claude CLI: sem resposta (claude instalado? autenticado?)")
+
+    ig_user = os.environ.get("IG_USER_ID", "")
+    ig_token = os.environ.get("IG_ACCESS_TOKEN", "")
+    if ig_user and ig_token:
+        try:
+            r = httpx.get(f"{GRAPH}/{ig_user}",
+                          params={"fields": "username", "access_token": ig_token}, timeout=20)
+            data = r.json()
+        except Exception as exc:
+            ok = False
+            print(f"❌ Instagram: {exc}")
+        else:
+            if r.status_code == 200 and isinstance(data, dict) and "username" in data:
+                print(f"✅ Instagram: conectado como @{data['username']}")
+            else:
+                ok = False
+                print(f"❌ Instagram: {data}")
+    else:
+        print("ℹ️ Instagram: não configurado (ver docs/runbooks/meta-setup.md)")
+
     return 0 if ok else 1
 
 
@@ -61,8 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     sources = [_shopee()]
     channels = []
     if not args.dry_run:
-        channels = [TelegramChannel(os.environ["TELEGRAM_BOT_TOKEN"],
-                                    os.environ["TELEGRAM_CHANNEL_ID"])]
+        channels = _build_channels(cfg)
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
     try:

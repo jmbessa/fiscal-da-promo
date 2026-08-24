@@ -41,6 +41,20 @@ class FakeChannel:
         return PublishResult(True, str(len(self.sent)))
 
 
+class NamedFakeChannel:
+    def __init__(self, name, max_per_run=None, always_fail=False):
+        self.name = name
+        self.sent = []
+        self.max_per_run = max_per_run
+        self.always_fail = always_fail
+
+    def publish(self, post):
+        self.sent.append(post)
+        if self.always_fail:
+            return PublishResult(False, error=f"{self.name} sempre falha")
+        return PublishResult(True, str(len(self.sent)))
+
+
 def no_network_validator(post, cfg, client=None):
     return None
 
@@ -145,4 +159,48 @@ def test_run_hot_item_jumps_queue(tmp_path, monkeypatch):
     pipeline.run(CFG, [FakeSource(offers)], [ch], db,
                 validator=no_network_validator, watchlist=wl)
     assert ch.sent[0].offer.item_id == "2"
+    db.close()
+
+
+def test_run_counts_per_offer_with_two_channels(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(3)]
+    ch_a = NamedFakeChannel("A")
+    ch_b = NamedFakeChannel("B")
+    summary = pipeline.run(CFG, [FakeSource(offers)], [ch_a, ch_b], db,
+                           validator=no_network_validator)
+    assert len(summary.published) == 2   # posts_per_run=2, contagem por oferta
+    assert len(ch_a.sent) == 2
+    assert len(ch_b.sent) == 2
+    db.close()
+
+
+def test_run_respects_channel_max_per_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(3)]
+    ch_a = NamedFakeChannel("A")
+    ch_b = NamedFakeChannel("B", max_per_run=1)
+    summary = pipeline.run(CFG, [FakeSource(offers)], [ch_a, ch_b], db,
+                           validator=no_network_validator)
+    assert len(summary.published) == 2
+    assert len(ch_a.sent) == 2      # sem limite: recebe todas as ofertas publicadas
+    assert len(ch_b.sent) == 1      # max_per_run=1: só a primeira
+    db.close()
+
+
+def test_run_offer_counts_when_one_channel_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(3)]
+    ch_a = NamedFakeChannel("A")
+    ch_b = NamedFakeChannel("B", always_fail=True)
+    summary = pipeline.run(CFG, [FakeSource(offers)], [ch_a, ch_b], db,
+                           validator=no_network_validator)
+    assert len(summary.published) == 2      # A publicou; oferta conta como publicada
+    assert len(ch_a.sent) == 2
+    assert len(ch_b.sent) == 2
+    assert len(summary.discarded) == 2      # uma linha de falha de B por oferta
+    assert all("B" in d for d in summary.discarded)
     db.close()

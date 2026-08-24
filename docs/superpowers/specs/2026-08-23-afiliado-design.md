@@ -70,7 +70,8 @@ Afiliado/
 │   ├── channels/
 │   │   ├── base.py          # interface: publish(post) -> PublishResult
 │   │   ├── telegram.py      # Bot API — fase 1
-│   │   ├── instagram.py     # Meta Graph API — fase 2
+│   │   ├── story_dispatch.py    # fase 2A: arte de story + link prontos no chat de operações (semi-auto)
+│   │   ├── instagram_feed.py    # fase 2A: post de feed 100% automático via Meta Graph API
 │   │   └── whatsapp.py      # fase 4
 │   ├── llm.py               # wrapper `claude -p` + fallback API key
 │   ├── validate.py          # portões pré-publicação
@@ -155,7 +156,7 @@ Custo LLM por run: ~4 chamadas curtas (1 ranking + N copies) na cota Max.
 | Fase | Entrega | Racional |
 |---|---|---|
 | 1 | Shopee → Telegram, full auto, com estado, validação e chat de operações | APIs 100% oficiais dos dois lados; valida o pipeline de ponta a ponta com risco zero |
-| 2 | Instagram feed + stories via Meta Graph API; criativos por template (Pillow); exige conta business/creator vinculada a página do Facebook | Motor de crescimento de audiência |
+| 2 | Instagram feed + stories via Meta Graph API; criativos por template (Pillow); exige conta business/creator vinculada a página do Facebook — **estágio A entregue** (semi-auto stories via `story_dispatch` + feed via API oficial, `instagram_feed`, desligado até o runbook de setup) | Motor de crescimento de audiência |
 | 3 | Mercado Livre (descoberta + spike do link, estratégias do §6) | Segunda fonte de ofertas |
 | 4 | WhatsApp via biblioteca não-oficial, rodando na VPS | Só quando houver audiência que justifique o risco de banimento do número; risco documentado e aceito explicitamente na hora |
 
@@ -183,7 +184,7 @@ que publicar. Nada falha em silêncio — tudo aparece no resumo de operações.
 | Oferta falha em qualquer etapa | Descarta, promove a próxima do ranking, segue |
 | LLM indisponível no ranking | Fallback determinístico: top N por valor esperado (EV) |
 | LLM indisponível na copy | Copy de template padrão |
-| Publicação falha | Retry 3x; falhou → não grava como publicado (volta candidato no próximo run) |
+| Publicação falha | Retry 3x; falhou → não grava como publicado (volta candidato no próximo run). Contagem de `posts_per_run` é **por oferta**, não por canal: uma oferta conta como publicada se ao menos um canal aceitar; canais com `max_per_run` (ex.: `instagram_feed`, limite 1) pulam a oferta sem contar como falha quando o limite do run já foi atingido |
 | Runs simultâneos | Impossível: `concurrency` no workflow serializa |
 
 ## 10. Testes

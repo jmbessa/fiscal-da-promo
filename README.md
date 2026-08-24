@@ -27,19 +27,21 @@ No GitHub: Settings → Secrets and variables → Actions → criar os secrets a
 
 Dois canais, dois níveis de automação:
 
-- **`story_dispatch` (semi-automático, ligado por padrão)** — cada run gera a
-  arte de story (1080×1920) e manda ao chat de operações do Telegram, seguida
-  de uma segunda mensagem só com o link de afiliado. O gesto manual: abrir o
-  Telegram, salvar a arte, postar como story no Instagram e colar o link
-  recebido no sticker de link. Não depende de nenhuma credencial da Meta.
-- **`instagram_feed` (100% automático via Graph API, desligado por padrão)** —
-  publica direto no feed (1080×1350) sem intervenção humana. Fica desligado em
-  `config.yaml` (`channels.instagram_feed: false`) até você concluir
-  `docs/runbooks/meta-setup.md` (conta business, página do Facebook vinculada,
-  app na Meta for Developers e token de acesso) e exportar `IG_USER_ID` /
-  `IG_ACCESS_TOKEN`. O caption do feed nunca leva o link de afiliado — só
-  "🔗 Link na bio e no canal do Telegram" — porque a API não permite CTA
-  clicável fora da bio.
+- **`story_dispatch` (semi-automático, ligado por padrão, teto de 6/dia)** —
+  cada run gera a arte de story (1080×1920) e manda ao chat de operações do
+  Telegram, seguida de uma segunda mensagem só com o link de afiliado. O gesto
+  manual: abrir o Telegram, salvar a arte, postar como story no Instagram e
+  colar o link recebido no sticker de link. Não depende de nenhuma credencial
+  da Meta. O teto diário (`max_per_day: 6`) evita acumular mais artes do que
+  dá pra postar manualmente num dia.
+- **`instagram_feed` (100% automático via Graph API, desligado por padrão,
+  teto de 2/dia)** — publica direto no feed (1080×1350) sem intervenção
+  humana. Fica desligado em `config.yaml` (`channels.instagram_feed.enabled:
+  false`) até você concluir `docs/runbooks/meta-setup.md` (conta business,
+  página do Facebook vinculada, app na Meta for Developers e token de acesso)
+  e exportar `IG_USER_ID` / `IG_ACCESS_TOKEN`. O caption do feed nunca leva o
+  link de afiliado — só "🔗 Link na bio e no canal do Telegram" — porque a API
+  não permite CTA clicável fora da bio.
 
 ## Comandos
 
@@ -58,9 +60,17 @@ operações.
 
 ## Agendamento
 
-`.github/workflows/publish.yml` roda 3x/dia (09:00, 12:30, 19:30 BRT) e commita
+`.github/workflows/publish.yml` roda de hora em hora, das 08h às 23h BRT
+(16 runs/dia, 3 ofertas por run — até ~48 posts/dia no Telegram), e commita
 `data/state.db` de volta. Disparo manual: aba Actions → publish → Run workflow
 (com opção dry-run).
+
+Canais com esforço manual ou limites de audiência/API têm um teto diário
+opcional (`max_per_day` em `config.yaml`, contado no SQLite): `story_dispatch`
+em 6/dia (artes de story que chegam ao seu chat) e `instagram_feed` em 2/dia.
+`telegram` fica sem teto — é o motor de volume. Um canal que bate o teto no
+meio do run é pulado em silêncio (aparece como aviso no resumo, não como
+falha); ajuste os valores na seção `channels:` do `config.yaml`.
 
 ## VPS (futuro)
 

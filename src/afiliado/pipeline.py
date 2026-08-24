@@ -50,6 +50,9 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     target = cfg["selection"]["posts_per_run"]
     count = 0
     usados: dict[str, int] = {}
+    usados_dia = {ch.name: db.count_posts_today(ch.name)
+                 for ch in channels if getattr(ch, "max_per_day", None) is not None}
+    tetos_atingidos: set[str] = set()
 
     for offer in fila:
         if count >= target:
@@ -75,12 +78,18 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
 
         published_any = False
         for ch in channels:
+            cap_dia = getattr(ch, "max_per_day", None)
+            if cap_dia is not None and usados_dia.get(ch.name, 0) >= cap_dia:
+                tetos_atingidos.add(ch.name)
+                continue   # teto diário atingido: pula em silêncio, não é falha
             limit = getattr(ch, "max_per_run", None)
             if limit is not None and usados.get(ch.name, 0) >= limit:
                 continue
             res = ch.publish(post)
             if res.ok:
                 usados[ch.name] = usados.get(ch.name, 0) + 1
+                if cap_dia is not None:
+                    usados_dia[ch.name] = usados_dia.get(ch.name, 0) + 1
                 db.record_post(post, ch.name, res.message_id)
                 published_any = True
             else:
@@ -88,6 +97,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if published_any:
             summary.published.append(rotulo)
             count += 1
+
+    for ch in channels:
+        if ch.name in tetos_atingidos:
+            cap = getattr(ch, "max_per_day", None)
+            summary.warnings.append(f"ℹ️ {ch.name}: teto diário ({cap}) atingido")
 
     if not dry_run:
         db.record_run(len(summary.published), len(summary.discarded))

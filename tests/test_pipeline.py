@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from afiliado import llm, pipeline
 from afiliado.channels.base import PublishResult
 from afiliado.errors import ValidationError
+from afiliado.models import CopyParts, Post
 from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
 from tests.test_models import make_offer
@@ -187,6 +188,29 @@ def test_run_respects_channel_max_per_run(tmp_path, monkeypatch):
     assert len(summary.published) == 2
     assert len(ch_a.sent) == 2      # sem limite: recebe todas as ofertas publicadas
     assert len(ch_b.sent) == 1      # max_per_run=1: só a primeira
+    db.close()
+
+
+def test_run_respects_channel_max_per_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(3)]
+    ch_s = NamedFakeChannel("s")
+    ch_s.max_per_day = 2
+    ch_t = NamedFakeChannel("t")
+
+    ja_postado = Post(offer=make_offer(item_id="ja-postado"),
+                      copy=CopyParts(headline="h", description="d", cta="c"),
+                      affiliate_link="https://shope.ee/x", message_text="msg")
+    db.record_post(ja_postado, channel="s", message_id="x")
+
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 3}}
+    summary = pipeline.run(cfg, [FakeSource(offers)], [ch_s, ch_t], db,
+                           validator=no_network_validator)
+    assert len(ch_s.sent) == 1       # teto diário 2: 1 já feito hoje + 1 neste run
+    assert len(ch_t.sent) == 3       # sem teto: recebe todas
+    assert len(summary.published) == 3   # ofertas seguem contando via "t"
+    assert any("teto diário" in w for w in summary.warnings)
     db.close()
 
 

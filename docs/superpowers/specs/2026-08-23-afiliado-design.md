@@ -43,8 +43,11 @@ dificuldade de teste sem benefício num funil fixo) e no-code/n8n (limites em
 criativo, dedupe e portabilidade).
 
 Cada execução de `afiliado run` processa um ciclo completo e termina. O
-agendador externo (cron do Actions; depois cron/systemd na VPS) define o ritmo —
-ex.: 3 execuções/dia em horários de pico.
+agendador externo (cron do Actions; depois cron/systemd na VPS) define o
+ritmo — fase 1.7: de hora em hora, 08h–23h BRT (16 execuções/dia, 3 ofertas
+por run). Canais com esforço manual ou limites de audiência/API (ex.:
+`story_dispatch`, `instagram_feed`) ganham um teto diário opcional
+(`max_per_day`) para não saturar mesmo com o ritmo horário.
 
 ## 4. Estrutura de componentes
 
@@ -185,6 +188,7 @@ que publicar. Nada falha em silêncio — tudo aparece no resumo de operações.
 | LLM indisponível no ranking | Fallback determinístico: top N por valor esperado (EV) |
 | LLM indisponível na copy | Copy de template padrão |
 | Publicação falha | Retry 3x; falhou → não grava como publicado (volta candidato no próximo run). Contagem de `posts_per_run` é **por oferta**, não por canal: uma oferta conta como publicada se ao menos um canal aceitar; canais com `max_per_run` (ex.: `instagram_feed`, limite 1) pulam a oferta sem contar como falha quando o limite do run já foi atingido |
+| Teto diário por canal (`max_per_day`, fase 1.7) | Pula o canal sem contar como falha quando o teto (contado no SQLite, dia UTC) já foi atingido; oferta segue publicando nos demais canais |
 | Runs simultâneos | Impossível: `concurrency` no workflow serializa |
 
 ## 10. Testes

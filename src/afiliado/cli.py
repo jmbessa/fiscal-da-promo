@@ -34,38 +34,62 @@ def _env(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
+def _channel_settings(raw) -> tuple[bool, int | None]:
+    """Normaliza a entrada de um canal em `channels:` — bool ou dict — para
+    `(enabled, max_per_day)`. Dict: `enabled` (default True) e `max_per_day`
+    (opcional, int > 0)."""
+    if isinstance(raw, dict):
+        return bool(raw.get("enabled", True)), raw.get("max_per_day")
+    return bool(raw), None
+
+
 def _build_channels(cfg: dict) -> list:
     """Monta os canais habilitados em config.yaml a partir das envs disponíveis.
 
     Seção `channels` ausente equivale a `{"telegram": True}` (comportamento da
-    fase 1). Canal ligado sem env necessária: aviso no stdout e segue sem ele —
-    nunca derruba o run."""
+    fase 1). Cada entrada aceita bool ou dict (`enabled`, `max_per_day` —
+    fase 1.7); quando `max_per_day` está presente, vira atributo de instância
+    no canal construído (`ch.max_per_day`), lido pelo pipeline via getattr.
+    Canal ligado sem env necessária: aviso no stdout e segue sem ele — nunca
+    derruba o run."""
     ch_cfg = cfg.get("channels") or {"telegram": True}
     channels: list = []
 
-    if ch_cfg.get("telegram"):
+    enabled, max_per_day = _channel_settings(ch_cfg.get("telegram"))
+    if enabled:
         token = _env("TELEGRAM_BOT_TOKEN")
         chat_id = _env("TELEGRAM_CHANNEL_ID")
         if token and chat_id:
-            channels.append(TelegramChannel(token, chat_id))
+            ch = TelegramChannel(token, chat_id)
+            if max_per_day is not None:
+                ch.max_per_day = int(max_per_day)
+            channels.append(ch)
         else:
             print("⚠️ canal telegram ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID ausente")
 
-    if ch_cfg.get("story_dispatch"):
+    enabled, max_per_day = _channel_settings(ch_cfg.get("story_dispatch"))
+    if enabled:
         token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if token and ops:
-            channels.append(StoryDispatchChannel(token, ops))
+            ch = StoryDispatchChannel(token, ops)
+            if max_per_day is not None:
+                ch.max_per_day = int(max_per_day)
+            channels.append(ch)
         else:
             print("⚠️ canal story_dispatch ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
 
-    if ch_cfg.get("instagram_feed"):
+    enabled, max_per_day = _channel_settings(ch_cfg.get("instagram_feed"))
+    if enabled:
         ig_user = _env("IG_USER_ID")
         ig_token = _env("IG_ACCESS_TOKEN")
         bot_token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if ig_user and ig_token and bot_token and ops:
-            channels.append(InstagramFeedChannel(ig_user, ig_token, bot_token, ops))
+            ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops)
+            if max_per_day is not None:
+                ch.max_per_day = int(max_per_day)
+            channels.append(ch)
         else:
             print("⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
                   "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")

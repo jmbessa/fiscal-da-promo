@@ -66,7 +66,7 @@ Afiliado/
 │   ├── copywriter.py        # LLM escreve partes criativas (JSON validado)
 │   ├── message.py           # montagem do texto final (copy + preços + link)
 │   ├── watchlist.py         # fase 1.6: carrega data/watchlist.json (boosts de EV e selo de menor preço)
-│   ├── creative.py          # fase 2: imagem feed/story por template (Pillow)
+│   ├── creative.py          # fase 2A: story 1080×1920 e feed 1080×1350 por template Pillow (fonte Anton vendorizada)
 │   ├── channels/
 │   │   ├── base.py          # interface: publish(post) -> PublishResult
 │   │   ├── telegram.py      # Bot API — fase 1

@@ -10,7 +10,11 @@ selection:
   price_min_brl: 20
   price_max_brl: 1000
   dedupe_days: 30
-  category_ids: []        # vazio = todas as categorias
+  # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
+  # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
+  # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.
+  # Vazio = todas as categorias. Faixa de foco de impulso: R$25-150.
+  category_ids: ["100630", "100636", "100001", "100637", "100632"]
 
 shopee:
   sort_type: 5            # valor a confirmar na doc da API (Task 14, doctor)

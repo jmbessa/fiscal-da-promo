@@ -58,7 +58,7 @@ class StateDB:
         O dia é contado em UTC, não BRT — a fronteira de 3h entre os dois
         fusos é aceita (um post às 21h-23:59 BRT do dia D já conta para o dia
         D+1 em UTC)."""
-        cutoff = f"{(today or date.today()).isoformat()}T00:00:00"
+        cutoff = f"{(today or _now().date()).isoformat()}T00:00:00"
         row = self.conn.execute(
             "SELECT COUNT(*) FROM posted WHERE channel=? AND posted_at>=?",
             (channel, cutoff),

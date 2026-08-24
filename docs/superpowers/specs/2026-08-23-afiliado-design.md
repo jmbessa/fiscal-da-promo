@@ -69,7 +69,8 @@ Afiliado/
 │   ├── copywriter.py        # LLM escreve partes criativas (JSON validado)
 │   ├── message.py           # montagem do texto final (copy + preços + link)
 │   ├── watchlist.py         # fase 1.6: carrega data/watchlist.json (boosts de EV e selo de menor preço)
-│   ├── creative.py          # fase 2A: story 1080×1920 e feed 1080×1350 por template Pillow (fonte Anton vendorizada)
+│   ├── brand.py             # fase 2C: mascote (porte do SVG do design) usado no cabeçalho das artes
+│   ├── creative.py          # fase 2C: design system Fiscal da Promo (Bricolage Grotesque + IBM Plex Mono, mascote, navy/dourado) — story 1080×1920 e feed 1080×1350
 │   ├── channels/
 │   │   ├── base.py          # interface: publish(post) -> PublishResult
 │   │   ├── telegram.py      # Bot API — fase 1

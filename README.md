@@ -25,6 +25,11 @@ No GitHub: Settings → Secrets and variables → Actions → criar os secrets a
 
 ## Instagram (fase 2A)
 
+As artes seguem o design system "Fiscal da Promo" (fase 2C): fontes Bricolage
+Grotesque (variável) e IBM Plex Mono, paleta navy/dourado e o mascote
+desenhado por código em `src/afiliado/brand.py` (ver `docs/brand-guidelines.md`);
+nome e handle exibidos nas artes vêm de `brand:` em `config.yaml`.
+
 Dois canais, dois níveis de automação:
 
 - **`story_dispatch` (semi-automático, ligado por padrão, teto de 6/dia)** —

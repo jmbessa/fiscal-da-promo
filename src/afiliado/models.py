@@ -1,4 +1,10 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from afiliado.watchlist import PriceFloor
 
 
 def format_brl(cents: int) -> str:
@@ -40,3 +46,4 @@ class Post:
     copy: CopyParts
     affiliate_link: str
     message_text: str = ""
+    price_floor: "PriceFloor | None" = None

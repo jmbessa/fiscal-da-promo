@@ -1,4 +1,5 @@
 from afiliado.models import CopyParts, Offer, Post, format_brl
+from afiliado.watchlist import PriceFloor
 
 
 def make_offer(**kw) -> Offer:
@@ -34,3 +35,15 @@ def test_post_holds_parts():
         affiliate_link="https://shope.ee/x",
     )
     assert post.message_text == ""
+    assert post.price_floor is None
+
+
+def test_post_accepts_price_floor():
+    floor = PriceFloor(min_price_cents=10000, window_days=180)
+    post = Post(
+        offer=make_offer(),
+        copy=CopyParts(headline="h", description="d", cta="c"),
+        affiliate_link="https://shope.ee/x",
+        price_floor=floor,
+    )
+    assert post.price_floor is floor

@@ -65,6 +65,7 @@ Afiliado/
 │   ├── selection.py         # filtros por regra + ranqueamento via LLM
 │   ├── copywriter.py        # LLM escreve partes criativas (JSON validado)
 │   ├── message.py           # montagem do texto final (copy + preços + link)
+│   ├── watchlist.py         # fase 1.6: carrega data/watchlist.json (boosts de EV e selo de menor preço)
 │   ├── creative.py          # fase 2: imagem feed/story por template (Pillow)
 │   ├── channels/
 │   │   ├── base.py          # interface: publish(post) -> PublishResult
@@ -75,6 +76,7 @@ Afiliado/
 │   ├── validate.py          # portões pré-publicação
 │   └── state.py             # SQLite: dedupe e histórico
 ├── data/state.db            # versionado no repo; Actions commita após cada run
+├── data/watchlist.json      # fase 1.6: artefato semanal (análise externa); ausente/vencido não bloqueia o run
 ├── .github/workflows/
 │   ├── publish.yml          # cron; concurrency serializa runs
 │   └── tests.yml            # testes unitários em todo push
@@ -103,7 +105,9 @@ Princípios estruturais:
 3. **Ranqueamento (1 chamada LLM)** — escolhe as N melhores do run (ex.: 3)
    por apelo popular e variedade de categorias (entre si e vs. posts
    recentes). Saída JSON validada; JSON inválido → fallback determinístico
-   (top N por valor esperado (comissão × preço × popularidade)).
+   (top N por valor esperado (comissão × preço × popularidade)); a watchlist
+   semanal (fase 1.6), quando válida, multiplica o valor esperado por
+   categoria/item em alta.
 4. **Link de afiliado** — específico por fonte (ver §6). Sem link válido, a
    oferta é descartada e a próxima do ranking assume.
 5. **Copy (1 chamada LLM por oferta)** — entrada: título, categoria, desconto;
@@ -111,7 +115,8 @@ Princípios estruturais:
    máximos validados.
 6. **Montagem** — template junta copy + preços formatados
    (`De: R$X | Por: R$Y`) + link; imagem do produto vem da URL da API (no
-   Telegram, foto com legenda).
+   Telegram, foto com legenda); quando o preço atual está na mínima histórica
+   da watchlist, injeta o selo "menor preço verificado".
 7. **Validação** — portões do §8; só passa post íntegro.
 8. **Publicação** — canal envia; sucesso → grava no SQLite (produto, preço,
    data, canal, message_id).
@@ -200,7 +205,8 @@ que publicar. Nada falha em silêncio — tudo aparece no resumo de operações.
   `claude setup-token`; nas fases seguintes, token Meta Graph e credenciais do
   app ML.
 - `config.yaml` versionado: categorias, desconto mínimo, faixa de preço, nº de
-  posts por execução, tom da copy, fontes/canais habilitados.
+  posts por execução, tom da copy, fontes/canais habilitados; seção opcional
+  `watchlist.path` (fase 1.6) aponta para o artefato semanal de boosts/selo.
 
 ## 12. Fora de escopo (por ora)
 

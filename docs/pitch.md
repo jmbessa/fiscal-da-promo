@@ -1,8 +1,8 @@
-# PromoProva — Visão de Negócio
+# Fiscal da Promo — Visão de Negócio
 
 ## O que é
 
-PromoProva é uma operação de mídia de performance no varejo digital brasileiro:
+Fiscal da Promo é uma operação de mídia de performance no varejo digital brasileiro:
 um sistema autônomo que descobre, seleciona e divulga ofertas dos marketplaces
 Shopee e Mercado Livre em canais próprios (Telegram, Instagram), monetizada por
 comissão de afiliado sobre cada venda originada. Diferente das páginas de

@@ -27,6 +27,15 @@ No GitHub: Settings → Secrets and variables → Actions → criar os 6 secrets
 - `afiliado run --dry-run` — pipeline completo (APIs reais) imprimindo os posts sem publicar.
 - `afiliado run` — executa e publica de verdade.
 
+## Watchlist semanal
+
+`data/watchlist.json` alimenta o boost de ranking e o selo "menor preço
+verificado". Atualize **1x por semana** abrindo o Claude Code no projeto e
+digitando `/watchlist-refresh` (requer o conector JoomPulse na sessão) — o
+skill em `.claude/skills/watchlist-refresh/` faz consultas, arquivo e commit.
+Validade: 14 dias; vencida, o pipeline roda sem boosts e avisa no chat de
+operações.
+
 ## Agendamento
 
 `.github/workflows/publish.yml` roda 3x/dia (09:00, 12:30, 19:30 BRT) e commita

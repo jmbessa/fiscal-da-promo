@@ -1,4 +1,7 @@
+import json
+
 from afiliado import cli, pipeline
+from afiliado.watchlist import Watchlist
 
 
 def test_run_dry_invokes_pipeline(monkeypatch, tmp_path):
@@ -12,10 +15,34 @@ def test_run_dry_invokes_pipeline(monkeypatch, tmp_path):
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None):
-        chamado.update(dry_run=dry_run, n_sources=len(sources), n_channels=len(channels))
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado.update(dry_run=dry_run, n_sources=len(sources), n_channels=len(channels),
+                       watchlist=watchlist)
         return pipeline.RunSummary()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
     assert cli.main(["run", "--dry-run", "--config", str(cfg_file)]) == 0
-    assert chamado == {"dry_run": True, "n_sources": 1, "n_channels": 0}
+    assert chamado == {"dry_run": True, "n_sources": 1, "n_channels": 0, "watchlist": None}
+
+
+def test_run_loads_watchlist_from_config_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    wl_path = tmp_path / "watchlist.json"
+    wl_path.write_text(json.dumps({"generated_at": "2026-08-23", "valid_days": 14}),
+                       encoding="utf-8")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/")))
+    cfg_text += f"\nwatchlist:\n  path: {str(wl_path).replace(chr(92), '/')}\n"
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado["watchlist"] = watchlist
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--dry-run", "--config", str(cfg_file)]) == 0
+    assert isinstance(chamado["watchlist"], Watchlist)

@@ -30,3 +30,8 @@ validation:
 
 copy:
   tone: "empolgado, direto, sem exageros enganosos, pt-BR"
+
+# Fase 1.6: artefato semanal gerado por análise externa (boosts de EV + selo de menor preço).
+# Opcional — ausente ou vencido, o pipeline degrada para o comportamento sem watchlist.
+watchlist:
+  path: data/watchlist.json

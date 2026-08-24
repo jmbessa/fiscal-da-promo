@@ -1,7 +1,10 @@
+from datetime import date, timedelta
+
 from afiliado import llm, pipeline
 from afiliado.channels.base import PublishResult
 from afiliado.errors import ValidationError
 from afiliado.state import StateDB
+from afiliado.watchlist import Watchlist
 from tests.test_models import make_offer
 
 CFG = {
@@ -87,3 +90,59 @@ def test_dry_run_does_not_publish_nor_record(tmp_path, monkeypatch, capsys):
 def test_summary_text():
     s = pipeline.RunSummary(published=["a"], discarded=["b: x"])
     assert "Publicados (1)" in s.text() and "Descartados (1)" in s.text()
+
+
+def test_summary_text_includes_warnings():
+    s = pipeline.RunSummary(published=["a"], discarded=[], warnings=["⚠️ aviso 1", "⚠️ aviso 2"])
+    text = s.text()
+    assert "⚠️ aviso 1" in text
+    assert "⚠️ aviso 2" in text
+
+
+def test_run_warns_without_watchlist(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(3)]
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [FakeSource(offers)], [ch], db,
+                           validator=no_network_validator)
+    assert "Sem watchlist" in summary.text()
+    db.close()
+
+
+def test_run_stale_watchlist_no_boost_and_warns(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    offers = [
+        make_offer(item_id="0", commission_pct=20.0),
+        make_offer(item_id="1", commission_pct=12.0),
+        make_offer(item_id="2", commission_pct=5.0),
+    ]
+
+    db1 = StateDB(tmp_path / "s1.db")
+    ch1 = FakeChannel()
+    summary_no_wl = pipeline.run(CFG, [FakeSource(offers)], [ch1], db1,
+                                 validator=no_network_validator)
+    db1.close()
+
+    stale_wl = Watchlist(generated_at=date.today() - timedelta(days=30), valid_days=14,
+                         hot_items={"2": 5.0})
+    db2 = StateDB(tmp_path / "s2.db")
+    ch2 = FakeChannel()
+    summary_stale = pipeline.run(CFG, [FakeSource(offers)], [ch2], db2,
+                                 validator=no_network_validator, watchlist=stale_wl)
+    db2.close()
+
+    assert "Watchlist vencida" in summary_stale.text()
+    assert [p.offer.item_id for p in ch1.sent] == [p.offer.item_id for p in ch2.sent]
+
+
+def test_run_hot_item_jumps_queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(3)]  # EV igual entre si
+    wl = Watchlist(generated_at=date.today(), valid_days=14, hot_items={"2": 2.0})
+    ch = FakeChannel()
+    pipeline.run(CFG, [FakeSource(offers)], [ch], db,
+                validator=no_network_validator, watchlist=wl)
+    assert ch.sent[0].offer.item_id == "2"
+    db.close()

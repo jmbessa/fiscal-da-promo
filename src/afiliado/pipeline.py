@@ -5,33 +5,45 @@ from afiliado.channels.base import Channel
 from afiliado.models import Post
 from afiliado.sources.base import Source
 from afiliado.state import StateDB
+from afiliado.watchlist import Watchlist
 
 
 @dataclass
 class RunSummary:
     published: list[str] = field(default_factory=list)
     discarded: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def text(self) -> str:
         linhas = [f"✅ Run concluído — Publicados ({len(self.published)}):"]
         linhas += [f"• {p}" for p in self.published] or ["• (nenhum)"]
         linhas.append(f"Descartados ({len(self.discarded)}):")
         linhas += [f"• {d}" for d in self.discarded] or ["• (nenhum)"]
+        if self.warnings:
+            linhas.append("Avisos:")
+            linhas += [f"• {w}" for w in self.warnings]
         return "\n".join(linhas)
 
 
 def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
-        dry_run: bool = False, validator=None) -> RunSummary:
+        dry_run: bool = False, validator=None, watchlist: Watchlist | None = None) -> RunSummary:
     validator = validator or validate.validate_post
     summary = RunSummary()
+
+    if watchlist is None:
+        summary.warnings.append("ℹ️ Sem watchlist — ranking sem boosts")
+    elif watchlist.is_stale():
+        summary.warnings.append(
+            f"⚠️ Watchlist vencida há {watchlist.days_old()} dias — rode /watchlist-refresh")
+        watchlist = None
 
     offers = []
     for src in sources:
         offers.extend(src.fetch_offers(cfg))  # SourceError propaga: aborta o run
 
     candidates = selection.filter_offers(offers, db, cfg)
-    ranked = selection.rank_offers(candidates, db.recent_titles(), cfg)
-    reserva = [o for o in selection.order_by_ev(candidates, cfg) if o not in ranked]
+    ranked = selection.rank_offers(candidates, db.recent_titles(), cfg, watchlist)
+    reserva = [o for o in selection.order_by_ev(candidates, cfg, watchlist) if o not in ranked]
     fila = ranked + reserva
 
     by_name = {s.name: s for s in sources}
@@ -45,7 +57,8 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         try:
             link = by_name[offer.source].resolve_affiliate_link(offer)
             copy = copywriter.write_copy(offer, cfg)
-            text = message.build_message(offer, copy, link)
+            price_floor = watchlist.price_floor(offer.item_id) if watchlist is not None else None
+            text = message.build_message(offer, copy, link, price_floor=price_floor)
             post = Post(offer=offer, copy=copy, affiliate_link=link, message_text=text)
             validator(post, cfg)
         except Exception as exc:

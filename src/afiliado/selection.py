@@ -3,6 +3,7 @@ import math
 from afiliado import llm
 from afiliado.models import Offer
 from afiliado.state import StateDB
+from afiliado.watchlist import Watchlist
 
 MAX_CANDIDATES_FOR_PROMPT = 30
 
@@ -27,24 +28,29 @@ def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
     return result
 
 
-def ev_score(offer: Offer, cfg: dict) -> float:
+def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> float:
     """Retorno esperado por post: comissão em R$ ponderada pela popularidade."""
     w = cfg["selection"].get("ev_weights") or {}
     wp = float(w.get("popularity", 0.3))
     commission_brl = (offer.price_current_cents / 100) * (offer.commission_pct / 100)
-    return commission_brl * (1 + wp * math.log10(offer.sales + 1))
+    score = commission_brl * (1 + wp * math.log10(offer.sales + 1))
+    if watchlist is not None:
+        score *= watchlist.boost_for(offer)
+    return score
 
 
-def order_by_ev(offers: list[Offer], cfg: dict) -> list[Offer]:
-    return sorted(offers, key=lambda o: ev_score(o, cfg), reverse=True)
+def order_by_ev(offers: list[Offer], cfg: dict, watchlist: Watchlist | None = None) -> list[Offer]:
+    return sorted(offers, key=lambda o: ev_score(o, cfg, watchlist), reverse=True)
 
 
-def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int) -> str:
+def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,
+                 watchlist: Watchlist | None = None) -> str:
     linhas = "\n".join(
         f"- id={o.item_id} | {o.title} | categoria={o.category} | "
         f"desconto={o.discount_pct}% | vendas={o.sales} | "
         f"comissão=R${(o.price_current_cents / 100) * (o.commission_pct / 100):.2f} "
         f"({o.commission_pct:.1f}%)"
+        + (" | em alta: sim" if watchlist is not None and o.item_id in watchlist.hot_items else "")
         for o in candidates)
     recentes = "\n".join(f"- {t}" for t in recent_titles) or "(nenhum)"
     return (
@@ -57,12 +63,13 @@ def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int) -> s
     )
 
 
-def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict) -> list[Offer]:
+def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict,
+                watchlist: Watchlist | None = None) -> list[Offer]:
     n = cfg["selection"]["posts_per_run"]
     if len(candidates) <= n:
         return list(candidates)
-    presented = order_by_ev(candidates, cfg)[:MAX_CANDIDATES_FOR_PROMPT]
-    data = llm.ask_json(_rank_prompt(presented, recent_titles, n),
+    presented = order_by_ev(candidates, cfg, watchlist)[:MAX_CANDIDATES_FOR_PROMPT]
+    data = llm.ask_json(_rank_prompt(presented, recent_titles, n, watchlist),
                         model=cfg["llm"]["model"])
     if isinstance(data, dict):
         by_id = {o.item_id: o for o in presented}
@@ -70,4 +77,4 @@ def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict) ->
         picked = [by_id[i] for i in ids if i in by_id][:n]
         if len(picked) == n:
             return picked
-    return order_by_ev(presented, cfg)[:n]
+    return order_by_ev(presented, cfg, watchlist)[:n]

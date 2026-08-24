@@ -1,7 +1,10 @@
+from datetime import date
+
 import pytest
 
 from afiliado import llm, selection
 from afiliado.state import StateDB
+from afiliado.watchlist import Watchlist
 from tests.test_models import make_offer
 from tests.test_state import make_post
 
@@ -123,3 +126,27 @@ def test_rank_offers_caps_candidates_at_30(monkeypatch):
     assert captured["prompt"].count("- id=") <= 30
     top30 = selection.order_by_ev(cands, CFG)[:30]
     assert ranked == top30[:CFG["selection"]["posts_per_run"]]
+
+
+def test_ev_score_with_watchlist_boost():
+    offer = make_offer(item_id="123456")
+    wl = Watchlist(generated_at=date(2026, 8, 1), valid_days=14,
+                    hot_items={"123456": 1.5})
+    base = selection.ev_score(offer, CFG)
+    assert selection.ev_score(offer, CFG, watchlist=wl) == pytest.approx(base * 1.5)
+
+
+def test_rank_prompt_marks_hot_items():
+    hot = make_offer(item_id="hot")
+    cold = make_offer(item_id="cold")
+    wl = Watchlist(generated_at=date(2026, 8, 1), valid_days=14,
+                    hot_items={"hot": 1.5})
+    prompt = selection._rank_prompt([hot, cold], [], 2, watchlist=wl)
+    linhas = {l.split(" | ")[0]: l for l in prompt.splitlines() if l.startswith("- id=")}
+    assert "em alta: sim" in linhas["- id=hot"]
+    assert "em alta: sim" not in linhas["- id=cold"]
+
+
+def test_rank_prompt_no_hot_marker_without_watchlist():
+    prompt = selection._rank_prompt([make_offer()], [], 2)
+    assert "em alta" not in prompt

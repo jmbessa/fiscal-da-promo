@@ -5,6 +5,7 @@ from afiliado import config, llm, pipeline
 from afiliado.channels.telegram import TelegramChannel, send_text
 from afiliado.sources.shopee import ShopeeSource
 from afiliado.state import StateDB
+from afiliado.watchlist import load_watchlist
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -64,8 +65,9 @@ def main(argv: list[str] | None = None) -> int:
                                     os.environ["TELEGRAM_CHANNEL_ID"])]
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
+    wl = load_watchlist((cfg.get("watchlist") or {}).get("path", "data/watchlist.json"))
     try:
-        summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run)
+        summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl)
     except Exception as exc:
         if not args.dry_run and token and ops:
             send_text(token, ops, f"❌ Run abortado: {exc}")

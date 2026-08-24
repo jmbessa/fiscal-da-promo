@@ -94,15 +94,16 @@ Princípios estruturais:
 
 1. **Descoberta** — cada fonte habilitada retorna `Offer`s normalizados
    (título, preço original, preço atual, % desconto, comissão, URL de imagem,
-   categoria, ID). Ofertas de fontes distintas entram misturadas na mesma
-   esteira a partir daqui.
+   categoria, ID). A descoberta pode consultar mais de uma ordenação da API
+   (ex.: Shopee `sort_types`) e mescla os resultados com dedupe por ID. Ofertas
+   de fontes distintas entram misturadas na mesma esteira a partir daqui.
 2. **Filtro por regras (sem LLM)** — elimina: já postado nos últimos N dias
    (SQLite), desconto abaixo do mínimo, preço fora da faixa, categoria fora da
    lista. Sobram ~30–50 candidatas.
 3. **Ranqueamento (1 chamada LLM)** — escolhe as N melhores do run (ex.: 3)
    por apelo popular e variedade de categorias (entre si e vs. posts
    recentes). Saída JSON validada; JSON inválido → fallback determinístico
-   (top N por desconto).
+   (top N por valor esperado (comissão × preço × popularidade)).
 4. **Link de afiliado** — específico por fonte (ver §6). Sem link válido, a
    oferta é descartada e a próxima do ranking assume.
 5. **Copy (1 chamada LLM por oferta)** — entrada: título, categoria, desconto;

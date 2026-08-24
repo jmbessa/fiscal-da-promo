@@ -28,7 +28,7 @@ def doctor(cfg: dict) -> int:
     try:
         offers = _shopee().fetch_offers({**cfg, "shopee": {**cfg["shopee"], "pages": 1}})
         print(f"✅ Shopee: {len(offers)} ofertas; primeira: "
-              f"{offers[0] if offers else '(vazio — confira sort_type/list_type)'}")
+              f"{offers[0] if offers else '(vazio — confira sort_types/list_type)'}")
     except Exception as exc:
         ok = False
         print(f"❌ Shopee: {exc}")

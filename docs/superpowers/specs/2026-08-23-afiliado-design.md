@@ -176,7 +176,7 @@ que publicar. Nada falha em silêncio — tudo aparece no resumo de operações.
 |---|---|
 | API de fonte fora | Retry com backoff (3x); persistindo, aborta o run e notifica operações |
 | Oferta falha em qualquer etapa | Descarta, promove a próxima do ranking, segue |
-| LLM indisponível no ranking | Fallback determinístico: top N por desconto |
+| LLM indisponível no ranking | Fallback determinístico: top N por valor esperado (EV) |
 | LLM indisponível na copy | Copy de template padrão |
 | Publicação falha | Retry 3x; falhou → não grava como publicado (volta candidato no próximo run) |
 | Runs simultâneos | Impossível: `concurrency` no workflow serializa |

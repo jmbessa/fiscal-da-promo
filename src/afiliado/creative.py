@@ -100,8 +100,9 @@ def _make_background(product: Image.Image, width: int, height: int) -> Image.Ima
 
 def _fit_card(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
     """Redimensiona proporcionalmente para caber em max_w x max_h (nunca ultrapassa
-    nenhum dos dois limites; nunca amplia além de max_w, como antes)."""
-    scale = min(max_w / img.width, max_h / img.height)
+    nenhum dos dois limites e nunca amplia — imagens menores que os limites ficam
+    no tamanho original)."""
+    scale = min(max_w / img.width, max_h / img.height, 1.0)
     new_w = max(1, round(img.width * scale))
     new_h = max(1, round(img.height * scale))
     return img.resize((new_w, new_h))
@@ -113,6 +114,21 @@ def _make_card(product: Image.Image, max_w: int, max_h: int, radius: int) -> tup
     ImageDraw.Draw(mask).rounded_rectangle(
         [0, 0, card.width - 1, card.height - 1], radius=radius, fill=255)
     return card, mask
+
+
+def _hard_truncate(
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int
+) -> str:
+    """Trunca caractere a caractere (com "…" no final) até caber em max_width.
+
+    Cobre o caso de uma palavra isolada (sem espaços) maior que o limite —
+    diferente do resto de `_wrap_title`, que opera por palavra."""
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    s = text
+    while s and draw.textlength(s + "…", font=font) > max_width:
+        s = s[:-1]
+    return f"{s}…" if s else "…"
 
 
 def _wrap_title(
@@ -146,7 +162,10 @@ def _wrap_title(
         while last and draw.textlength(last + "…", font=font) > max_width:
             last = last.rsplit(" ", 1)[0] if " " in last else last[:-1]
         lines[-1] = f"{last}…" if last else "…"
-    return lines
+    # Garantia final: cobre o caso de uma única palavra sem espaços (ou o
+    # resultado do bloco acima) ainda maior que max_width — nunca deve sobrar
+    # uma linha mais larga que o limite.
+    return [_hard_truncate(draw, line, font, max_width) for line in lines]
 
 
 def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, title: str, top: int) -> int:

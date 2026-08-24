@@ -2,9 +2,18 @@ import io
 
 import httpx
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from afiliado.creative import _fit_card, render_feed, render_story
+from afiliado.creative import (
+    TITLE_FONT_SIZE,
+    TITLE_MAX_LINES,
+    TITLE_MAX_WIDTH,
+    _fit_card,
+    _load_font,
+    _wrap_title,
+    render_feed,
+    render_story,
+)
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts
 from afiliado.watchlist import PriceFloor
@@ -103,3 +112,27 @@ def test_render_feed_square_image_smoke():
     img = Image.open(io.BytesIO(data))
     assert img.size == (1080, 1350)
     assert img.mode == "RGB"
+
+
+def test_fit_card_never_upscales():
+    img = Image.new("RGB", (400, 300), (10, 20, 30))
+    fitted = _fit_card(img, 960, 680)
+    assert fitted.size == (400, 300)
+
+
+def test_wrap_title_truncates_overlong_single_word():
+    canvas = Image.new("RGB", (10, 10))
+    draw = ImageDraw.Draw(canvas)
+    font = _load_font(TITLE_FONT_SIZE)
+    title = "a" * 200  # palavra única, sem espaços — bem maior que TITLE_MAX_WIDTH
+    lines = _wrap_title(draw, title, font, TITLE_MAX_WIDTH, TITLE_MAX_LINES)
+    assert lines
+    for line in lines:
+        assert draw.textlength(line, font=font) <= TITLE_MAX_WIDTH
+    assert lines[0].endswith("…")
+
+
+def test_render_overlong_single_word_title_smoke():
+    offer = make_offer(title="a" * 200)
+    data = render_story(offer, COPY, client=_client_for(_image_handler))
+    assert data[:4] == b"\x89PNG"

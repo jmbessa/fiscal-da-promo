@@ -15,8 +15,15 @@ def _post_api(client: httpx.Client, url: str, payload: dict) -> dict:
             return r.json()
         except httpx.HTTPError as exc:
             last = str(exc)
-        except ValueError as exc:
+        except ValueError:
             return {"ok": False, "description": "resposta não-JSON"}
+        except Exception as exc:
+            # Fora da árvore de httpx.HTTPError — ex.: httpx.InvalidURL, que
+            # NÃO é subclasse de HTTPError e escaparia se bot_token/chat_id
+            # vierem com caractere de controle embutido (ex.: "\n"). Não é um
+            # erro de rede transitório, então não faz sentido re-tentar;
+            # devolve a falha já no mesmo formato do timeout de tentativas.
+            return {"ok": False, "description": f"rede: {exc}"}
     return {"ok": False, "description": f"rede: {last}"}
 
 
@@ -24,8 +31,10 @@ class TelegramChannel:
     name = "telegram"
 
     def __init__(self, bot_token: str, chat_id: str, client: httpx.Client | None = None):
-        self.base = f"{API}/bot{bot_token}"
-        self.chat_id = chat_id
+        # .strip() mata o footgun clássico de token/chat_id colado com
+        # espaço/quebra de linha nas pontas (env var, clipboard).
+        self.base = f"{API}/bot{bot_token.strip()}"
+        self.chat_id = chat_id.strip()
         self.client = client or httpx.Client(timeout=30)
 
     def publish(self, post: Post) -> PublishResult:

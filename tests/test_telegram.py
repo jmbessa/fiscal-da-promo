@@ -121,3 +121,17 @@ def test_get_file_url_never_raises_on_invalid_url():
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     assert get_file_url("ab\ncd", "file123", client=client) is None
+
+
+def test_telegram_channel_never_raises_on_invalid_url():
+    # Mid-string control char in bot_token (e.g. copy-pasted with an embedded
+    # newline) makes the sendPhoto/sendMessage URL invalid; httpx.InvalidURL
+    # is NOT an httpx.HTTPError subclass — publish() must still never raise.
+    def handler(request):
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    ch = TelegramChannel("ab\ncd", "@c", client=client)
+    res = ch.publish(make_post())
+    assert res.ok is False
+    assert res.error

@@ -5,11 +5,13 @@ import pytest
 from PIL import Image, ImageDraw
 
 from afiliado.creative import (
-    TITLE_FONT_SIZE,
+    FEED_TITLE_SIZE,
+    FEED_TITLE_WIDTH,
+    STORY_TITLE_SIZE,
+    STORY_TITLE_WIDTH,
     TITLE_MAX_LINES,
-    TITLE_MAX_WIDTH,
     _fit_card,
-    _load_font,
+    _font,
     _wrap_title,
     render_feed,
     render_story,
@@ -52,15 +54,15 @@ def test_render_feed_dimensions():
     assert img.mode == "RGB"
 
 
-def test_render_story_badge_changes_output():
+def test_render_story_selo_changes_output():
     offer = make_offer(price_current_cents=24999)
     without = render_story(offer, COPY, client=_client_for(_image_handler))
     floor = PriceFloor(min_price_cents=30000, window_days=180)
-    with_badge = render_story(offer, COPY, price_floor=floor, client=_client_for(_image_handler))
-    assert without != with_badge
+    with_selo = render_story(offer, COPY, price_floor=floor, client=_client_for(_image_handler))
+    assert without != with_selo
 
 
-def test_render_story_no_badge_when_price_above_floor():
+def test_render_story_no_selo_when_price_above_floor():
     offer = make_offer(price_current_cents=24999)
     without = render_story(offer, COPY, client=_client_for(_image_handler))
     floor = PriceFloor(min_price_cents=10000, window_days=180)  # 24999 > 10000: não dispara o selo
@@ -123,12 +125,12 @@ def test_fit_card_never_upscales():
 def test_wrap_title_truncates_overlong_single_word():
     canvas = Image.new("RGB", (10, 10))
     draw = ImageDraw.Draw(canvas)
-    font = _load_font(TITLE_FONT_SIZE)
-    title = "a" * 200  # palavra única, sem espaços — bem maior que TITLE_MAX_WIDTH
-    lines = _wrap_title(draw, title, font, TITLE_MAX_WIDTH, TITLE_MAX_LINES)
+    font = _font("sans", STORY_TITLE_SIZE, 700)
+    title = "a" * 200  # palavra única, sem espaços — bem maior que STORY_TITLE_WIDTH
+    lines = _wrap_title(draw, title, font, STORY_TITLE_WIDTH, TITLE_MAX_LINES)
     assert lines
     for line in lines:
-        assert draw.textlength(line, font=font) <= TITLE_MAX_WIDTH
+        assert draw.textlength(line, font=font) <= STORY_TITLE_WIDTH
     assert lines[0].endswith("…")
 
 
@@ -147,3 +149,61 @@ def test_render_handle_changes_output():
     feed_sem = render_feed(make_offer(), COPY, client=client)
     feed_com = render_feed(make_offer(), COPY, client=client, handle="@promoprova")
     assert feed_sem != feed_com
+
+
+def test_font_weight_axis_effective():
+    canvas = Image.new("RGB", (10, 10))
+    draw = ImageDraw.Draw(canvas)
+    bold = _font("sans", 66, 800)
+    regular = _font("sans", 66, 400)
+    text = "Fiscal da Promo"
+    assert draw.textlength(text, font=bold) != draw.textlength(text, font=regular)
+
+
+def test_mono_weights_map_to_files():
+    assert str(_font("mono", 26, 500).path).endswith("Medium.ttf")
+    assert str(_font("mono", 26, 400).path).endswith("Regular.ttf")
+    assert str(_font("mono", 26, 600).path).endswith("SemiBold.ttf")
+
+
+def test_draw_mascot_paints_pixels():
+    from afiliado.brand import CREAM, NAVY, draw_mascot
+
+    img = Image.new("RGB", (200, 200), NAVY)
+    draw_mascot(img, 100, 100, 180, ink=NAVY, skin=CREAM, cap=NAVY)
+    pixels = list(img.get_flattened_data())
+    assert any(p == CREAM for p in pixels)
+    assert any(p != NAVY for p in pixels)
+
+
+def test_brand_name_changes_output():
+    client = _client_for(_image_handler)
+    a = render_story(make_offer(), COPY, client=client, brand_name="X")
+    b = render_story(make_offer(), COPY, client=client, brand_name="Y")
+    assert a != b
+
+
+def test_source_meli_cta():
+    offer = make_offer(source="meli")
+    data = render_story(offer, COPY, client=_client_for(_image_handler))
+    assert data[:4] == b"\x89PNG"
+    data_feed = render_feed(offer, COPY, client=_client_for(_image_handler))
+    assert data_feed[:4] == b"\x89PNG"
+
+
+def test_feed_title_size_and_width_constants_used_by_wrap():
+    canvas = Image.new("RGB", (10, 10))
+    draw = ImageDraw.Draw(canvas)
+    font = _font("sans", FEED_TITLE_SIZE, 700)
+    lines = _wrap_title(draw, "palavra " * 30, font, FEED_TITLE_WIDTH, TITLE_MAX_LINES)
+    assert len(lines) <= TITLE_MAX_LINES
+    for line in lines:
+        assert draw.textlength(line, font=font) <= FEED_TITLE_WIDTH
+
+
+def test_render_no_sales_meta_omits_vendidos():
+    # sales=0 (default de make_offer) não deve quebrar o render; a linha de
+    # meta cai para só a fonte ("Shopee").
+    offer = make_offer(sales=0)
+    data = render_story(offer, COPY, client=_client_for(_image_handler))
+    assert data[:4] == b"\x89PNG"

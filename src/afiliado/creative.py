@@ -1,72 +1,108 @@
-"""Renderizador de criativos (fase 2A): artes de story e feed em PNG.
+"""Renderizador de criativos — fase 2C: design system "Fiscal da Promo"
+(Bricolage Grotesque + IBM Plex Mono, mascote, navy/dourado).
 
-Gera a imagem a partir de um `Offer` + `CopyParts` seguindo o layout de
-referência: fundo blur do produto, card arredondado, título em Anton e tags
-coloridas (vendas / preço / menor preço). `copy` faz parte da interface
-pública para uso futuro (o texto do post é montado à parte, em message.py) —
-esta fase não desenha os campos de `CopyParts` na arte.
+Gera a arte de story (1080×1920) e de feed (1080×1350) a partir de um `Offer`
+seguindo o layout do design do usuário: fundo navy com brilho radial,
+cabeçalho com mascote (ver `afiliado.brand`), card branco com a foto do
+produto, título, pill de preço, meta (vendas/fonte) e — quando a watchlist
+confirma preço mínimo — o selo "menor preço verificado". `copy` faz parte da
+interface pública para uso futuro (o texto do post é montado à parte, em
+message.py) — esta fase não desenha os campos de `CopyParts` na arte.
 """
 
+import functools
 import importlib.resources
 import io
 
 import httpx
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts, Offer, format_brl
 from afiliado.watchlist import PriceFloor
 
+# --- Paleta -----------------------------------------------------------------
+
+NAVY = (16, 20, 39)          # #101427 fundo
+SURFACE = (23, 28, 51)       # #171C33 cartões/pill do CTA
+BORDER = (38, 44, 74)        # #262C4A linhas
+PILL_BORDER = (58, 65, 102)  # #3A4166 borda do CTA
+GOLD = (224, 166, 60)        # #E0A63C destaque
+INK = (20, 17, 15)           # #14110F texto sobre dourado
+CREAM = (246, 239, 225)      # #F6EFE1 rosto do mascote
+TEXT = (242, 243, 247)       # #F2F3F7
+MUTED = (154, 160, 184)      # #9AA0B8
+BLUE = (127, 160, 240)       # #7FA0F0 "verificado"
+SELO_BG = (24, 34, 66)       # rgba(74,117,232,.14) sobre navy
+SELO_BORDER = (42, 64, 126)  # rgba(74,117,232,.45) sobre navy
+SELO_TEXT = (201, 212, 245)  # #C9D4F5
+WHITE = (255, 255, 255)
+
+GLOW_COLOR = (74, 117, 232)
+PRICE_DIM_INK = (94, 69, 35)  # INK a ~65% de opacidade sobre GOLD
+
+# --- Dimensões ----------------------------------------------------------------
+
 STORY_SIZE = (1080, 1920)
 FEED_SIZE = (1080, 1350)
+STORY_PAD = 72
+FEED_PAD = 64
 
-STORY_CARD_TOP = 150
-FEED_CARD_TOP = 90
-
-STORY_TITLE_GAP = 70
-FEED_TITLE_GAP = 50
-
-CARD_WIDTH = 960
-CARD_RADIUS = 42
-
-STORY_CARD_MAX_H = 1050
-FEED_CARD_MAX_H = 680
-
-TAGS_BOTTOM_MARGIN = 40
-
-TITLE_FONT_SIZE = 64
-TITLE_MAX_WIDTH = 960
 TITLE_MAX_LINES = 2
-TITLE_LINE_SPACING = 10
-TITLE_TO_TAGS_GAP = 40
-
-TAG_FONT_SIZE = 52
-TAG_PAD_X = 28
-TAG_PAD_Y = 16
-TAG_STACK_GAP = 20
-
-COLOR_SALES = (232, 119, 34)
-COLOR_PRICE = (237, 28, 36)
-COLOR_FLOOR = (46, 125, 50)
+STORY_TITLE_SIZE = 66
+STORY_TITLE_WIDTH = 936
+FEED_TITLE_SIZE = 56
+FEED_TITLE_WIDTH = 952
 
 DOWNLOAD_TIMEOUT = 20
 
-HANDLE_FONT_SIZE = 40
-HANDLE_BOTTOM_MARGIN = 80
-COLOR_HANDLE = (179, 179, 179)
-
-_FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
+DEFAULT_BRAND_NAME = "Fiscal da Promo"
 
 
-def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    font = _FONT_CACHE.get(size)
-    if font is not None:
+# --- Fontes -------------------------------------------------------------------
+
+_MONO_FILES = {
+    "regular": "IBMPlexMono-Regular.ttf",
+    "medium": "IBMPlexMono-Medium.ttf",
+    "semibold": "IBMPlexMono-SemiBold.ttf",
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _sans_bytes() -> bytes:
+    return (importlib.resources.files("afiliado") / "assets/fonts/BricolageGrotesque-Variable.ttf").read_bytes()
+
+
+def _mono_weight_key(weight: int) -> str:
+    if weight <= 400:
+        return "regular"
+    if weight < 600:
+        return "medium"
+    return "semibold"
+
+
+@functools.lru_cache(maxsize=None)
+def _font(family: str, size: int, weight: int = 400) -> ImageFont.FreeTypeFont:
+    """family: 'sans' (Bricolage variável) ou 'mono' (IBM Plex Mono estática).
+
+    Cacheado por (family, size, weight): `set_variation_by_axes` muta o
+    objeto, então cada combinação ganha sua própria instância já com os
+    eixos definidos — nunca reaproveitamos um objeto com eixos diferentes.
+    """
+    if family == "sans":
+        font = ImageFont.truetype(io.BytesIO(_sans_bytes()), size)
+        opsz = max(12, min(96, size))
+        font.set_variation_by_axes([opsz, weight, 100])
         return font
-    data = (importlib.resources.files("afiliado") / "assets/fonts/Anton-Regular.ttf").read_bytes()
-    font = ImageFont.truetype(io.BytesIO(data), size)
-    _FONT_CACHE[size] = font
-    return font
+    if family == "mono":
+        filename = _MONO_FILES[_mono_weight_key(weight)]
+        path = importlib.resources.files("afiliado") / f"assets/fonts/{filename}"
+        return ImageFont.truetype(str(path), size)
+    raise ValueError(f"família de fonte desconhecida: {family!r}")
 
+
+# --- Download / decode da imagem do produto -----------------------------------
 
 def _download_image_bytes(url: str, client: httpx.Client) -> bytes:
     try:
@@ -90,17 +126,25 @@ def _open_product_image(data: bytes) -> Image.Image:
         raise SourceError(f"falha ao decodificar imagem do produto: {exc}") from exc
 
 
-def _make_background(product: Image.Image, width: int, height: int) -> Image.Image:
-    bg = product.copy()
-    scale = max(width / bg.width, height / bg.height)
-    bg = bg.resize((max(1, round(bg.width * scale)), max(1, round(bg.height * scale))))
-    left = (bg.width - width) // 2
-    top = (bg.height - height) // 2
-    bg = bg.crop((left, top, left + width, top + height))
-    bg = bg.filter(ImageFilter.GaussianBlur(28))
-    bg = ImageEnhance.Brightness(bg).enhance(0.38)
-    return bg
+def _get_image_bytes(offer: Offer, client: httpx.Client | None) -> bytes:
+    if client is None:
+        with httpx.Client(timeout=DOWNLOAD_TIMEOUT) as owned_client:
+            return _download_image_bytes(offer.image_url, owned_client)
+    return _download_image_bytes(offer.image_url, client)
 
+
+# --- Fundo: navy + brilho radial ------------------------------------------
+
+def _glow_background(width: int, height: int, cx: float, cy: float, rx: float, ry: float) -> Image.Image:
+    base = Image.new("RGBA", (width, height), (*NAVY, 255))
+    glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    ImageDraw.Draw(glow).ellipse(
+        [cx - rx, cy - ry, cx + rx, cy + ry], fill=(*GLOW_COLOR, round(0.16 * 255)))
+    glow = glow.filter(ImageFilter.GaussianBlur(120))
+    return Image.alpha_composite(base, glow).convert("RGB")
+
+
+# --- Card (foto do produto por contain + badge de desconto) ------------------
 
 def _fit_card(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
     """Redimensiona proporcionalmente para caber em max_w x max_h (nunca ultrapassa
@@ -112,13 +156,80 @@ def _fit_card(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
     return img.resize((new_w, new_h))
 
 
-def _make_card(product: Image.Image, max_w: int, max_h: int, radius: int) -> tuple[Image.Image, Image.Image]:
-    card = _fit_card(product, max_w, max_h)
-    mask = Image.new("L", card.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [0, 0, card.width - 1, card.height - 1], radius=radius, fill=255)
-    return card, mask
+def _draw_badge(
+    draw: ImageDraw.ImageDraw, right_x: float, top_y: float, discount_pct: int,
+    font_size: int, pad_y: int, pad_x: int, radius: int = 12,
+) -> None:
+    text = f"-{discount_pct}%"
+    font = _font("sans", font_size, 800)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = (bbox[2] - bbox[0]) + 2 * pad_x
+    h = (bbox[3] - bbox[1]) + 2 * pad_y
+    x0, y0 = right_x - w, top_y
+    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=radius, fill=NAVY)
+    draw.text((x0 + pad_x - bbox[0], y0 + pad_y - bbox[1]), text, font=font, fill=TEXT)
 
+
+def _draw_card(
+    canvas: Image.Image, draw: ImageDraw.ImageDraw, product: Image.Image,
+    x: int, y: int, w: int, h: int, radius: int, margin: int,
+    discount_pct: int, badge_font_size: int, badge_pad_y: int, badge_pad_x: int,
+    badge_offset: int,
+) -> None:
+    card = Image.new("RGB", (w, h), WHITE)
+    inner_w, inner_h = w - 2 * margin, h - 2 * margin
+    fitted = _fit_card(product, inner_w, inner_h)
+    fx = margin + (inner_w - fitted.width) // 2
+    fy = margin + (inner_h - fitted.height) // 2
+    card.paste(fitted, (fx, fy))
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
+    canvas.paste(card, (x, y), mask)
+    _draw_badge(draw, x + w - badge_offset, y + badge_offset, discount_pct,
+                badge_font_size, badge_pad_y, badge_pad_x)
+
+
+# --- Cabeçalho (avatar + nome/handle) -----------------------------------------
+
+def _draw_header_story(draw: ImageDraw.ImageDraw, canvas: Image.Image, x: int, y: int,
+                        d: int, brand_name: str) -> None:
+    draw.ellipse([x, y, x + d, y + d], fill=GOLD)
+    cx, cy = x + d / 2, y + d / 2
+    draw_mascot(canvas, cx, cy, d * 0.98, ink=NAVY, skin=CREAM, cap=NAVY)
+    font = _font("sans", 34, 700)
+    asc, desc = font.getmetrics()
+    bbox = draw.textbbox((0, 0), brand_name, font=font)
+    tx = x + d + 18
+    ty = cy - (asc + desc) / 2
+    draw.text((tx - bbox[0], ty - bbox[1]), brand_name, font=font, fill=TEXT)
+
+
+def _draw_header_feed(draw: ImageDraw.ImageDraw, canvas: Image.Image, x: int, y: int,
+                       d: int, brand_name: str, handle: str | None) -> None:
+    draw.ellipse([x, y, x + d, y + d], fill=GOLD)
+    cx, cy = x + d / 2, y + d / 2
+    draw_mascot(canvas, cx, cy, d * 0.98, ink=NAVY, skin=CREAM, cap=NAVY)
+    name_font = _font("sans", 34, 700)
+    name_asc, name_desc = name_font.getmetrics()
+    tx = x + d + 20
+    if handle:
+        handle_font = _font("mono", 22, 400)
+        h_asc, h_desc = handle_font.getmetrics()
+        block_h = (name_asc + name_desc) + 4 + (h_asc + h_desc)
+        top = cy - block_h / 2
+        bbox = draw.textbbox((0, 0), brand_name, font=name_font)
+        draw.text((tx - bbox[0], top - bbox[1]), brand_name, font=name_font, fill=TEXT)
+        htext = handle.upper()
+        hy = top + (name_asc + name_desc) + 4
+        hbbox = draw.textbbox((0, 0), htext, font=handle_font)
+        draw.text((tx - hbbox[0], hy - hbbox[1]), htext, font=handle_font, fill=MUTED)
+    else:
+        top = cy - (name_asc + name_desc) / 2
+        bbox = draw.textbbox((0, 0), brand_name, font=name_font)
+        draw.text((tx - bbox[0], top - bbox[1]), brand_name, font=name_font, fill=TEXT)
+
+
+# --- Título --------------------------------------------------------------------
 
 def _hard_truncate(
     draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int
@@ -172,146 +283,352 @@ def _wrap_title(
     return [_hard_truncate(draw, line, font, max_width) for line in lines]
 
 
-def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, title: str, top: int) -> int:
+def _title_dims(draw: ImageDraw.ImageDraw, offer: Offer, size: int, width: int, max_lines: int) -> dict:
+    font = _font("sans", size, 700)
+    lines = _wrap_title(draw, offer.title, font, width, max_lines)
+    line_h = round(size * 1.04)
+    return {"font": font, "lines": lines, "line_h": line_h, "height": line_h * len(lines)}
+
+
+def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: dict) -> float:
     """Desenha o título centralizado; retorna o y logo abaixo do bloco de texto."""
-    font = _load_font(TITLE_FONT_SIZE)
-    lines = _wrap_title(draw, title, font, TITLE_MAX_WIDTH, TITLE_MAX_LINES)
-    ascent, descent = font.getmetrics()
-    line_height = ascent + descent + TITLE_LINE_SPACING
+    font, line_h = dims["font"], dims["line_h"]
     y = top
-    for line in lines:
+    for line in dims["lines"]:
         bbox = draw.textbbox((0, 0), line, font=font)
         line_width = bbox[2] - bbox[0]
-        x = (canvas_width - line_width) // 2 - bbox[0]
-        draw.text((x, y), line, font=font, fill="white")
-        y += line_height
+        x = (canvas_width - line_width) / 2 - bbox[0]
+        draw.text((x, y - bbox[1]), line, font=font, fill=TEXT)
+        y += line_h
     return y
 
 
-def _draw_tag(
-    draw: ImageDraw.ImageDraw,
-    canvas_width: int,
-    top: int,
-    text: str,
-    font: ImageFont.FreeTypeFont,
-    color: tuple[int, int, int],
-) -> int:
-    """Desenha uma tag (retângulo + texto) centralizada; retorna o y abaixo dela."""
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    tag_width = text_width + 2 * TAG_PAD_X
-    tag_height = text_height + 2 * TAG_PAD_Y
-    x0 = (canvas_width - tag_width) // 2
-    y0 = top
-    x1 = x0 + tag_width
-    y1 = y0 + tag_height
-    draw.rectangle([x0, y0, x1, y1], fill=color)
-    text_x = x0 + TAG_PAD_X - bbox[0]
-    text_y = y0 + TAG_PAD_Y - bbox[1]
-    draw.text((text_x, text_y), text, font=font, fill="white")
-    return y1
+# --- Pill de preço (align-self: flex-start) -----------------------------------
+
+def _price_pill_dims(
+    draw: ImageDraw.ImageDraw, offer: Offer, orig_size: int, cur_size: int,
+    pad_y: int, pad_x: int, gap: int,
+) -> dict:
+    orig_font = _font("sans", orig_size, 600)
+    cur_font = _font("sans", cur_size, 800)
+    orig_text = format_brl(offer.price_original_cents)
+    cur_text = format_brl(offer.price_current_cents)
+    orig_bbox = draw.textbbox((0, 0), orig_text, font=orig_font)
+    cur_bbox = draw.textbbox((0, 0), cur_text, font=cur_font)
+    orig_asc, orig_desc = orig_font.getmetrics()
+    cur_asc, cur_desc = cur_font.getmetrics()
+    orig_w = orig_bbox[2] - orig_bbox[0]
+    cur_w = cur_bbox[2] - cur_bbox[0]
+    content_h = max(orig_asc + orig_desc, cur_asc + cur_desc)
+    content_w = orig_w + gap + cur_w
+    return {
+        "orig_font": orig_font, "cur_font": cur_font,
+        "orig_text": orig_text, "cur_text": cur_text,
+        "orig_bbox": orig_bbox, "cur_bbox": cur_bbox,
+        "orig_asc": orig_asc, "cur_asc": cur_asc,
+        "orig_w": orig_w, "cur_w": cur_w,
+        "width": content_w + 2 * pad_x, "height": content_h + 2 * pad_y,
+        "pad_y": pad_y, "pad_x": pad_x, "gap": gap,
+    }
 
 
-def _sales_tag_text(sales: int) -> str:
-    amount = f"{sales // 1000} MIL" if sales >= 1000 else str(sales)
-    return f"{amount} VENDIDOS"
+def _draw_price_pill(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, radius: int = 16) -> float:
+    w, h = dims["width"], dims["height"]
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=radius, fill=GOLD)
+    cur_font, orig_font = dims["cur_font"], dims["orig_font"]
+    baseline = y + dims["pad_y"] + dims["cur_asc"]
+    orig_x = x + dims["pad_x"]
+    orig_bbox = dims["orig_bbox"]
+    orig_y = baseline - dims["orig_asc"]
+    draw.text((orig_x - orig_bbox[0], orig_y - orig_bbox[1]), dims["orig_text"],
+               font=orig_font, fill=PRICE_DIM_INK)
+    strike_y = round(orig_y + (orig_bbox[1] + orig_bbox[3]) / 2)
+    draw.line([(orig_x, strike_y), (orig_x + dims["orig_w"], strike_y)], fill=PRICE_DIM_INK, width=3)
+    cur_x = orig_x + dims["orig_w"] + dims["gap"]
+    cur_bbox = dims["cur_bbox"]
+    cur_y = baseline - dims["cur_asc"]
+    draw.text((cur_x - cur_bbox[0], cur_y - cur_bbox[1]), dims["cur_text"], font=cur_font, fill=INK)
+    return y + h
 
 
-def _tag_block_height(draw: ImageDraw.ImageDraw, texts: list[str], font: ImageFont.FreeTypeFont) -> int:
-    if not texts:
-        return 0
-    heights = []
-    for text in texts:
-        bbox = draw.textbbox((0, 0), text, font=font)
-        heights.append((bbox[3] - bbox[1]) + 2 * TAG_PAD_Y)
-    return sum(heights) + TAG_STACK_GAP * (len(texts) - 1)
+# --- Meta (vendas · fonte) -----------------------------------------------------
+
+def _source_label(source: str) -> str:
+    return "Mercado Livre" if source == "meli" else "Shopee"
 
 
-def _draw_tags(
-    draw: ImageDraw.ImageDraw,
-    canvas_width: int,
-    canvas_height: int,
-    top: int,
-    offer: Offer,
-    price_floor: PriceFloor | None,
-) -> None:
-    font = _load_font(TAG_FONT_SIZE)
-
-    price_text = (
-        f"de {format_brl(offer.price_original_cents)} "
-        f"por {format_brl(offer.price_current_cents)}"
-    )
-    floor_text = None
-    if price_floor is not None and offer.price_current_cents <= price_floor.min_price_cents:
-        months = max(1, round(price_floor.window_days / 30))
-        floor_text = f"MENOR PREÇO EM {months} MESES"
-
-    sales_text = _sales_tag_text(offer.sales) if offer.sales >= 1000 else None
-    include_sales = sales_text is not None
-
-    # Guarda de layout: o preço e o selo de menor preço sempre têm que caber;
-    # a tag de vendas (laranja) é a menos essencial e é a primeira a cair se o
-    # bloco de tags ultrapassaria o canvas.
-    if include_sales:
-        texts = [sales_text, price_text] + ([floor_text] if floor_text else [])
-        if top + _tag_block_height(draw, texts, font) > canvas_height - TAGS_BOTTOM_MARGIN:
-            include_sales = False
-
-    y = top
-    if include_sales:
-        y = _draw_tag(draw, canvas_width, y, sales_text, font, COLOR_SALES)
-        y += TAG_STACK_GAP
-
-    y = _draw_tag(draw, canvas_width, y, price_text, font, COLOR_PRICE)
-
-    if floor_text:
-        y += TAG_STACK_GAP
-        _draw_tag(draw, canvas_width, y, floor_text, font, COLOR_FLOOR)
-
-
-def _draw_handle(draw: ImageDraw.ImageDraw, width: int, height: int, handle: str) -> None:
-    """Assinatura da marca (ex.: @promoprova) centralizada no rodapé da arte."""
-    font = _load_font(HANDLE_FONT_SIZE)
-    text_w = draw.textlength(handle, font=font)
-    y = height - HANDLE_BOTTOM_MARGIN - HANDLE_FONT_SIZE
-    draw.text(((width - text_w) / 2, y), handle, font=font, fill=COLOR_HANDLE)
-
-
-def _render(
-    offer: Offer,
-    copy: CopyParts,
-    size: tuple[int, int],
-    card_top: int,
-    card_max_h: int,
-    title_gap: int,
-    price_floor: PriceFloor | None,
-    client: httpx.Client | None,
-    handle: str | None = None,
-) -> bytes:
-    del copy  # reservado para fases futuras; não usado no template 2A
-    width, height = size
-
-    if client is None:
-        with httpx.Client(timeout=DOWNLOAD_TIMEOUT) as owned_client:
-            image_bytes = _download_image_bytes(offer.image_url, owned_client)
+def _meta_text(offer: Offer) -> str:
+    fonte = _source_label(offer.source)
+    if offer.sales >= 1000:
+        vendidos = f"{offer.sales // 1000} mil vendidos"
+    elif offer.sales > 0:
+        vendidos = f"{offer.sales} vendidos"
     else:
-        image_bytes = _download_image_bytes(offer.image_url, client)
+        vendidos = None
+    return f"{vendidos} · {fonte}" if vendidos else fonte
 
-    product = _open_product_image(image_bytes)
 
-    canvas = _make_background(product, width, height)
-    card, mask = _make_card(product, CARD_WIDTH, card_max_h, CARD_RADIUS)
-    card_x = (width - card.width) // 2
-    canvas.paste(card, (card_x, card_top), mask)
+def _meta_dims(draw: ImageDraw.ImageDraw, offer: Offer, mono_size: int) -> dict:
+    text = _meta_text(offer)
+    font = _font("mono", mono_size, 400)
+    asc, desc = font.getmetrics()
+    return {"font": font, "text": text, "height": asc + desc}
 
-    draw = ImageDraw.Draw(canvas)
-    title_top = card_top + card.height + title_gap
-    title_bottom = _draw_title(draw, width, offer.title, title_top)
-    tags_top = title_bottom + TITLE_TO_TAGS_GAP
-    _draw_tags(draw, width, height, tags_top, offer, price_floor)
+
+def _draw_meta(draw: ImageDraw.ImageDraw, canvas_width: int, y: float, dims: dict) -> float:
+    font, text = dims["font"], dims["text"]
+    tw = draw.textlength(text, font=font)
+    x = (canvas_width - tw) / 2
+    draw.text((x, y), text, font=font, fill=MUTED)
+    return y + dims["height"]
+
+
+# --- Selo "menor preço verificado" ---------------------------------------------
+
+def _selo_applicable(offer: Offer, price_floor: PriceFloor | None) -> bool:
+    return price_floor is not None and offer.price_current_cents <= price_floor.min_price_cents
+
+
+def _selo_text(price_floor: PriceFloor) -> str:
+    months = max(1, round(price_floor.window_days / 30))
+    return f"MENOR PREÇO VERIFICADO · {months} MESES"
+
+
+def _draw_check(draw: ImageDraw.ImageDraw, x: float, y: float, size: float,
+                 color: tuple[int, int, int], width: int = 5) -> None:
+    """Desenha um "✓" com dois segmentos — não depende do glifo da fonte
+    (a Bricolage pode não ter U+2713)."""
+    draw.line([(x + size * 0.05, y + size * 0.55), (x + size * 0.38, y + size * 0.85)],
+              fill=color, width=width)
+    draw.line([(x + size * 0.38, y + size * 0.85), (x + size * 0.95, y + size * 0.12)],
+              fill=color, width=width)
+
+
+def _selo_dims(draw: ImageDraw.ImageDraw, price_floor: PriceFloor, mono_size: int,
+               pad_y: int, pad_x: int, gap: int) -> dict:
+    text = _selo_text(price_floor)
+    font = _font("mono", mono_size, 500)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    asc, desc = font.getmetrics()
+    check_size = round(mono_size * 1.2)
+    content_h = max(check_size, asc + desc)
+    content_w = check_size + gap + text_w
+    return {
+        "font": font, "text": text, "bbox": bbox, "asc": asc, "desc": desc,
+        "check_size": check_size, "content_h": content_h,
+        "width": content_w + 2 * pad_x, "height": content_h + 2 * pad_y,
+        "pad_y": pad_y, "pad_x": pad_x, "gap": gap,
+    }
+
+
+def _draw_selo(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, radius: int = 16) -> float:
+    w, h = dims["width"], dims["height"]
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=radius, outline=SELO_BORDER, width=1, fill=SELO_BG)
+    check_size, content_h = dims["check_size"], dims["content_h"]
+    check_y = y + dims["pad_y"] + (content_h - check_size) / 2
+    _draw_check(draw, x + dims["pad_x"], check_y, check_size, BLUE)
+    text_x = x + dims["pad_x"] + check_size + dims["gap"]
+    bbox = dims["bbox"]
+    text_y = y + dims["pad_y"] + (content_h - (dims["asc"] + dims["desc"])) / 2
+    draw.text((text_x - bbox[0], text_y - bbox[1]), dims["text"], font=dims["font"], fill=SELO_TEXT)
+    return y + h
+
+
+# --- Corpo (título + pill de preço + meta + selo) e guarda de overflow -------
+
+def _story_body_dims(draw, offer, price_floor, title_lines_cap, include_meta, include_selo):
+    title = _title_dims(draw, offer, STORY_TITLE_SIZE, STORY_TITLE_WIDTH, title_lines_cap)
+    price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24)
+    y = 1050 + title["height"] + 34 + price["height"]
+    meta = None
+    if include_meta:
+        meta = _meta_dims(draw, offer, 30)
+        y += 18 + meta["height"]
+    selo = None
+    if include_selo and _selo_applicable(offer, price_floor):
+        selo = _selo_dims(draw, price_floor, 25, 20, 24, 16)
+        y += 28 + selo["height"]
+    return y, title, price, meta, selo
+
+
+def _feed_body_dims(draw, offer, price_floor, title_lines_cap, include_meta, include_selo):
+    title = _title_dims(draw, offer, FEED_TITLE_SIZE, FEED_TITLE_WIDTH, title_lines_cap)
+    price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22)
+    y = 790 + title["height"] + 24 + price["height"]
+    meta = None
+    if include_meta:
+        meta = _meta_dims(draw, offer, 27)
+        y += 20 + meta["height"]
+    selo = None
+    if include_selo and _selo_applicable(offer, price_floor):
+        selo = _selo_dims(draw, price_floor, 23, 20, 24, 16)
+        y += 24 + selo["height"]
+    return y, title, price, meta, selo
+
+
+def _body_options(draw, offer, price_floor, allowed_bottom, dims_fn):
+    """Guarda de overflow: se o corpo (título..selo) invadir o rodapé,
+    descarta primeiro o selo, depois o meta, depois reduz o título p/ 1 linha."""
+    title_cap, meta_on, selo_on = TITLE_MAX_LINES, True, True
+    while True:
+        bottom, title, price, meta, selo = dims_fn(draw, offer, price_floor, title_cap, meta_on, selo_on)
+        if bottom <= allowed_bottom:
+            return title, price, meta, selo
+        if selo_on and selo is not None:
+            selo_on = False
+        elif meta_on and meta is not None:
+            meta_on = False
+        elif title_cap > 1:
+            title_cap = 1
+        else:
+            return title, price, meta, selo  # não cabe mesmo assim — segue com o mínimo
+
+
+def _draw_story_body(draw, canvas_width, title, price, meta, selo) -> None:
+    y = _draw_title(draw, canvas_width, 1050, title) + 34
+    y = _draw_price_pill(draw, STORY_PAD, y, price)
+    if meta is not None:
+        y = _draw_meta(draw, canvas_width, y + 18, meta)
+    if selo is not None:
+        selo_x = (canvas_width - selo["width"]) / 2
+        _draw_selo(draw, selo_x, y + 28, selo)
+
+
+def _draw_feed_body(draw, canvas_width, title, price, meta, selo) -> None:
+    y = _draw_title(draw, canvas_width, 790, title) + 24
+    y = _draw_price_pill(draw, FEED_PAD, y, price)
+    if meta is not None:
+        y = _draw_meta(draw, canvas_width, y + 20, meta)
+    if selo is not None:
+        selo_x = (canvas_width - selo["width"]) / 2
+        _draw_selo(draw, selo_x, y + 24, selo)
+
+
+# --- Rodapés --------------------------------------------------------------------
+
+def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,
+                            handle: str | None, offer: Offer) -> dict:
+    pad_y, pad_x = 26, 40
+    font = _font("sans", 42, 700)
+    label = "MERCADO LIVRE" if offer.source == "meli" else "SHOPEE"
+    text = f"→  LINK NA {label}"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = (bbox[2] - bbox[0]) + 2 * pad_x
+    h = (bbox[3] - bbox[1]) + 2 * pad_y
+
+    handle_font = _font("mono", 26, 400)
+    h_asc, h_desc = handle_font.getmetrics()
+    handle_line_h = h_asc + h_desc
+
+    bottom_margin = 72
     if handle:
-        _draw_handle(draw, width, height, handle)
+        handle_bottom = height - bottom_margin
+        handle_top = handle_bottom - handle_line_h
+        cta_bottom = handle_top - 36
+    else:
+        handle_top = None
+        cta_bottom = height - bottom_margin
+    cta_top = cta_bottom - h
+    cta_x0 = (width - w) / 2
+    return {
+        "cta_box": (cta_x0, cta_top, cta_x0 + w, cta_top + h),
+        "cta_text": text, "cta_font": font, "cta_bbox": bbox,
+        "cta_pad_x": pad_x, "cta_pad_y": pad_y,
+        "handle_font": handle_font, "handle_top": handle_top,
+    }
+
+
+def _draw_story_footer(draw: ImageDraw.ImageDraw, width: int, handle: str | None, geo: dict) -> None:
+    x0, y0, x1, y1 = geo["cta_box"]
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=999, outline=PILL_BORDER, width=2, fill=SURFACE)
+    bbox = geo["cta_bbox"]
+    draw.text((x0 + geo["cta_pad_x"] - bbox[0], y0 + geo["cta_pad_y"] - bbox[1]),
+               geo["cta_text"], font=geo["cta_font"], fill=TEXT)
+    if handle and geo["handle_top"] is not None:
+        htext = handle.upper()
+        hfont = geo["handle_font"]
+        hbbox = draw.textbbox((0, 0), htext, font=hfont)
+        hx = (width - (hbbox[2] - hbbox[0])) / 2
+        draw.text((hx - hbbox[0], geo["handle_top"] - hbbox[1]), htext, font=hfont, fill=MUTED)
+
+
+def _feed_footer_geometry(width: int, height: int, pad: int) -> dict:
+    divider_y = height - pad - 28 - 66 - 28
+    row_top = divider_y + 28
+    circle_d = 66
+    circle_x = width - pad - circle_d
+    return {
+        "divider_y": divider_y, "row_top": row_top,
+        "circle_box": (circle_x, row_top, circle_x + circle_d, row_top + circle_d),
+    }
+
+
+def _draw_feed_footer(draw: ImageDraw.ImageDraw, width: int, pad: int, offer: Offer, geo: dict) -> None:
+    y0 = geo["divider_y"]
+    draw.line([(pad, y0), (width - pad, y0)], fill=BORDER, width=1)
+
+    circle_box = geo["circle_box"]
+    draw.ellipse(circle_box, fill=GOLD)
+    arrow_font = _font("sans", 34, 700)
+    abbox = draw.textbbox((0, 0), "→", font=arrow_font)
+    acx = (circle_box[0] + circle_box[2]) / 2
+    acy = (circle_box[1] + circle_box[3]) / 2
+    aw, ah = abbox[2] - abbox[0], abbox[3] - abbox[1]
+    draw.text((acx - aw / 2 - abbox[0], acy - ah / 2 - abbox[1]), "→", font=arrow_font, fill=INK)
+
+    text_font = _font("sans", 38, 700)
+    text = f"Link na bio · {_source_label(offer.source)}"
+    t_asc, t_desc = text_font.getmetrics()
+    row_top = geo["row_top"]
+    row_h = circle_box[3] - circle_box[1]
+    ty = row_top + (row_h - (t_asc + t_desc)) / 2
+    tbbox = draw.textbbox((0, 0), text, font=text_font)
+    draw.text((pad - tbbox[0], ty - tbbox[1]), text, font=text_font, fill=TEXT)
+
+
+# --- Render principal -----------------------------------------------------------
+
+def _render_story(offer: Offer, price_floor: PriceFloor | None, client: httpx.Client | None,
+                   handle: str | None, brand_name: str) -> bytes:
+    width, height = STORY_SIZE
+    product = _open_product_image(_get_image_bytes(offer, client))
+
+    canvas = _glow_background(width, height, 540, 154, 594, 528)
+    draw = ImageDraw.Draw(canvas)
+
+    _draw_header_story(draw, canvas, 72, 120, 68, brand_name)
+    _draw_card(canvas, draw, product, 72, 224, 936, 790, 28, 24,
+               offer.discount_pct, 44, 14, 22, 28)
+
+    footer_geo = _story_footer_geometry(draw, width, height, handle, offer)
+    allowed_bottom = footer_geo["cta_box"][1] - 36
+    title, price, meta, selo = _body_options(draw, offer, price_floor, allowed_bottom, _story_body_dims)
+    _draw_story_body(draw, width, title, price, meta, selo)
+    _draw_story_footer(draw, width, handle, footer_geo)
+
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _render_feed(offer: Offer, price_floor: PriceFloor | None, client: httpx.Client | None,
+                  handle: str | None, brand_name: str) -> bytes:
+    width, height = FEED_SIZE
+    product = _open_product_image(_get_image_bytes(offer, client))
+
+    canvas = _glow_background(width, height, 540, 81, 594, 338)
+    draw = ImageDraw.Draw(canvas)
+
+    _draw_header_feed(draw, canvas, 64, 64, 62, brand_name, handle)
+    _draw_card(canvas, draw, product, 64, 158, 952, 600, 26, 20,
+               offer.discount_pct, 42, 12, 20, 26)
+
+    footer_geo = _feed_footer_geometry(width, height, FEED_PAD)
+    allowed_bottom = footer_geo["divider_y"] - 36
+    title, price, meta, selo = _body_options(draw, offer, price_floor, allowed_bottom, _feed_body_dims)
+    _draw_feed_body(draw, width, title, price, meta, selo)
+    _draw_feed_footer(draw, width, FEED_PAD, offer, footer_geo)
 
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
@@ -324,9 +641,10 @@ def render_story(
     price_floor: PriceFloor | None = None,
     client: httpx.Client | None = None,
     handle: str | None = None,
+    brand_name: str = DEFAULT_BRAND_NAME,
 ) -> bytes:
-    return _render(offer, copy, STORY_SIZE, STORY_CARD_TOP, STORY_CARD_MAX_H,
-                    STORY_TITLE_GAP, price_floor, client, handle)
+    del copy  # reservado para fases futuras; não usado no template atual
+    return _render_story(offer, price_floor, client, handle, brand_name)
 
 
 def render_feed(
@@ -335,6 +653,7 @@ def render_feed(
     price_floor: PriceFloor | None = None,
     client: httpx.Client | None = None,
     handle: str | None = None,
+    brand_name: str = DEFAULT_BRAND_NAME,
 ) -> bytes:
-    return _render(offer, copy, FEED_SIZE, FEED_CARD_TOP, FEED_CARD_MAX_H,
-                    FEED_TITLE_GAP, price_floor, client, handle)
+    del copy  # reservado para fases futuras; não usado no template atual
+    return _render_feed(offer, price_floor, client, handle, brand_name)

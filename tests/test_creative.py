@@ -201,6 +201,39 @@ def test_feed_title_size_and_width_constants_used_by_wrap():
         assert draw.textlength(line, font=font) <= FEED_TITLE_WIDTH
 
 
+def test_feed_selo_survives_two_line_title():
+    # Título longo (2 linhas) + meta presente (sales>=1000) + selo aplicável:
+    # o selo é o diferenciador da marca e é o ÚLTIMO a cair na guarda de
+    # overflow (título 1 linha, depois meta, só então selo) — prova disso é
+    # que os bytes mudam com price_floor (selo desenhado), mesmo sob um
+    # título que antes forçava a guarda a descartar justamente o selo.
+    offer = make_offer(
+        title=" ".join(["palavra"] * 30),
+        sales=32000,
+        price_current_cents=6890,
+        price_original_cents=12990,
+    )
+    client = _client_for(_image_handler)
+    without = render_feed(offer, COPY, client=client)
+    floor = PriceFloor(min_price_cents=7500, window_days=365)
+    with_selo = render_feed(offer, COPY, price_floor=floor, client=client)
+    assert without != with_selo
+
+
+def test_story_selo_survives_two_line_title():
+    offer = make_offer(
+        title=" ".join(["palavra"] * 30),
+        sales=32000,
+        price_current_cents=6890,
+        price_original_cents=12990,
+    )
+    client = _client_for(_image_handler)
+    without = render_story(offer, COPY, client=client)
+    floor = PriceFloor(min_price_cents=7500, window_days=365)
+    with_selo = render_story(offer, COPY, price_floor=floor, client=client)
+    assert without != with_selo
+
+
 def test_render_no_sales_meta_omits_vendidos():
     # sales=0 (default de make_offer) não deve quebrar o render; a linha de
     # meta cai para só a fonte ("Shopee").

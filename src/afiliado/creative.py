@@ -54,6 +54,11 @@ STORY_TITLE_SIZE = 66
 STORY_TITLE_WIDTH = 936
 FEED_TITLE_SIZE = 56
 FEED_TITLE_WIDTH = 952
+# Variante "3b" do design: título menor (48/w600) tentado no feed, em 2
+# linhas, antes de reduzir a 1 linha — dá mais uma chance de manter meta e
+# selo (o selo é o diferenciador da marca; é o último a cair).
+FEED_TITLE_ALT_SIZE = 48
+FEED_TITLE_ALT_WEIGHT = 600
 
 DOWNLOAD_TIMEOUT = 20
 
@@ -283,8 +288,9 @@ def _wrap_title(
     return [_hard_truncate(draw, line, font, max_width) for line in lines]
 
 
-def _title_dims(draw: ImageDraw.ImageDraw, offer: Offer, size: int, width: int, max_lines: int) -> dict:
-    font = _font("sans", size, 700)
+def _title_dims(draw: ImageDraw.ImageDraw, offer: Offer, size: int, width: int, max_lines: int,
+                 weight: int = 700) -> dict:
+    font = _font("sans", size, weight)
     lines = _wrap_title(draw, offer.title, font, width, max_lines)
     line_h = round(size * 1.04)
     return {"font": font, "lines": lines, "line_h": line_h, "height": line_h * len(lines)}
@@ -437,8 +443,9 @@ def _draw_selo(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, radius
 
 # --- Corpo (título + pill de preço + meta + selo) e guarda de overflow -------
 
-def _story_body_dims(draw, offer, price_floor, title_lines_cap, include_meta, include_selo):
-    title = _title_dims(draw, offer, STORY_TITLE_SIZE, STORY_TITLE_WIDTH, title_lines_cap)
+def _story_body_dims(draw, offer, price_floor, title_size, title_weight, title_lines_cap,
+                      include_meta, include_selo):
+    title = _title_dims(draw, offer, title_size, STORY_TITLE_WIDTH, title_lines_cap, title_weight)
     price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24)
     y = 1050 + title["height"] + 34 + price["height"]
     meta = None
@@ -452,8 +459,9 @@ def _story_body_dims(draw, offer, price_floor, title_lines_cap, include_meta, in
     return y, title, price, meta, selo
 
 
-def _feed_body_dims(draw, offer, price_floor, title_lines_cap, include_meta, include_selo):
-    title = _title_dims(draw, offer, FEED_TITLE_SIZE, FEED_TITLE_WIDTH, title_lines_cap)
+def _feed_body_dims(draw, offer, price_floor, title_size, title_weight, title_lines_cap,
+                     include_meta, include_selo):
+    title = _title_dims(draw, offer, title_size, FEED_TITLE_WIDTH, title_lines_cap, title_weight)
     price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22)
     y = 790 + title["height"] + 24 + price["height"]
     meta = None
@@ -467,22 +475,43 @@ def _feed_body_dims(draw, offer, price_floor, title_lines_cap, include_meta, inc
     return y, title, price, meta, selo
 
 
-def _body_options(draw, offer, price_floor, allowed_bottom, dims_fn):
-    """Guarda de overflow: se o corpo (título..selo) invadir o rodapé,
-    descarta primeiro o selo, depois o meta, depois reduz o título p/ 1 linha."""
+def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_size, title_weight):
+    """Guarda de overflow: se o corpo (título..selo) invadir o rodapé, reduz o
+    título p/ 1 linha, depois descarta o meta, e só por último o selo — o selo
+    é o diferenciador da marca (prova de menor preço) e é o que mais queremos
+    preservar."""
     title_cap, meta_on, selo_on = TITLE_MAX_LINES, True, True
     while True:
-        bottom, title, price, meta, selo = dims_fn(draw, offer, price_floor, title_cap, meta_on, selo_on)
+        bottom, title, price, meta, selo = dims_fn(
+            draw, offer, price_floor, title_size, title_weight, title_cap, meta_on, selo_on)
         if bottom <= allowed_bottom:
             return title, price, meta, selo
-        if selo_on and selo is not None:
-            selo_on = False
-        elif meta_on and meta is not None:
-            meta_on = False
-        elif title_cap > 1:
+        if title_cap > 1:
             title_cap = 1
+        elif meta_on:
+            meta_on = False
+        elif selo_on:
+            selo_on = False
         else:
             return title, price, meta, selo  # não cabe mesmo assim — segue com o mínimo
+
+
+def _story_body_options(draw, offer, price_floor, allowed_bottom):
+    return _run_guard_steps(draw, offer, price_floor, allowed_bottom, _story_body_dims,
+                             STORY_TITLE_SIZE, 700)
+
+
+def _feed_body_options(draw, offer, price_floor, allowed_bottom):
+    # Antes do passo "reduzir para 1 linha": tenta a variante "3b" do design
+    # (título 48px/w600, ainda em 2 linhas) — se ela já couber com meta e
+    # selo inteiros, evita truncar o título por causa de um rodapé apertado.
+    for size, weight in ((FEED_TITLE_SIZE, 700), (FEED_TITLE_ALT_SIZE, FEED_TITLE_ALT_WEIGHT)):
+        bottom, title, price, meta, selo = _feed_body_dims(
+            draw, offer, price_floor, size, weight, TITLE_MAX_LINES, True, True)
+        if bottom <= allowed_bottom:
+            return title, price, meta, selo
+    return _run_guard_steps(draw, offer, price_floor, allowed_bottom, _feed_body_dims,
+                             FEED_TITLE_SIZE, 700)
 
 
 def _draw_story_body(draw, canvas_width, title, price, meta, selo) -> None:
@@ -603,7 +632,7 @@ def _render_story(offer: Offer, price_floor: PriceFloor | None, client: httpx.Cl
 
     footer_geo = _story_footer_geometry(draw, width, height, handle, offer)
     allowed_bottom = footer_geo["cta_box"][1] - 36
-    title, price, meta, selo = _body_options(draw, offer, price_floor, allowed_bottom, _story_body_dims)
+    title, price, meta, selo = _story_body_options(draw, offer, price_floor, allowed_bottom)
     _draw_story_body(draw, width, title, price, meta, selo)
     _draw_story_footer(draw, width, handle, footer_geo)
 
@@ -626,7 +655,7 @@ def _render_feed(offer: Offer, price_floor: PriceFloor | None, client: httpx.Cli
 
     footer_geo = _feed_footer_geometry(width, height, FEED_PAD)
     allowed_bottom = footer_geo["divider_y"] - 36
-    title, price, meta, selo = _body_options(draw, offer, price_floor, allowed_bottom, _feed_body_dims)
+    title, price, meta, selo = _feed_body_options(draw, offer, price_floor, allowed_bottom)
     _draw_feed_body(draw, width, title, price, meta, selo)
     _draw_feed_footer(draw, width, FEED_PAD, offer, footer_geo)
 

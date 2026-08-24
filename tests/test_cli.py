@@ -10,7 +10,9 @@ def test_run_dry_invokes_pipeline(monkeypatch, tmp_path):
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(
         (open("config.yaml", encoding="utf-8").read()
-         .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))),
+         .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+         .replace("data/watchlist.json",
+                  str(tmp_path / "sem-watchlist.json").replace("\\", "/"))),
         encoding="utf-8")
 
     chamado = {}

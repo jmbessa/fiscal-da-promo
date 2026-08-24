@@ -6,7 +6,8 @@ from tests.test_models import make_offer
 
 CFG = {
     "selection": {"posts_per_run": 2, "min_discount_pct": 20, "price_min_brl": 20,
-                  "price_max_brl": 1000, "dedupe_days": 30, "category_ids": []},
+                  "price_max_brl": 1000, "dedupe_days": 30, "category_ids": [],
+                  "ev_weights": {"popularity": 0.3}},
     "llm": {"model": "haiku"},
     "copy": {"tone": "pt-BR"},
     "validation": {"allowed_domains": ["shope.ee"]},

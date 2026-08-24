@@ -64,14 +64,20 @@ class ShopeeSource:
     def fetch_offers(self, cfg: dict) -> list[Offer]:
         sh = cfg["shopee"]
         offers: list[Offer] = []
-        for page in range(1, sh["pages"] + 1):
-            data = self._post({
-                "query": PRODUCT_OFFER_QUERY,
-                "variables": {"page": page, "limit": sh["page_size"],
-                              "sortType": sh["sort_type"], "listType": sh["list_type"]},
-            })
-            nodes = (data.get("productOfferV2") or {}).get("nodes") or []
-            offers.extend(o for o in (_parse_node(n) for n in nodes) if o)
+        seen_ids: set[str] = set()
+        for sort_type in sh["sort_types"]:
+            for page in range(1, sh["pages"] + 1):
+                data = self._post({
+                    "query": PRODUCT_OFFER_QUERY,
+                    "variables": {"page": page, "limit": sh["page_size"],
+                                  "sortType": sort_type, "listType": sh["list_type"]},
+                })
+                nodes = (data.get("productOfferV2") or {}).get("nodes") or []
+                for node in nodes:
+                    offer = _parse_node(node)
+                    if offer and offer.item_id not in seen_ids:
+                        seen_ids.add(offer.item_id)
+                        offers.append(offer)
         return offers
 
     def resolve_affiliate_link(self, offer: Offer) -> str:

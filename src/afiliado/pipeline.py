@@ -31,7 +31,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
 
     candidates = selection.filter_offers(offers, db, cfg)
     ranked = selection.rank_offers(candidates, db.recent_titles(), cfg)
-    reserva = [o for o in selection.order_by_discount(candidates) if o not in ranked]
+    reserva = [o for o in selection.order_by_ev(candidates, cfg) if o not in ranked]
     fila = ranked + reserva
 
     by_name = {s.name: s for s in sources}

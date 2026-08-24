@@ -15,9 +15,12 @@ selection:
   # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.
   # Vazio = todas as categorias. Faixa de foco de impulso: R$25-150.
   category_ids: ["100630", "100636", "100001", "100637", "100632"]
+  # Pesos do score de valor esperado (fase 1.5): EV = comissão em R$ × (1 + popularity × log10(vendas+1))
+  ev_weights:
+    popularity: 0.3
 
 shopee:
-  sort_type: 5            # valor a confirmar na doc da API (Task 14, doctor)
+  sort_types: [5]          # ordenações consultadas e mescladas; valores a confirmar no doctor (Task 14)
   list_type: 0
   pages: 2
   page_size: 50

@@ -12,7 +12,7 @@ FIXTURE = json.loads(
     (Path(__file__).parent / "fixtures" / "shopee_product_offer.json")
     .read_text(encoding="utf-8"))
 
-CFG = {"shopee": {"sort_type": 5, "list_type": 0, "pages": 1, "page_size": 50}}
+CFG = {"shopee": {"sort_types": [5], "list_type": 0, "pages": 1, "page_size": 50}}
 
 
 def source_with(handler) -> ShopeeSource:
@@ -117,3 +117,16 @@ def test_post_raises_source_error_on_non_json_response():
         return httpx.Response(200, text="<html>not json</html>")
     with pytest.raises(SourceError):
         source_with(handler).fetch_offers(CFG)
+
+
+def test_fetch_offers_merges_sort_types_and_dedupes():
+    cfg = {"shopee": {"sort_types": [5, 2], "list_type": 0, "pages": 1, "page_size": 50}}
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=FIXTURE)
+
+    offers = source_with(handler).fetch_offers(cfg)
+    assert len(offers) == 1  # mesma oferta nas duas ordenações -> dedupe por item_id
+    assert len(calls) == 2

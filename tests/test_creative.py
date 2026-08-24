@@ -4,7 +4,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from afiliado.creative import render_feed, render_story
+from afiliado.creative import _fit_card, render_feed, render_story
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts
 from afiliado.watchlist import PriceFloor
@@ -78,3 +78,28 @@ def test_render_long_title_two_lines_max():
     offer = make_offer(title=title)
     data = render_story(offer, COPY, client=_client_for(_image_handler))
     assert data[:4] == b"\x89PNG"
+
+
+def test_fit_card_respects_caps():
+    img = Image.new("RGB", (800, 2000), (10, 20, 30))
+    fitted = _fit_card(img, 960, 680)
+    assert fitted.height == 680 or fitted.width == 960
+    assert fitted.height <= 680
+    assert fitted.width <= 960
+    orig_ratio = img.width / img.height
+    new_ratio = fitted.width / fitted.height
+    assert abs(orig_ratio - new_ratio) < 0.01
+
+
+def test_render_feed_square_image_smoke():
+    offer = make_offer(
+        title=" ".join(["palavra"] * 30),
+        sales=50000,
+        price_current_cents=24999,
+    )
+    floor = PriceFloor(min_price_cents=30000, window_days=180)
+    data = render_feed(offer, COPY, price_floor=floor, client=_client_for(_image_handler))
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    img = Image.open(io.BytesIO(data))
+    assert img.size == (1080, 1350)
+    assert img.mode == "RGB"

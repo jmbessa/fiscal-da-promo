@@ -29,6 +29,11 @@ FEED_TITLE_GAP = 50
 CARD_WIDTH = 960
 CARD_RADIUS = 42
 
+STORY_CARD_MAX_H = 1050
+FEED_CARD_MAX_H = 680
+
+TAGS_BOTTOM_MARGIN = 40
+
 TITLE_FONT_SIZE = 64
 TITLE_MAX_WIDTH = 960
 TITLE_MAX_LINES = 2
@@ -93,10 +98,17 @@ def _make_background(product: Image.Image, width: int, height: int) -> Image.Ima
     return bg
 
 
-def _make_card(product: Image.Image, width: int, radius: int) -> tuple[Image.Image, Image.Image]:
-    scale = width / product.width
-    height = max(1, round(product.height * scale))
-    card = product.resize((width, height))
+def _fit_card(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
+    """Redimensiona proporcionalmente para caber em max_w x max_h (nunca ultrapassa
+    nenhum dos dois limites; nunca amplia além de max_w, como antes)."""
+    scale = min(max_w / img.width, max_h / img.height)
+    new_w = max(1, round(img.width * scale))
+    new_h = max(1, round(img.height * scale))
+    return img.resize((new_w, new_h))
+
+
+def _make_card(product: Image.Image, max_w: int, max_h: int, radius: int) -> tuple[Image.Image, Image.Image]:
+    card = _fit_card(product, max_w, max_h)
     mask = Image.new("L", card.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle(
         [0, 0, card.width - 1, card.height - 1], radius=radius, fill=255)
@@ -183,29 +195,55 @@ def _sales_tag_text(sales: int) -> str:
     return f"{amount} VENDIDOS"
 
 
+def _tag_block_height(draw: ImageDraw.ImageDraw, texts: list[str], font: ImageFont.FreeTypeFont) -> int:
+    if not texts:
+        return 0
+    heights = []
+    for text in texts:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        heights.append((bbox[3] - bbox[1]) + 2 * TAG_PAD_Y)
+    return sum(heights) + TAG_STACK_GAP * (len(texts) - 1)
+
+
 def _draw_tags(
     draw: ImageDraw.ImageDraw,
     canvas_width: int,
+    canvas_height: int,
     top: int,
     offer: Offer,
     price_floor: PriceFloor | None,
 ) -> None:
     font = _load_font(TAG_FONT_SIZE)
-    y = top
-    if offer.sales >= 1000:
-        y = _draw_tag(draw, canvas_width, y, _sales_tag_text(offer.sales), font, COLOR_SALES)
-        y += TAG_STACK_GAP
 
     price_text = (
         f"de {format_brl(offer.price_original_cents)} "
         f"por {format_brl(offer.price_current_cents)}"
     )
-    y = _draw_tag(draw, canvas_width, y, price_text, font, COLOR_PRICE)
-    y += TAG_STACK_GAP
-
+    floor_text = None
     if price_floor is not None and offer.price_current_cents <= price_floor.min_price_cents:
         months = max(1, round(price_floor.window_days / 30))
         floor_text = f"MENOR PREÇO EM {months} MESES"
+
+    sales_text = _sales_tag_text(offer.sales) if offer.sales >= 1000 else None
+    include_sales = sales_text is not None
+
+    # Guarda de layout: o preço e o selo de menor preço sempre têm que caber;
+    # a tag de vendas (laranja) é a menos essencial e é a primeira a cair se o
+    # bloco de tags ultrapassaria o canvas.
+    if include_sales:
+        texts = [sales_text, price_text] + ([floor_text] if floor_text else [])
+        if top + _tag_block_height(draw, texts, font) > canvas_height - TAGS_BOTTOM_MARGIN:
+            include_sales = False
+
+    y = top
+    if include_sales:
+        y = _draw_tag(draw, canvas_width, y, sales_text, font, COLOR_SALES)
+        y += TAG_STACK_GAP
+
+    y = _draw_tag(draw, canvas_width, y, price_text, font, COLOR_PRICE)
+
+    if floor_text:
+        y += TAG_STACK_GAP
         _draw_tag(draw, canvas_width, y, floor_text, font, COLOR_FLOOR)
 
 
@@ -214,6 +252,7 @@ def _render(
     copy: CopyParts,
     size: tuple[int, int],
     card_top: int,
+    card_max_h: int,
     title_gap: int,
     price_floor: PriceFloor | None,
     client: httpx.Client | None,
@@ -230,7 +269,7 @@ def _render(
     product = _open_product_image(image_bytes)
 
     canvas = _make_background(product, width, height)
-    card, mask = _make_card(product, CARD_WIDTH, CARD_RADIUS)
+    card, mask = _make_card(product, CARD_WIDTH, card_max_h, CARD_RADIUS)
     card_x = (width - card.width) // 2
     canvas.paste(card, (card_x, card_top), mask)
 
@@ -238,7 +277,7 @@ def _render(
     title_top = card_top + card.height + title_gap
     title_bottom = _draw_title(draw, width, offer.title, title_top)
     tags_top = title_bottom + TITLE_TO_TAGS_GAP
-    _draw_tags(draw, width, tags_top, offer, price_floor)
+    _draw_tags(draw, width, height, tags_top, offer, price_floor)
 
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
@@ -251,7 +290,8 @@ def render_story(
     price_floor: PriceFloor | None = None,
     client: httpx.Client | None = None,
 ) -> bytes:
-    return _render(offer, copy, STORY_SIZE, STORY_CARD_TOP, STORY_TITLE_GAP, price_floor, client)
+    return _render(offer, copy, STORY_SIZE, STORY_CARD_TOP, STORY_CARD_MAX_H,
+                    STORY_TITLE_GAP, price_floor, client)
 
 
 def render_feed(
@@ -260,4 +300,5 @@ def render_feed(
     price_floor: PriceFloor | None = None,
     client: httpx.Client | None = None,
 ) -> bytes:
-    return _render(offer, copy, FEED_SIZE, FEED_CARD_TOP, FEED_TITLE_GAP, price_floor, client)
+    return _render(offer, copy, FEED_SIZE, FEED_CARD_TOP, FEED_CARD_MAX_H,
+                    FEED_TITLE_GAP, price_floor, client)

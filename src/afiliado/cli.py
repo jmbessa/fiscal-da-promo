@@ -28,6 +28,12 @@ def _shopee() -> ShopeeSource:
     return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"])
 
 
+def _env(name: str) -> str:
+    """os.environ.get com .strip() — mata o footgun de credencial colada com
+    espaço/quebra de linha nas pontas antes que ela chegue a algum canal."""
+    return os.environ.get(name, "").strip()
+
+
 def _build_channels(cfg: dict) -> list:
     """Monta os canais habilitados em config.yaml a partir das envs disponíveis.
 
@@ -38,26 +44,26 @@ def _build_channels(cfg: dict) -> list:
     channels: list = []
 
     if ch_cfg.get("telegram"):
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = os.environ.get("TELEGRAM_CHANNEL_ID", "")
+        token = _env("TELEGRAM_BOT_TOKEN")
+        chat_id = _env("TELEGRAM_CHANNEL_ID")
         if token and chat_id:
             channels.append(TelegramChannel(token, chat_id))
         else:
             print("⚠️ canal telegram ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID ausente")
 
     if ch_cfg.get("story_dispatch"):
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
+        token = _env("TELEGRAM_BOT_TOKEN")
+        ops = _env("TELEGRAM_OPS_CHAT_ID")
         if token and ops:
             channels.append(StoryDispatchChannel(token, ops))
         else:
             print("⚠️ canal story_dispatch ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
 
     if ch_cfg.get("instagram_feed"):
-        ig_user = os.environ.get("IG_USER_ID", "")
-        ig_token = os.environ.get("IG_ACCESS_TOKEN", "")
-        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
+        ig_user = _env("IG_USER_ID")
+        ig_token = _env("IG_ACCESS_TOKEN")
+        bot_token = _env("TELEGRAM_BOT_TOKEN")
+        ops = _env("TELEGRAM_OPS_CHAT_ID")
         if ig_user and ig_token and bot_token and ops:
             channels.append(InstagramFeedChannel(ig_user, ig_token, bot_token, ops))
         else:

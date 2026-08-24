@@ -35,10 +35,14 @@ class InstagramFeedChannel:
 
     def __init__(self, ig_user_id: str, access_token: str, bot_token: str, ops_chat_id: str,
                  client: httpx.Client | None = None):
-        self.ig_user_id = ig_user_id
-        self.access_token = access_token
-        self.bot_token = bot_token
-        self.ops_chat_id = ops_chat_id
+        # .strip() mata o footgun clássico de segredo colado com espaço/quebra
+        # de linha nas pontas (env var, clipboard); não cobre caractere de
+        # controle NO MEIO da string — para isso, ver o try/except amplo em
+        # _graph_post (httpx.InvalidURL não é subclasse de httpx.HTTPError).
+        self.ig_user_id = ig_user_id.strip()
+        self.access_token = access_token.strip()
+        self.bot_token = bot_token.strip()
+        self.ops_chat_id = ops_chat_id.strip()
         self.client = client or httpx.Client(timeout=30)
 
     def publish(self, post: Post) -> PublishResult:
@@ -88,11 +92,22 @@ class InstagramFeedChannel:
         return get_file_url(self.bot_token, file_id, client=self.client)
 
     @staticmethod
-    def _build_caption(post: Post) -> str:
+    def _sanitize_title(title: str) -> str:
+        """Corta o título no primeiro "http" (case-insensitive) — o título vem
+        de dados de terceiros (a oferta) e não pode carregar um link para o
+        caption público do Instagram."""
+        idx = title.lower().find("http")
+        if idx == -1:
+            return title
+        return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
+
+    @classmethod
+    def _build_caption(cls, post: Post) -> str:
         offer, copy = post.offer, post.copy
+        titulo = cls._sanitize_title(offer.title)
         return (
             f"{copy.headline}\n{copy.description}\n\n"
-            f"{offer.title}\n"
+            f"{titulo}\n"
             f"De {format_brl(offer.price_original_cents)} por "
             f"{format_brl(offer.price_current_cents)} ({offer.discount_pct}% OFF)\n\n"
             f"{copy.cta}\n"
@@ -103,7 +118,11 @@ class InstagramFeedChannel:
         try:
             r = self.client.post(url, data=payload)
             return r.json()
-        except httpx.HTTPError as exc:
-            return {"error": {"message": f"rede: {exc}"}}
         except ValueError:
             return {"error": {"message": "resposta não-JSON"}}
+        except Exception as exc:
+            # Nunca levanta: além de httpx.HTTPError (rede), cobre
+            # httpx.InvalidURL — que NÃO é subclasse de HTTPError e escaparia
+            # se ig_user_id/access_token vierem com caractere de controle
+            # embutido (ex.: "\n" no meio de uma env var mal colada).
+            return {"error": {"message": f"rede: {exc}"}}

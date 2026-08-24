@@ -100,3 +100,24 @@ def test_get_file_url_failure_none():
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     assert get_file_url("TOKEN", "bad", client=client) is None
+
+
+def test_send_photo_bytes_never_raises_on_invalid_url():
+    # Mid-string control char (e.g. a token copy-pasted with an embedded
+    # newline) makes httpx raise InvalidURL, which is NOT an httpx.HTTPError
+    # subclass — send_photo_bytes must still never raise.
+    def handler(request):
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = send_photo_bytes("ab\ncd", "123", b"PNGDATA", client=client)
+    assert result["ok"] is False
+    assert "description" in result
+
+
+def test_get_file_url_never_raises_on_invalid_url():
+    def handler(request):
+        return httpx.Response(200, json={"ok": True, "result": {"file_path": "x.jpg"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert get_file_url("ab\ncd", "file123", client=client) is None

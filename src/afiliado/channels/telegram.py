@@ -67,10 +67,14 @@ def send_photo_bytes(bot_token: str, chat_id: str, png_bytes: bytes,
                   files={"photo": ("art.png", png_bytes, "image/png")},
                   data={"chat_id": chat_id, "caption": caption})
         return r.json()
-    except httpx.HTTPError as exc:
-        return {"ok": False, "description": f"rede: {exc}"}
     except ValueError:
         return {"ok": False, "description": "resposta não-JSON"}
+    except Exception as exc:
+        # Contrato desta função é nunca levantar: cobre httpx.HTTPError (rede)
+        # e também casos fora dessa hierarquia como httpx.InvalidURL (token/
+        # chat_id com caractere de controle embutido, ex.: "\n" no meio de um
+        # segredo colado errado) — nenhum dos dois pode escapar para o canal.
+        return {"ok": False, "description": f"rede: {exc}"}
 
 
 def get_file_url(bot_token: str, file_id: str, client: httpx.Client | None = None) -> str | None:
@@ -79,7 +83,10 @@ def get_file_url(bot_token: str, file_id: str, client: httpx.Client | None = Non
     try:
         r = c.get(f"{API}/bot{bot_token}/getFile", params={"file_id": file_id})
         data = r.json()
-    except (httpx.HTTPError, ValueError):
+    except Exception:
+        # Nunca levanta: cobre httpx.HTTPError (rede), ValueError (JSON) e
+        # httpx.InvalidURL — que NÃO é subclasse de HTTPError e escaparia se o
+        # bot_token vier com um caractere de controle embutido (ex.: "\n").
         return None
     if not data.get("ok"):
         return None

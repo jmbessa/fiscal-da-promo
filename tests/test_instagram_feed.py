@@ -74,3 +74,31 @@ def test_media_without_id_returns_false():
     res = _channel_with(handler).publish(make_post())
     assert not res.ok
     assert res.error
+
+
+def test_instagram_publish_never_raises_on_invalid_url():
+    # Mid-string control char in ig_user_id (e.g. env var copied with an
+    # embedded newline) makes the Graph API URL invalid; httpx.InvalidURL is
+    # NOT an httpx.HTTPError subclass — publish must still never raise.
+    client = httpx.Client(transport=httpx.MockTransport(_happy_handler))
+    ch = InstagramFeedChannel("12\n34", "IGTOKEN", "BOTTOKEN", "OPSCHAT", client=client)
+    res = ch.publish(make_post())
+    assert not res.ok
+    assert res.error
+
+
+def test_caption_title_sanitized_when_it_smuggles_a_url():
+    captured = {}
+
+    def handler(request):
+        if request.url.host == "graph.facebook.com" and request.url.path.endswith("/media"):
+            captured["body"] = request.content
+        return _happy_handler(request)
+
+    post = make_post(title="Produto X http://spam.com compre já")
+    res = _channel_with(handler).publish(post)
+    assert res.ok
+    parsed = parse_qs(captured["body"].decode())
+    caption = parsed["caption"][0]
+    assert "Produto X" in caption
+    assert "http" not in caption.lower()

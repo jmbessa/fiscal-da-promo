@@ -17,8 +17,10 @@ class StoryDispatchChannel:
     name = "story_dispatch"
 
     def __init__(self, bot_token: str, ops_chat_id: str, client: httpx.Client | None = None):
-        self.bot_token = bot_token
-        self.ops_chat_id = ops_chat_id
+        # .strip() mata o footgun clássico de token/chat_id colado com
+        # espaço/quebra de linha nas pontas (env var, clipboard).
+        self.bot_token = bot_token.strip()
+        self.ops_chat_id = ops_chat_id.strip()
         self.client = client or httpx.Client(timeout=30)
 
     def publish(self, post: Post) -> PublishResult:

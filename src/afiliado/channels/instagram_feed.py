@@ -34,7 +34,8 @@ class InstagramFeedChannel:
     max_per_run = 1
 
     def __init__(self, ig_user_id: str, access_token: str, bot_token: str, ops_chat_id: str,
-                 client: httpx.Client | None = None, brand_handle: str | None = None):
+                 client: httpx.Client | None = None, brand_handle: str | None = None,
+                 brand_name: str = "Fiscal da Promo"):
         # .strip() mata o footgun clássico de segredo colado com espaço/quebra
         # de linha nas pontas (env var, clipboard); não cobre caractere de
         # controle NO MEIO da string — para isso, ver o try/except amplo em
@@ -45,11 +46,13 @@ class InstagramFeedChannel:
         self.ops_chat_id = ops_chat_id.strip()
         self.client = client or httpx.Client(timeout=30)
         self.brand_handle = brand_handle
+        self.brand_name = brand_name
 
     def publish(self, post: Post) -> PublishResult:
         try:
             art = creative.render_feed(post.offer, post.copy, price_floor=post.price_floor,
-                                       client=self.client, handle=self.brand_handle)
+                                       client=self.client, handle=self.brand_handle,
+                                       brand_name=self.brand_name)
         except SourceError as exc:
             return PublishResult(False, error=f"falha ao gerar arte do feed: {exc}")
 

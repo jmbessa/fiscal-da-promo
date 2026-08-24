@@ -180,3 +180,28 @@ def test_run_passes_brand_handle_to_channels(monkeypatch, tmp_path):
     assert cli.main(["run", "--config", str(cfg_file)]) == 0
     story = next(c for c in chamado["channels"] if c.name == "story_dispatch")
     assert story.brand_handle == "@teste"
+
+
+def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
+    # Não sobrescreve a seção `brand:` — o `name` vem do config.yaml real
+    # ("Fiscal da Promo"), validando que `_build_channels` repassa `brand.name`.
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado["channels"] = channels
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    story = next(c for c in chamado["channels"] if c.name == "story_dispatch")
+    assert story.brand_name == "Fiscal da Promo"

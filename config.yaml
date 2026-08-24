@@ -31,12 +31,13 @@ validation:
 copy:
   tone: "empolgado, direto, sem exageros enganosos, pt-BR"
 
+# Identidade: nome e handle desenhados nas artes de story/feed (ver docs/brand-guidelines.md).
+brand:
+  name: "Fiscal da Promo"
+  handle: "@ofiscaldapromo"
+
 # Fase 1.6: artefato semanal gerado por análise externa (boosts de EV + selo de menor preço).
 # Opcional — ausente ou vencido, o pipeline degrada para o comportamento sem watchlist.
-# Identidade: assinatura desenhada no rodapé das artes de story/feed (ver docs/brand-guidelines.md).
-brand:
-  handle: "@promoprova"
-
 watchlist:
   path: data/watchlist.json
 

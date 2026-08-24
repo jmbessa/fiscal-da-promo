@@ -1,6 +1,6 @@
 import httpx
 
-from afiliado.channels.telegram import TelegramChannel, send_text
+from afiliado.channels.telegram import TelegramChannel, get_file_url, send_photo_bytes, send_text
 from tests.test_state import make_post
 
 
@@ -57,3 +57,46 @@ def test_publish_non_json_response():
         return httpx.Response(502, content=b"<html>Bad Gateway</html>")
     res = channel_with(handler).publish(make_post())
     assert not res.ok and res.error and len(res.error) > 0
+
+
+def test_send_photo_bytes_ok():
+    captured = {}
+
+    def handler(request):
+        assert request.url.path.endswith("/sendPhoto")
+        captured["body"] = request.content
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 5}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = send_photo_bytes("TOKEN", "123", b"PNGDATA", caption="oi", client=client)
+    assert result["ok"] is True
+    assert b"art.png" in captured["body"]
+
+
+def test_send_photo_bytes_network_error_returns_dict():
+    def handler(request):
+        raise httpx.ConnectError("down")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = send_photo_bytes("TOKEN", "123", b"PNGDATA", client=client)
+    assert result == {"ok": False, "description": result["description"]}
+    assert result["ok"] is False
+    assert "description" in result
+
+
+def test_get_file_url_ok():
+    def handler(request):
+        assert request.url.path.endswith("/getFile")
+        return httpx.Response(200, json={"ok": True, "result": {"file_path": "photos/file_1.jpg"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    url = get_file_url("TOKEN", "ABC123", client=client)
+    assert url == "https://api.telegram.org/file/botTOKEN/photos/file_1.jpg"
+
+
+def test_get_file_url_failure_none():
+    def handler(request):
+        return httpx.Response(400, json={"ok": False, "description": "bad file id"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert get_file_url("TOKEN", "bad", client=client) is None

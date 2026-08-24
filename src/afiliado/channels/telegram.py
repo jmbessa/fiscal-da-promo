@@ -55,3 +55,35 @@ def send_text(bot_token: str, chat_id: str, text: str,
                json={"chat_id": chat_id, "text": text})
     except httpx.HTTPError:
         pass  # notificação de ops nunca derruba o run
+
+
+def send_photo_bytes(bot_token: str, chat_id: str, png_bytes: bytes,
+                     caption: str = "", client: httpx.Client | None = None) -> dict:
+    """sendPhoto multipart. Retorna o dict da API; em erro de rede/parse retorna
+    {"ok": False, "description": ...}. Nunca levanta."""
+    c = client or httpx.Client(timeout=30)
+    try:
+        r = c.post(f"{API}/bot{bot_token}/sendPhoto",
+                  files={"photo": ("art.png", png_bytes, "image/png")},
+                  data={"chat_id": chat_id, "caption": caption})
+        return r.json()
+    except httpx.HTTPError as exc:
+        return {"ok": False, "description": f"rede: {exc}"}
+    except ValueError:
+        return {"ok": False, "description": "resposta não-JSON"}
+
+
+def get_file_url(bot_token: str, file_id: str, client: httpx.Client | None = None) -> str | None:
+    """getFile → https://api.telegram.org/file/bot{token}/{file_path}; None em falha."""
+    c = client or httpx.Client(timeout=30)
+    try:
+        r = c.get(f"{API}/bot{bot_token}/getFile", params={"file_id": file_id})
+        data = r.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    if not data.get("ok"):
+        return None
+    file_path = (data.get("result") or {}).get("file_path")
+    if not file_path:
+        return None
+    return f"{API}/file/bot{bot_token}/{file_path}"

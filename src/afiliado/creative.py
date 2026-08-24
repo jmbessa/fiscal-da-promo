@@ -51,6 +51,10 @@ COLOR_FLOOR = (46, 125, 50)
 
 DOWNLOAD_TIMEOUT = 20
 
+HANDLE_FONT_SIZE = 40
+HANDLE_BOTTOM_MARGIN = 80
+COLOR_HANDLE = (179, 179, 179)
+
 _FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
 
 
@@ -266,6 +270,14 @@ def _draw_tags(
         _draw_tag(draw, canvas_width, y, floor_text, font, COLOR_FLOOR)
 
 
+def _draw_handle(draw: ImageDraw.ImageDraw, width: int, height: int, handle: str) -> None:
+    """Assinatura da marca (ex.: @promoprova) centralizada no rodapé da arte."""
+    font = _load_font(HANDLE_FONT_SIZE)
+    text_w = draw.textlength(handle, font=font)
+    y = height - HANDLE_BOTTOM_MARGIN - HANDLE_FONT_SIZE
+    draw.text(((width - text_w) / 2, y), handle, font=font, fill=COLOR_HANDLE)
+
+
 def _render(
     offer: Offer,
     copy: CopyParts,
@@ -275,6 +287,7 @@ def _render(
     title_gap: int,
     price_floor: PriceFloor | None,
     client: httpx.Client | None,
+    handle: str | None = None,
 ) -> bytes:
     del copy  # reservado para fases futuras; não usado no template 2A
     width, height = size
@@ -297,6 +310,8 @@ def _render(
     title_bottom = _draw_title(draw, width, offer.title, title_top)
     tags_top = title_bottom + TITLE_TO_TAGS_GAP
     _draw_tags(draw, width, height, tags_top, offer, price_floor)
+    if handle:
+        _draw_handle(draw, width, height, handle)
 
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
@@ -308,9 +323,10 @@ def render_story(
     copy: CopyParts,
     price_floor: PriceFloor | None = None,
     client: httpx.Client | None = None,
+    handle: str | None = None,
 ) -> bytes:
     return _render(offer, copy, STORY_SIZE, STORY_CARD_TOP, STORY_CARD_MAX_H,
-                    STORY_TITLE_GAP, price_floor, client)
+                    STORY_TITLE_GAP, price_floor, client, handle)
 
 
 def render_feed(
@@ -318,6 +334,7 @@ def render_feed(
     copy: CopyParts,
     price_floor: PriceFloor | None = None,
     client: httpx.Client | None = None,
+    handle: str | None = None,
 ) -> bytes:
     return _render(offer, copy, FEED_SIZE, FEED_CARD_TOP, FEED_CARD_MAX_H,
-                    FEED_TITLE_GAP, price_floor, client)
+                    FEED_TITLE_GAP, price_floor, client, handle)

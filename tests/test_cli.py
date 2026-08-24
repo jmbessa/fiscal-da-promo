@@ -153,3 +153,30 @@ def test_run_survives_load_watchlist_raising(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "run", fake_run)
     assert cli.main(["run", "--dry-run", "--config", str(cfg_file)]) == 0
     assert chamado["watchlist"] is None
+
+
+
+def test_run_passes_brand_handle_to_channels(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_text += "\nbrand:\n  handle: \"@teste\"\nchannels:\n  telegram: true\n  story_dispatch: true\n"
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado["channels"] = channels
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    story = next(c for c in chamado["channels"] if c.name == "story_dispatch")
+    assert story.brand_handle == "@teste"

@@ -136,3 +136,14 @@ def test_render_overlong_single_word_title_smoke():
     offer = make_offer(title="a" * 200)
     data = render_story(offer, COPY, client=_client_for(_image_handler))
     assert data[:4] == b"\x89PNG"
+
+
+def test_render_handle_changes_output():
+    client = _client_for(_image_handler)
+    sem = render_story(make_offer(), COPY, client=client)
+    com = render_story(make_offer(), COPY, client=client, handle="@promoprova")
+    assert sem != com
+    assert Image.open(io.BytesIO(com)).size == (1080, 1920)
+    feed_sem = render_feed(make_offer(), COPY, client=client)
+    feed_com = render_feed(make_offer(), COPY, client=client, handle="@promoprova")
+    assert feed_sem != feed_com

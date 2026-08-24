@@ -33,6 +33,10 @@ copy:
 
 # Fase 1.6: artefato semanal gerado por análise externa (boosts de EV + selo de menor preço).
 # Opcional — ausente ou vencido, o pipeline degrada para o comportamento sem watchlist.
+# Identidade: assinatura desenhada no rodapé das artes de story/feed (ver docs/brand-guidelines.md).
+brand:
+  handle: "@promoprova"
+
 watchlist:
   path: data/watchlist.json
 

@@ -16,17 +16,19 @@ from afiliado.models import Post
 class StoryDispatchChannel:
     name = "story_dispatch"
 
-    def __init__(self, bot_token: str, ops_chat_id: str, client: httpx.Client | None = None):
+    def __init__(self, bot_token: str, ops_chat_id: str, client: httpx.Client | None = None,
+                 brand_handle: str | None = None):
         # .strip() mata o footgun clássico de token/chat_id colado com
         # espaço/quebra de linha nas pontas (env var, clipboard).
         self.bot_token = bot_token.strip()
         self.ops_chat_id = ops_chat_id.strip()
         self.client = client or httpx.Client(timeout=30)
+        self.brand_handle = brand_handle
 
     def publish(self, post: Post) -> PublishResult:
         try:
             art = creative.render_story(post.offer, post.copy, price_floor=post.price_floor,
-                                        client=self.client)
+                                        client=self.client, handle=self.brand_handle)
         except SourceError as exc:
             return PublishResult(False, error=f"falha ao gerar arte do story: {exc}")
 

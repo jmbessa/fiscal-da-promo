@@ -53,6 +53,7 @@ def _build_channels(cfg: dict) -> list:
     Canal ligado sem env necessária: aviso no stdout e segue sem ele — nunca
     derruba o run."""
     ch_cfg = cfg.get("channels") or {"telegram": True}
+    brand_handle = (cfg.get("brand") or {}).get("handle") or None
     channels: list = []
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("telegram"))
@@ -72,7 +73,7 @@ def _build_channels(cfg: dict) -> list:
         token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if token and ops:
-            ch = StoryDispatchChannel(token, ops)
+            ch = StoryDispatchChannel(token, ops, brand_handle=brand_handle)
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
@@ -86,7 +87,7 @@ def _build_channels(cfg: dict) -> list:
         bot_token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if ig_user and ig_token and bot_token and ops:
-            ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops)
+            ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle)
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)

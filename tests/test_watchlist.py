@@ -101,3 +101,36 @@ def test_load_watchlist_hot_items_accepts_dict_and_numeric_formats(tmp_path):
     wl = load_watchlist(path)
     assert wl is not None
     assert wl.hot_items == {"a": 1.5, "b": 2.0}
+
+
+def test_load_watchlist_wrong_container_shapes(tmp_path):
+    # Uma seção com formato inesperado degrada para vazio; o resto do arquivo
+    # (generated_at, valid_days, e as demais seções válidas) continua utilizável.
+    path = write_watchlist(tmp_path / "hot_items_str.json", {
+        "generated_at": "2026-08-23",
+        "valid_days": 14,
+        "category_boosts": {"100630": 1.3},
+        "hot_items": "a string value",
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.hot_items == {}
+    assert wl.category_boosts == {"100630": 1.3}
+
+    path = write_watchlist(tmp_path / "price_floors_list.json", {
+        "generated_at": "2026-08-23",
+        "valid_days": 14,
+        "price_floors": [1, 2, 3],
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.price_floors == {}
+
+    path = write_watchlist(tmp_path / "category_boosts_str.json", {
+        "generated_at": "2026-08-23",
+        "valid_days": 14,
+        "category_boosts": "oops",
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.category_boosts == {}

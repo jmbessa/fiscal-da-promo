@@ -46,3 +46,28 @@ def test_run_loads_watchlist_from_config_path(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "run", fake_run)
     assert cli.main(["run", "--dry-run", "--config", str(cfg_file)]) == 0
     assert isinstance(chamado["watchlist"], Watchlist)
+
+
+def test_run_survives_load_watchlist_raising(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        (open("config.yaml", encoding="utf-8").read()
+         .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))),
+        encoding="utf-8")
+
+    def boom(path):
+        raise AttributeError("shape inesperado")
+
+    monkeypatch.setattr(cli, "load_watchlist", boom)
+
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado["watchlist"] = watchlist
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--dry-run", "--config", str(cfg_file)]) == 0
+    assert chamado["watchlist"] is None

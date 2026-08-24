@@ -35,18 +35,30 @@ class Watchlist:
 
 
 def load_watchlist(path: str | Path) -> Watchlist | None:
-    """None se o arquivo não existe ou é inválido — o pipeline segue sem watchlist."""
+    """None se o arquivo não existe ou é inválido — o pipeline segue sem watchlist.
+
+    Seções com formato inesperado (ex.: `hot_items` sendo uma string ou lista em
+    vez de um objeto) degradam para vazio individualmente — o restante do
+    arquivo, se válido, continua utilizável. Só retorna None quando nem isso é
+    possível (arquivo ausente, JSON inválido, ou faltando `generated_at`).
+    """
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw_category_boosts = raw.get("category_boosts")
+        raw_category_boosts = raw_category_boosts if isinstance(raw_category_boosts, dict) else {}
+        raw_hot_items = raw.get("hot_items")
+        raw_hot_items = raw_hot_items if isinstance(raw_hot_items, dict) else {}
+        raw_price_floors = raw.get("price_floors")
+        raw_price_floors = raw_price_floors if isinstance(raw_price_floors, dict) else {}
         return Watchlist(
             generated_at=date.fromisoformat(raw["generated_at"]),
             valid_days=int(raw.get("valid_days", 14)),
-            category_boosts={str(k): float(v) for k, v in (raw.get("category_boosts") or {}).items()},
+            category_boosts={str(k): float(v) for k, v in raw_category_boosts.items()},
             hot_items={str(k): float(v.get("boost", 1.0)) if isinstance(v, dict) else float(v)
-                       for k, v in (raw.get("hot_items") or {}).items()},
+                       for k, v in raw_hot_items.items()},
             price_floors={str(k): PriceFloor(int(v["min_price_cents"]), int(v.get("window_days", 365)))
-                          for k, v in (raw.get("price_floors") or {}).items()
+                          for k, v in raw_price_floors.items()
                           if isinstance(v, dict) and "min_price_cents" in v},
         )
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None

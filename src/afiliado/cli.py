@@ -65,7 +65,10 @@ def main(argv: list[str] | None = None) -> int:
                                     os.environ["TELEGRAM_CHANNEL_ID"])]
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
-    wl = load_watchlist((cfg.get("watchlist") or {}).get("path", "data/watchlist.json"))
+    try:
+        wl = load_watchlist((cfg.get("watchlist") or {}).get("path", "data/watchlist.json"))
+    except Exception:
+        wl = None
     try:
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl)
     except Exception as exc:

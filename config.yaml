@@ -46,7 +46,7 @@ watchlist:
 #                     da Meta, sem Página do Facebook (padrão; ver docs/runbooks/meta-setup.md)
 #   facebook_login  — conta business vinculada a Página; token via Graph API Explorer
 instagram:
-  api: instagram_login
+  api: facebook_login
 
 # Fase 2A/1.7: canais habilitados. Seção opcional — ausente, equivale a só
 # telegram. Cada canal aceita bool (liga/desliga) ou dict com `enabled` e,

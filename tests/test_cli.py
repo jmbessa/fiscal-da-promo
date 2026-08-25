@@ -236,6 +236,76 @@ def test_configure_stdout_makes_cp1252_stream_print_emoji():
     assert raw.getvalue().startswith("❌".encode("utf-8"))
 
 
+def test_ops_summary_skipped_on_empty_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    assert enviados == []
+
+
+def test_ops_summary_sent_when_something_happened(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        return pipeline.RunSummary(published=["x"])
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    assert len(enviados) == 1
+
+
+def test_ops_summary_forced_by_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_text += chr(10).join(["", "ops:", "  notify_empty_runs: true", ""])
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    assert len(enviados) == 1
+
+
 def test_instagram_api_variant_from_config(monkeypatch, tmp_path):
     for k, v in {"SHOPEE_APP_ID": "id", "SHOPEE_APP_SECRET": "s", "TELEGRAM_BOT_TOKEN": "tok",
                  "TELEGRAM_CHANNEL_ID": "@c", "TELEGRAM_OPS_CHAT_ID": "999",

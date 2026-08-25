@@ -222,7 +222,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(summary.text())
     elif token and ops:
-        send_text(token, ops, summary.text())
+        notify_empty = bool((cfg.get("ops") or {}).get("notify_empty_runs", False))
+        houve_algo = summary.published or summary.discarded or summary.warnings
+        if houve_algo or notify_empty:
+            send_text(token, ops, summary.text())
     return 0
 
 

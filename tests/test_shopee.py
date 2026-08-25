@@ -208,3 +208,36 @@ def test_oferta_expirada_e_descartada():
     }
     offers = source_with(lambda r: httpx.Response(200, json=payload)).fetch_offers(CFG)
     assert [o.item_id for o in offers] == ["2"]
+
+
+def test_pagina_incompleta_interrompe_paginacao():
+    """Página menor que page_size = fim do estoque: não pedir a próxima."""
+    chamadas = []
+
+    def handler(request):
+        corpo = json.loads(request.content.decode())
+        chamadas.append(corpo["variables"].get("page"))
+        # devolve 1 nó (page_size é 3) -> deve parar na primeira página
+        return httpx.Response(200, json={"data": {"productOfferV2": {"nodes": [
+            {"itemId": 1, "productName": "x", "price": "10.00", "priceDiscountRate": 50,
+             "commissionRate": "0.1", "sales": 5, "imageUrl": "i", "productLink": "l",
+             "offerLink": "o", "productCatIds": [100630]}]}}})
+
+    cfg = {"shopee": {"sort_types": [2], "list_type": 0, "pages": 3, "page_size": 3,
+                      "category_ids": ["100630"]}}
+    source_with(handler).fetch_offers(cfg)
+    assert chamadas == [1]
+
+
+def test_period_end_zero_nao_e_expirado():
+    """periodEndTime 0 = validade desconhecida, não 1970."""
+    def handler(request):
+        return httpx.Response(200, json={"data": {"productOfferV2": {"nodes": [
+            {"itemId": 42, "productName": "vale", "price": "10.00", "priceDiscountRate": 50,
+             "commissionRate": "0.1", "sales": 5, "imageUrl": "i", "productLink": "l",
+             "offerLink": "o", "productCatIds": [100630], "periodEndTime": 0}]}}})
+
+    cfg = {"shopee": {"sort_types": [2], "list_type": 0, "pages": 1, "page_size": 50,
+                      "category_ids": ["100630"]}}
+    ofertas = source_with(handler).fetch_offers(cfg)
+    assert [o.item_id for o in ofertas] == ["42"]

@@ -89,6 +89,10 @@ class ShopeeSource:
                         if offer and offer.item_id not in seen_ids:
                             seen_ids.add(offer.item_id)
                             offers.append(offer)
+                    # Página incompleta = fim do estoque desta combinação; pedir
+                    # a próxima só gastaria chamada (a cada 5 min isso soma).
+                    if len(nodes) < sh["page_size"]:
+                        break
         return offers
 
     def resolve_affiliate_link(self, offer: Offer) -> str:
@@ -111,10 +115,13 @@ def _parse_node(node: dict) -> Offer | None:
     period_end = node.get("periodEndTime")
     if period_end is not None:
         try:
-            if float(period_end) < time.time():
-                return None
+            fim = float(period_end)
         except (TypeError, ValueError):
-            pass
+            fim = 0.0
+        # 0 = validade desconhecida (mesma convenção dos demais campos), não
+        # "expirou em 1970"; só descarta quando há um fim real já passado.
+        if fim > 0 and fim < time.time():
+            return None
     try:
         price_cents = int(Decimal(str(node["price"])) * 100)
     except (KeyError, TypeError, InvalidOperation):

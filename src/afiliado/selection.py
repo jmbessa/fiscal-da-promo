@@ -25,6 +25,9 @@ def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
         if db.was_posted_recently(o.source, o.item_id, sel["dedupe_days"]):
             continue
         result.append(o)
+    piso = float(sel.get("min_ev_brl") or 0)
+    if piso > 0:
+        result = [o for o in result if ev_score(o, cfg) >= piso]
     return result
 
 

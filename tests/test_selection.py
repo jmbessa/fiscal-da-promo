@@ -32,6 +32,25 @@ def test_filter_offers(tmp_path):
     db.close()
 
 
+def test_filter_offers_min_ev_floor(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    offers = [
+        make_offer(item_id="baixo", commission_pct=1.0,
+                   price_current_cents=5000, price_original_cents=10000),
+        make_offer(item_id="medio", commission_pct=6.0,
+                   price_current_cents=5000, price_original_cents=10000),
+        make_offer(item_id="alto", commission_pct=20.0,
+                   price_current_cents=5000, price_original_cents=10000),
+    ]
+    cfg = {**CFG, "selection": {**CFG["selection"], "min_ev_brl": 2.0}}
+    result = selection.filter_offers(offers, db, cfg)
+    assert [o.item_id for o in result] == ["medio", "alto"]
+
+    result_sem_piso = selection.filter_offers(offers, db, CFG)
+    assert [o.item_id for o in result_sem_piso] == ["baixo", "medio", "alto"]
+    db.close()
+
+
 def test_filter_offers_category_allowlist(tmp_path):
     db = StateDB(tmp_path / "s.db")
     cfg = {**CFG, "selection": {**CFG["selection"], "category_ids": ["100636"]}}

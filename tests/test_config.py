@@ -5,7 +5,7 @@ from afiliado.config import load_config
 
 def test_load_config_reads_project_yaml():
     cfg = load_config("config.yaml")
-    assert cfg["selection"]["posts_per_run"] == 3
+    assert cfg["selection"]["posts_per_run"] == 1
     assert cfg["llm"]["model"] == "haiku"
 
 

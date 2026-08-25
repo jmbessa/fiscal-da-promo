@@ -4,12 +4,21 @@ state:
 llm:
   model: haiku
 
+# Fase 1.8: a cadência real de execução é definida pelo agendador externo
+# (cron da VPS a cada 5 min, produção; ver docs/runbooks/vps-setup.md) — não
+# há nada aqui que controle o intervalo entre runs.
 selection:
-  posts_per_run: 3
+  posts_per_run: 1
   min_discount_pct: 20
   price_min_brl: 20
   price_max_brl: 1000
   dedupe_days: 30
+  # Fase 1.8: piso de valor esperado (comissão em R$ ponderada por popularidade,
+  # via ev_score, SEM boost de watchlist) por post — com dedupe de 30 dias e
+  # cadência de 5 min (288 checagens/dia), evita postar sobras quando o estoque
+  # de boas ofertas esgota. 0 ou ausente desliga o piso (todas as ofertas que
+  # passam os demais filtros seguem elegíveis).
+  min_ev_brl: 0.50
   # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
   # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
   # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.
@@ -53,10 +62,19 @@ instagram:
 # opcionalmente, `max_per_day` (teto diário contado no SQLite, para não
 # saturar canais de esforço manual ou com limites de API/audiência).
 channels:
-  telegram: true            # motor de volume — sem teto diário
+  telegram:
+    enabled: true
+    max_per_day: 120         # teto de segurança do canal (fase 1.8: cadência de 5 min)
   story_dispatch:
     enabled: true            # arte de story + link prontos no chat de operações
     max_per_day: 6           # artes de story que chegam ao seu chat por dia
   instagram_feed:
     enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
     max_per_day: 2
+
+# Fase 1.8: chat de operações só recebe resumo quando o run publicou,
+# descartou ou gerou aviso — evita 288 mensagens/dia com a cadência de 5 min.
+# O caminho de exceção (run abortado) sempre notifica, independente disto.
+# Seção opcional; ausente = false (comportamento desta fase).
+ops:
+  notify_empty_runs: false   # true = manda resumo mesmo quando nada aconteceu

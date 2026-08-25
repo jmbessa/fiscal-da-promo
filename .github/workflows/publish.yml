@@ -1,3 +1,9 @@
+# Fase 1.8: a produção de alta cadência (a cada 5 min) roda via cron na VPS —
+# ver docs/runbooks/vps-setup.md. O Actions NÃO acompanha essa cadência (cron
+# do GitHub tem piso de 5 min, mas com atrasos típicos de 5–30 min, e custo de
+# minutos muito acima da cota gratuita rodando 288x/dia). Este workflow é
+# redundância/backup horário e disparo manual (workflow_dispatch), não a
+# fonte principal de execuções.
 name: publish
 on:
   schedule:

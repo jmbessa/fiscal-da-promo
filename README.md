@@ -63,20 +63,35 @@ operações.
 
 ## Agendamento
 
-`.github/workflows/publish.yml` roda de hora em hora, das 08h às 23h BRT
-(16 runs/dia, 3 ofertas por run — até ~48 posts/dia no Telegram), e commita
-`data/state.db` de volta. Disparo manual: aba Actions → publish → Run workflow
-(com opção dry-run).
+Duas modalidades, desde a fase 1.8:
+
+- **VPS a cada 5 min (produção)** — cron da VPS chama `afiliado run` a cada 5
+  minutos (288 execuções/dia, 1 oferta por run). É a cadência real do canal;
+  setup completo em `docs/runbooks/vps-setup.md`. `state.db` fica local e
+  persiste sozinho (sem commit).
+- **`.github/workflows/publish.yml` (backup)** — roda de hora em hora, das
+  08h às 23h BRT, e commita `data/state.db` de volta. Não acompanha a cadência
+  de 5 min (o cron do Actions tem piso de 5 min mas atrasa 5–30 min, e custo de
+  minutos muito acima da cota gratuita rodando 288x/dia) — serve como
+  redundância caso a VPS caia, e para disparo manual: aba Actions → publish →
+  Run workflow (com opção dry-run).
+
+Com a cadência de 5 minutos e dedupe de 30 dias, o estoque de boas ofertas
+esgota rápido — sem um piso de qualidade o pipeline passaria a postar sobras.
+`selection.min_ev_brl` corta candidatas com valor esperado (comissão em R$ ×
+popularidade, sem boost de watchlist) abaixo do piso; 0 ou ausente desliga.
 
 Canais com esforço manual ou limites de audiência/API têm um teto diário
-opcional (`max_per_day` em `config.yaml`, contado no SQLite): `story_dispatch`
-em 6/dia (artes de story que chegam ao seu chat) e `instagram_feed` em 2/dia.
-`telegram` fica sem teto — é o motor de volume. Um canal que bate o teto no
-meio do run é pulado em silêncio (aparece como aviso no resumo, não como
-falha); ajuste os valores na seção `channels:` do `config.yaml`.
+opcional (`max_per_day` em `config.yaml`, contado no SQLite): `telegram` em
+120/dia (teto de segurança do motor de volume na cadência de 5 min),
+`story_dispatch` em 6/dia (artes de story que chegam ao seu chat) e
+`instagram_feed` em 2/dia. Um canal que bate o teto no meio do run é pulado em
+silêncio (aparece como aviso no resumo, não como falha); ajuste os valores na
+seção `channels:` do `config.yaml`.
 
-## VPS (futuro)
-
-O sistema não depende do Actions: numa VPS basta clonar, exportar as mesmas
-variáveis num `.env`/profile e agendar `afiliado run` no cron. O `state.db`
-local persiste sozinho (sem commit).
+Com 288 runs/dia, mandar um resumo a cada execução inundaria o chat de
+operações. Desde a fase 1.8, o resumo só é enviado quando o run publicou,
+descartou algo ou gerou aviso — run completamente vazio não notifica. O
+caminho de exceção (run abortado) continua notificando sempre. Para voltar ao
+comportamento antigo (resumo em todo run), `ops.notify_empty_runs: true` em
+`config.yaml`.

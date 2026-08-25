@@ -43,11 +43,16 @@ dificuldade de teste sem benefício num funil fixo) e no-code/n8n (limites em
 criativo, dedupe e portabilidade).
 
 Cada execução de `afiliado run` processa um ciclo completo e termina. O
-agendador externo (cron do Actions; depois cron/systemd na VPS) define o
-ritmo — fase 1.7: de hora em hora, 08h–23h BRT (16 execuções/dia, 3 ofertas
-por run). Canais com esforço manual ou limites de audiência/API (ex.:
-`story_dispatch`, `instagram_feed`) ganham um teto diário opcional
-(`max_per_day`) para não saturar mesmo com o ritmo horário.
+agendador externo define o ritmo — fase 1.8: produção na cron/systemd da VPS
+a cada 5 min (288 execuções/dia, 1 oferta por run; ver
+`docs/runbooks/vps-setup.md`), com o cron do Actions (hora em hora,
+08h–23h BRT) como backup/disparo manual. Canais com esforço manual ou limites
+de audiência/API (ex.: `story_dispatch`, `instagram_feed`, e o teto de
+segurança de `telegram` na fase 1.8) ganham um teto diário opcional
+(`max_per_day`) para não saturar mesmo com o ritmo de 5 min. Com dedupe de 30
+dias e 288 checagens/dia, o estoque de boas ofertas esgota rápido — um piso de
+valor esperado (`selection.min_ev_brl`, fase 1.8) evita postar sobras quando
+isso acontece.
 
 ## 4. Estrutura de componentes
 
@@ -180,12 +185,16 @@ Cada fase é um ciclo próprio de plano → implementação → validação.
 ## 9. Política de falhas
 
 Regra geral: uma oferta ruim não derruba o run; o run só aborta se não houver o
-que publicar. Nada falha em silêncio — tudo aparece no resumo de operações.
+que publicar. Nada falha em silêncio — tudo aparece no resumo de operações,
+exceto o caso abaixo de run vazio (fase 1.8), que é ausência de evento, não
+falha; o caminho de exceção (run abortado) sempre notifica.
 
 | Falha | Comportamento |
 |---|---|
 | API de fonte fora | Retry com backoff (3x); persistindo, aborta o run e notifica operações |
 | Oferta falha em qualquer etapa | Descarta, promove a próxima do ranking, segue |
+| Nenhuma oferta atinge o piso de EV (`min_ev_brl`, fase 1.8) | Candidatas abaixo do piso são cortadas no filtro; se sobrar 0, o run publica nada, sem erro |
+| Run sem nada a contar — nada publicado, nada descartado, nenhum aviso (fase 1.8, cadência de 5 min) | Resumo de operações NÃO é enviado (evita 288 mensagens/dia); opcional `ops.notify_empty_runs: true` restaura o envio sempre |
 | LLM indisponível no ranking | Fallback determinístico: top N por valor esperado (EV) |
 | LLM indisponível na copy | Copy de template padrão |
 | Publicação falha | Retry 3x; falhou → não grava como publicado (volta candidato no próximo run). Contagem de `posts_per_run` é **por oferta**, não por canal: uma oferta conta como publicada se ao menos um canal aceitar; canais com `max_per_run` (ex.: `instagram_feed`, limite 1) pulam a oferta sem contar como falha quando o limite do run já foi atingido |

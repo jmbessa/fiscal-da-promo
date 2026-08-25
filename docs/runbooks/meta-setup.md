@@ -27,6 +27,16 @@ número do passo — este arquivo é a referência compartilhada.
 - [ ] Tipo/caso de uso: **Business** (ou "Other" → Business). Nome: ex. "Afiliado Pipeline".
 - [ ] O app fica em **modo de desenvolvimento** — para uso na própria conta
       (você é admin do app) NÃO precisa de App Review da Meta.
+- [ ] **Adicionar o produto Instagram ao app** (obrigatório — sem isso a permissão
+      `instagram_content_publish` NÃO aparece no Graph API Explorer):
+      painel do app → menu lateral **Casos de uso** (ou "Adicionar produto") →
+      **Instagram** → escolher **"API do Instagram com Login do Facebook"**
+      (a variante para contas business vinculadas a uma Página) → **Configurar**.
+      Na tela do caso de uso, marque as permissões `instagram_basic` e
+      `instagram_content_publish` (e `instagram_manage_insights`, opcional).
+      Atenção: NÃO escolha "API do Instagram com Login do Instagram" — ela usa
+      outros escopos (`instagram_business_*`) e outro endpoint, incompatível
+      com o `instagram_feed.py`.
 
 ## 4. Token de acesso (Graph API Explorer)
 
@@ -34,6 +44,9 @@ número do passo — este arquivo é a referência compartilhada.
 - [ ] Em **Permissions**, adicionar: `instagram_basic`,
       `instagram_content_publish`, `pages_show_list`, `pages_read_engagement`,
       `business_management`.
+      Se `instagram_content_publish` não estiver na lista, volte ao passo 3
+      (produto Instagram) e recarregue o Explorer; ela aparece no grupo
+      "Instagram" do menu de permissões.
 - [ ] **Generate Access Token** → autorizar com sua conta, selecionando a
       Página e o Instagram do projeto.
 

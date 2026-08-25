@@ -64,7 +64,7 @@ instagram:
 channels:
   telegram:
     enabled: true
-    max_per_day: 120         # teto de segurança do canal (fase 1.8: cadência de 5 min)
+    max_per_day: 100         # meta do canal: 50-100 ofertas/dia (teto real da operação)
   story_dispatch:
     enabled: true            # arte de story + link prontos no chat de operações
     max_per_day: 6           # artes de story que chegam ao seu chat por dia

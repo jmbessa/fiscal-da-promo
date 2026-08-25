@@ -1,0 +1,25 @@
+[Unit]
+Description=Fiscal da Promo — um ciclo do pipeline de ofertas
+Documentation=file:///opt/afiliado/docs/runbooks/vps-setup.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=afiliado
+WorkingDirectory=/opt/afiliado
+# O .env carrega os segredos (o próprio CLI também o lê; aqui é redundância
+# útil para quem rodar `systemctl start afiliado.service` na mão).
+EnvironmentFile=/opt/afiliado/.env
+# O Claude Code headless guarda estado em ~/.claude — por isso o serviço
+# precisa do HOME do usuário de serviço gravável (não usar ProtectHome).
+Environment=HOME=/home/afiliado
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/afiliado/.venv/bin/afiliado run
+# Um ciclo típico leva menos de 2 min; acima disso algo travou.
+TimeoutStartSec=600
+# Endurecimento compatível com as necessidades do processo:
+# /usr e /boot ficam somente-leitura, mas /opt e /home continuam graváveis.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full

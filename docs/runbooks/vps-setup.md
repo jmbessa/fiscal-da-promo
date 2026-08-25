@@ -1,79 +1,128 @@
-# Runbook — Setup VPS (produção, cadência de 5 min)
+# Runbook — Agendamento de produção (meta: 50–100 ofertas/dia)
 
-Desde a fase 1.8, a produção roda numa VPS via cron a cada 5 minutos (288
-execuções/dia). O `.github/workflows/publish.yml` (hora em hora, 08h–23h BRT)
-vira backup/disparo manual — ver seção "Agendamento" do `README.md`.
+O `config.yaml` define **quanto** postar (`channels.telegram.max_per_day: 100`,
+`selection.posts_per_run`, piso `selection.min_ev_brl`); o agendador externo
+define **de quanto em quanto tempo checar**. Duas opções, ambas sem custo:
 
-O sistema não depende do Actions: qualquer máquina com Python 3.12+, Node
-(para o Claude Code CLI) e as variáveis de ambiente já roda `afiliado run`.
+| | GitHub Actions | VPS gratuita |
+|---|---|---|
+| Custo | R$ 0 dentro da cota (2.000 min/mês em repo privado) | R$ 0 (Oracle Always Free) |
+| Cadência | a cada 45–90 min, em lotes (`posts_per_run: 4–8`) | a cada 5 min, 1 por vez |
+| Pontualidade | atrasos de 5–30 min são normais | exata |
+| Ritmo no canal | rajadas | espaçado, parece humano |
+| Setup | nenhum (já pronto) | ~20 min, pede cartão só para verificação |
 
-## 1. Provisionar e clonar
+Regra de ouro: **os dois nunca rodam ao mesmo tempo** — cada um tem seu
+`state.db`, e juntos publicariam a mesma oferta duas vezes. Ao ligar a VPS,
+desative o workflow `publish` (GitHub → Actions → publish → `...` → *Disable
+workflow*).
 
-- [ ] VPS com Python 3.12+ e Node 20+ instalados.
-- [ ] `git clone` do repositório no diretório de trabalho da VPS (ex.:
-      `/opt/afiliado`).
-- [ ] `pip install -e .` (ambiente virtual recomendado: `python -m venv .venv`
-      antes do install).
-- [ ] `npm install -g @anthropic-ai/claude-code`.
+---
 
-## 2. Credenciais (`.env`)
+## Opção A — GitHub Actions (sem infraestrutura nova)
 
-Diferente do Actions (secrets), a VPS lê um `.env` local (gitignored) —
-`afiliado run` chama `load_dotenv()` automaticamente antes de tudo. Crie
-`/opt/afiliado/.env` com as mesmas variáveis do workflow (ver README →
-"Credenciais"):
+Já implementado em `.github/workflows/publish.yml`. Para a meta de 50–100/dia
+dentro da cota gratuita, use poucas execuções com lotes maiores:
+
+- `selection.posts_per_run: 4` e cron a cada ~45 min na janela 08h–23h
+  (≈21 execuções/dia × 4 ≈ 84 ofertas/dia, ~50 min de runner/dia).
+- Cota: 2.000 min/mês. Cada execução leva ~2–3 min; acima de ~25 execuções/dia
+  o mês estoura — se precisar de mais volume ou de ritmo espaçado, use a
+  Opção B.
+
+## Opção B — VPS gratuita (cadência de 5 min)
+
+### B1. Provisionar de graça
+
+- **Oracle Cloud Always Free** (recomendado): 2 VMs AMD (1 GB) **ou** até 4
+  núcleos ARM Ampere com 24 GB — gratuitos por tempo indeterminado. Pede cartão
+  apenas para verificação de identidade; não cobra enquanto a conta ficar no
+  nível *Always Free*. Escolha Ubuntu 22.04.
+- **Google Cloud**: instância `e2-micro` sempre gratuita nas regiões
+  us-west1/us-central1/us-east1 (latência maior para o Brasil, sem impacto aqui).
+- Pagas, se preferir simplicidade: Hetzner CX22 (~€3,79/mês), DigitalOcean
+  (~US$ 6/mês).
+
+O pipeline é leve: 1 vCPU e 1 GB bastam.
+
+### B2. Instalar
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<usuario>/<repo>/main/deploy/install-vps.sh -o install-vps.sh
+bash install-vps.sh https://github.com/<usuario>/<repo>.git
+```
+
+Repositório privado: use um token de acesso pessoal na URL do clone
+(`https://<TOKEN>@github.com/<usuario>/<repo>.git`) ou copie o projeto via `scp`.
+
+O script instala Python, Node e o Claude Code, cria o usuário de serviço
+`afiliado`, monta o venv em `/opt/afiliado/.venv`, ajusta o fuso para
+America/Sao_Paulo e instala as unidades systemd de `deploy/`.
+
+### B3. Segredos
+
+A VPS lê um `.env` local (o CLI chama `load_dotenv()` antes de tudo) — as
+mesmas 8 variáveis dos GitHub Secrets:
+
+```bash
+sudo nano /opt/afiliado/.env
+sudo chmod 600 /opt/afiliado/.env
+```
 
 ```
-SHOPEE_APP_ID=...
-SHOPEE_APP_SECRET=...
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHANNEL_ID=...
-TELEGRAM_OPS_CHAT_ID=...
-CLAUDE_CODE_OAUTH_TOKEN=...
-IG_USER_ID=...
-IG_ACCESS_TOKEN=...
+SHOPEE_APP_ID=            TELEGRAM_OPS_CHAT_ID=
+SHOPEE_APP_SECRET=        CLAUDE_CODE_OAUTH_TOKEN=
+TELEGRAM_BOT_TOKEN=       IG_USER_ID=
+TELEGRAM_CHANNEL_ID=      IG_ACCESS_TOKEN=
 ```
 
-- [ ] `CLAUDE_CODE_OAUTH_TOKEN` gerado com `claude setup-token` (mesma cota
-      Max usada no Actions).
-- [ ] Permissão restrita no arquivo: `chmod 600 .env`.
+### B4. Validar antes de ligar
 
-## 3. Agendar no cron
+```bash
+sudo -u afiliado -H /opt/afiliado/.venv/bin/afiliado doctor
+sudo -u afiliado -H /opt/afiliado/.venv/bin/afiliado run --dry-run
+```
 
+### B5. Ligar
+
+```bash
+sudo systemctl enable --now afiliado.timer
+systemctl list-timers afiliado.timer      # próximo disparo
+journalctl -u afiliado.service -f         # acompanhar
+```
+
+`deploy/afiliado.timer` dispara **a cada 5 min das 08:00 às 23:55**
+(`OnCalendar=*-*-* 08..23:00/5:00`). Para mudar janela ou intervalo, edite
+`/etc/systemd/system/afiliado.timer`, depois `systemctl daemon-reload &&
+systemctl restart afiliado.timer`.
+
+Alternativa sem systemd (crontab do usuário):
 ```cron
-*/5 * * * * cd /opt/afiliado && .venv/bin/afiliado run >> /var/log/afiliado/run.log 2>&1
+*/5 8-23 * * * cd /opt/afiliado && .venv/bin/afiliado run >> /var/log/afiliado/run.log 2>&1
 ```
 
-- [ ] Criar `/var/log/afiliado/` (ou trocar o caminho do log) com permissão de
-      escrita para o usuário do cron.
-- [ ] `crontab -e` (usuário dedicado, não root, se possível) e colar a linha
-      acima com o caminho real do clone/venv.
-- [ ] `state.db` (`config.yaml` → `state.path`, padrão `data/state.db`) fica
-      local e persiste sozinho entre execuções — nenhum commit necessário
-      (diferente do Actions, onde o runner é efêmero).
+---
 
-Alternativa com `systemd` (mais robusta a reinícios/observabilidade):
-crie um `afiliado.service` (`Type=oneshot`, `WorkingDirectory=/opt/afiliado`,
-`ExecStart=.venv/bin/afiliado run`) e um `afiliado.timer` com
-`OnCalendar=*:0/5` + `Persistent=true`; habilite com
-`systemctl enable --now afiliado.timer`.
+## Operação
 
-## 4. Validar
-
-- [ ] `afiliado doctor` (com o `.env` carregado) — confere Shopee, Telegram e
-      Claude CLI.
-- [ ] `afiliado run --dry-run` — um ciclo completo sem publicar.
-- [ ] Deixar o cron/timer rodar um ciclo real e conferir o chat de operações:
-      com a fase 1.8, resumo só chega quando o run publicou, descartou algo ou
-      gerou aviso (`ops.notify_empty_runs: true` em `config.yaml` volta ao
-      envio sempre).
+| Situação | Comando |
+|---|---|
+| Atualizar o código | `cd /opt/afiliado && sudo -u afiliado -H git pull && sudo /opt/afiliado/.venv/bin/pip install -e .` |
+| Ver os últimos runs | `journalctl -u afiliado.service --since "1 hour ago"` |
+| Pausar tudo | `sudo systemctl disable --now afiliado.timer` |
+| Rodar um ciclo agora | `sudo systemctl start afiliado.service` |
+| Backup do estado | `sudo cp /opt/afiliado/data/state.db ~/state-$(date +%F).db` |
 
 ## Notas
 
-- `selection.posts_per_run: 1` e `selection.min_ev_brl` (piso de valor
-  esperado) são o ajuste de `config.yaml` pensado para esta cadência — ver
-  comentários na seção `selection:`.
-- Tetos diários por canal (`max_per_day`) seguem contados no SQLite
-  (`state.db`), então funcionam igual entre VPS e Actions rodando ao mesmo
-  tempo — mas rodar os dois cron simultaneamente numa mesma janela de tempo
-  não é recomendado (duplicaria checagens sem ganho; o Actions é só backup).
+- **Checar ≠ postar.** A cada 5 min o pipeline checa; publica só se houver
+  oferta acima do piso (`selection.min_ev_brl`), inédita no dedupe de 30 dias e
+  dentro dos tetos diários. Runs sem novidade não geram mensagem no chat de
+  operações (`ops.notify_empty_runs: false`).
+- O `state.db` da VPS passa a ser a fonte de verdade do dedupe; ao migrar de
+  volta para o Actions, copie o arquivo para o repositório antes.
+- `IG_ACCESS_TOKEN` é token de Página e não expira; `CLAUDE_CODE_OAUTH_TOKEN`
+  vale ~1 ano (renovar em ago/2027).
+- Consumo de LLM: ~2 chamadas por oferta publicada. Com 100/dia são ~200
+  chamadas curtas — se a cota Max apertar, desligue o ranqueamento por LLM
+  (o ordenamento por valor esperado é determinístico e cobre bem sozinho).

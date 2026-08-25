@@ -1,0 +1,16 @@
+[Unit]
+Description=Fiscal da Promo — dispara o pipeline a cada 5 minutos (08h-23h)
+Documentation=file:///opt/afiliado/docs/runbooks/vps-setup.md
+
+[Timer]
+# A cada 5 minutos, das 08:00 às 23:55 no fuso da máquina.
+# Ajuste o fuso da VPS com: sudo timedatectl set-timezone America/Sao_Paulo
+OnCalendar=*-*-* 08..23:00/5:00
+# Espalha o disparo em até 30 s para não bater sempre no mesmo segundo.
+RandomizedDelaySec=30
+# Se a VPS estiver desligada na hora marcada, roda uma vez ao voltar.
+Persistent=true
+Unit=afiliado.service
+
+[Install]
+WantedBy=timers.target

@@ -21,7 +21,7 @@ publicada carrega prova de desconto real.
 
 ## Como funciona
 
-1. **Descoberta** — consulta contínua às APIs de afiliados, 16 vezes ao dia
+1. **Descoberta** — consulta contínua às APIs de afiliados, a cada 5 minutos
    (08h–23h), cruzando desconto, volume de vendas e taxa de comissão.
 2. **Seleção** — ranking por valor esperado (comissão × preço × popularidade),
    reforçado por uma watchlist semanal de inteligência de mercado (categorias
@@ -33,7 +33,7 @@ publicada carrega prova de desconto real.
 4. **Produção** — copy gerada por IA dentro de guardrails (a IA nunca escreve
    preço ou link), arte de story e feed renderizada por template com identidade
    visual consistente.
-5. **Distribuição** — Telegram como motor de volume (até ~48 posts/dia),
+5. **Distribuição** — Telegram como motor de volume (50–100 ofertas/dia),
    Instagram como motor de audiência (feed automático via API oficial; stories
    com link de afiliado direto), com tetos diários por canal.
 6. **Operação** — cada execução reporta publicados, descartados e alertas a um

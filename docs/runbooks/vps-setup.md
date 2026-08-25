@@ -21,11 +21,15 @@ workflow*).
 
 ## Opção A — GitHub Actions (sem infraestrutura nova)
 
-Já implementado em `.github/workflows/publish.yml`. Para a meta de 50–100/dia
-dentro da cota gratuita, use poucas execuções com lotes maiores:
+O workflow `.github/workflows/publish.yml` existe e funciona, mas hoje está
+configurado para a Opção B (`posts_per_run: 1`, cron de hora em hora). Para usar
+o Actions como produção, **é preciso editar dois arquivos**:
 
-- `selection.posts_per_run: 4` e cron a cada ~45 min na janela 08h–23h
-  (≈21 execuções/dia × 4 ≈ 84 ofertas/dia, ~50 min de runner/dia).
+- `.github/workflows/publish.yml`: trocar os crons por um a cada ~45 min na
+  janela 08h–23h BRT (ex.: `0,45 11-23 * * *` + `0,45 0-2 * * *`);
+- `config.yaml`: `selection.posts_per_run: 4`.
+
+Resultado: ≈21 execuções/dia × 4 ≈ 84 ofertas/dia, ~50 min de runner/dia.
 - Cota: 2.000 min/mês. Cada execução leva ~2–3 min; acima de ~25 execuções/dia
   o mês estoura — se precisar de mais volume ou de ritmo espaçado, use a
   Opção B.

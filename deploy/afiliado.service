@@ -19,7 +19,7 @@ ExecStart=/opt/afiliado/.venv/bin/afiliado run
 # Um ciclo típico leva menos de 2 min; acima disso algo travou.
 TimeoutStartSec=600
 # Endurecimento compatível com as necessidades do processo:
-# /usr e /boot ficam somente-leitura, mas /opt e /home continuam graváveis.
+# /usr, /boot e /etc ficam somente-leitura; /opt e /home seguem graváveis.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

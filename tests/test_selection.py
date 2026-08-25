@@ -97,6 +97,13 @@ def test_ev_score():
     assert selection.ev_score(o2, CFG) == pytest.approx(56.99772)
 
 
+def test_ev_score_prefere_comissao_absoluta():
+    # commission_brl vindo da API tem precedência sobre a estimativa via
+    # commission_pct, mesmo quando os dois valores são incoerentes entre si.
+    offer = make_offer(commission_brl=5.0, commission_pct=999.0)
+    assert selection.ev_score(offer, CFG) == pytest.approx(5.0)
+
+
 def test_order_by_ev():
     low = make_offer(item_id="low", commission_pct=5.0, sales=0)
     mid = make_offer(item_id="mid", commission_pct=12.0, sales=100)

@@ -47,7 +47,8 @@ def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> flo
     """Retorno esperado por post: comissão em R$ ponderada pela popularidade."""
     w = cfg["selection"].get("ev_weights") or {}
     wp = float(w.get("popularity", 0.3))
-    commission_brl = (offer.price_current_cents / 100) * (offer.commission_pct / 100)
+    commission_brl = offer.commission_brl or (
+        (offer.price_current_cents / 100) * (offer.commission_pct / 100))
     score = commission_brl * (1 + wp * math.log10(offer.sales + 1))
     if watchlist is not None:
         score *= watchlist.boost_for(offer)

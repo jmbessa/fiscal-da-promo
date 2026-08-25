@@ -67,13 +67,14 @@ def send_text(bot_token: str, chat_id: str, text: str,
 
 
 def send_photo_bytes(bot_token: str, chat_id: str, png_bytes: bytes,
-                     caption: str = "", client: httpx.Client | None = None) -> dict:
+                     caption: str = "", client: httpx.Client | None = None,
+                     filename: str = "art.png", mime: str = "image/png") -> dict:
     """sendPhoto multipart. Retorna o dict da API; em erro de rede/parse retorna
     {"ok": False, "description": ...}. Nunca levanta."""
     c = client or httpx.Client(timeout=30)
     try:
         r = c.post(f"{API}/bot{bot_token}/sendPhoto",
-                  files={"photo": ("art.png", png_bytes, "image/png")},
+                  files={"photo": (filename, png_bytes, mime)},
                   data={"chat_id": chat_id, "caption": caption})
         return r.json()
     except ValueError:

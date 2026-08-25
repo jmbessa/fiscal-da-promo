@@ -102,3 +102,47 @@ def test_caption_title_sanitized_when_it_smuggles_a_url():
     caption = parsed["caption"][0]
     assert "Produto X" in caption
     assert "http" not in caption.lower()
+
+
+def _png_bytes():
+    import io
+    from PIL import Image
+    buf = io.BytesIO(); Image.new("RGB", (400, 400), (90, 30, 200)).save(buf, "PNG"); return buf.getvalue()
+
+
+def _full_flow_handler(graph_host, seen):
+    def handler(request):
+        host, path = request.url.host, request.url.path
+        seen.append(host + path)
+        if host.endswith("susercontent.com") or host.endswith("shopee.com.br"):
+            return httpx.Response(200, headers={"content-type": "image/png"}, content=_png_bytes())
+        if host == "api.telegram.org" and path.endswith("/sendPhoto"):
+            seen.append(("photo_body", request.content))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1, "photo": [{"file_id": "f1"}]}})
+        if host == "api.telegram.org" and path.endswith("/getFile"):
+            return httpx.Response(200, json={"ok": True, "result": {"file_path": "photos/x.jpg"}})
+        if host == graph_host and path.endswith("/media_publish"):
+            return httpx.Response(200, json={"id": "222"})
+        if host == graph_host and path.endswith("/media"):
+            return httpx.Response(200, json={"id": "111"})
+        return httpx.Response(404, json={"error": f"rota inesperada {host}{path}"})
+    return handler
+
+
+def test_instagram_login_variant_uses_graph_instagram_host():
+    seen = []
+    client = httpx.Client(transport=httpx.MockTransport(_full_flow_handler("graph.instagram.com", seen)))
+    ch = InstagramFeedChannel("17841400000", "tok", "bot", "999", client=client, api="instagram_login")
+    res = ch.publish(make_post())
+    assert res.ok and res.message_id == "222"
+    assert not any(isinstance(x, str) and x.startswith("graph.facebook.com") for x in seen)
+
+
+def test_art_is_hosted_as_jpeg():
+    seen = []
+    client = httpx.Client(transport=httpx.MockTransport(_full_flow_handler("graph.facebook.com", seen)))
+    ch = InstagramFeedChannel("17841400000", "tok", "bot", "999", client=client)
+    assert ch.publish(make_post()).ok
+    body = next(b for k, b in (x for x in seen if isinstance(x, tuple)) if k == "photo_body")
+    assert b"art.jpg" in body and b"image/jpeg" in body
+    assert bytes.fromhex("ffd8ff") in body          # magic number do JPEG

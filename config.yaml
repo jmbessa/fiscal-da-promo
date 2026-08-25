@@ -41,6 +41,13 @@ brand:
 watchlist:
   path: data/watchlist.json
 
+# Variante da API do Instagram usada por `instagram_feed` e pelo doctor:
+#   instagram_login — "API do Instagram com Login do Instagram": token gerado no painel
+#                     da Meta, sem Página do Facebook (padrão; ver docs/runbooks/meta-setup.md)
+#   facebook_login  — conta business vinculada a Página; token via Graph API Explorer
+instagram:
+  api: instagram_login
+
 # Fase 2A/1.7: canais habilitados. Seção opcional — ausente, equivale a só
 # telegram. Cada canal aceita bool (liga/desliga) ou dict com `enabled` e,
 # opcionalmente, `max_per_day` (teto diário contado no SQLite, para não

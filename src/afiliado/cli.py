@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 from afiliado import config, llm, pipeline
-from afiliado.channels.instagram_feed import GRAPH, InstagramFeedChannel
+from afiliado.channels.instagram_feed import GRAPH_HOSTS, InstagramFeedChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
 from afiliado.sources.shopee import ShopeeSource
@@ -44,6 +44,12 @@ def _channel_settings(raw) -> tuple[bool, int | None]:
     if isinstance(raw, dict):
         return bool(raw.get("enabled", True)), raw.get("max_per_day")
     return bool(raw), None
+
+
+def _instagram_api(cfg: dict) -> str:
+    """Variante da API do Instagram (config `instagram.api`): instagram_login (padrão) ou facebook_login."""
+    api = (cfg.get("instagram") or {}).get("api") or "instagram_login"
+    return api if api in GRAPH_HOSTS else "instagram_login"
 
 
 def _build_channels(cfg: dict) -> list:
@@ -93,7 +99,7 @@ def _build_channels(cfg: dict) -> list:
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if ig_user and ig_token and bot_token and ops:
             ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
-                                      brand_name=brand_name)
+                                      brand_name=brand_name, api=_instagram_api(cfg))
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
@@ -133,7 +139,7 @@ def doctor(cfg: dict) -> int:
     ig_token = os.environ.get("IG_ACCESS_TOKEN", "")
     if ig_user and ig_token:
         try:
-            r = httpx.get(f"{GRAPH}/{ig_user}",
+            r = httpx.get(f"{GRAPH_HOSTS[_instagram_api(cfg)]}/{ig_user}",
                           params={"fields": "username", "access_token": ig_token}, timeout=20)
             data = r.json()
         except Exception as exc:

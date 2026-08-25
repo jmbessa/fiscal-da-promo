@@ -234,3 +234,28 @@ def test_configure_stdout_makes_cp1252_stream_print_emoji():
     print("❌ ok", file=stream)
     stream.flush()
     assert raw.getvalue().startswith("❌".encode("utf-8"))
+
+
+def test_instagram_api_variant_from_config(monkeypatch, tmp_path):
+    for k, v in {"SHOPEE_APP_ID": "id", "SHOPEE_APP_SECRET": "s", "TELEGRAM_BOT_TOKEN": "tok",
+                 "TELEGRAM_CHANNEL_ID": "@c", "TELEGRAM_OPS_CHAT_ID": "999",
+                 "IG_USER_ID": "178", "IG_ACCESS_TOKEN": "igtok"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    base = (open("config.yaml", encoding="utf-8").read()
+            .replace("data/state.db", str(tmp_path / "s.db").replace(chr(92), "/"))
+            .replace("data/watchlist.json", str(tmp_path / "sem.json").replace(chr(92), "/")))
+    extra = chr(10).join(["", "instagram:", "  api: facebook_login", "channels:", "  telegram: true",
+                          "  instagram_feed: true", ""])
+    cfg_file = tmp_path / "config.yaml"; cfg_file.write_text(base + extra, encoding="utf-8")
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado["channels"] = channels
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    ig = next(c for c in chamado["channels"] if c.name == "instagram_feed")
+    assert ig.graph.startswith("https://graph.facebook.com")
+    assert cli._instagram_api({}) == "instagram_login"

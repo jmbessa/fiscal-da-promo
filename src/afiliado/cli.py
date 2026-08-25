@@ -151,10 +151,12 @@ def doctor(cfg: dict) -> int:
     return 0 if ok else 1
 
 
-def load_dotenv(path: str | Path = ".env") -> int:
-    """Carrega KEY=VALUE de um .env local para o ambiente SEM sobrescrever
-    variáveis já definidas (produção usa secrets reais; .env é só conforto
-    local e está no .gitignore). Retorna quantas variáveis foram definidas."""
+def load_dotenv(path: str | Path = ".env", override: bool = True) -> int:
+    """Carrega KEY=VALUE de um .env local para o ambiente. Por padrão o .env
+    do projeto TEM precedência sobre variáveis globais da máquina — evita que
+    um TELEGRAM_BOT_TOKEN de outro projeto (ex.: Claudefolio) vaze para este.
+    Em produção (Actions) não existe .env (gitignored), então nada muda lá.
+    Retorna quantas variáveis foram definidas."""
     p = Path(path)
     if not p.is_file():
         return 0
@@ -165,7 +167,7 @@ def load_dotenv(path: str | Path = ".env") -> int:
             continue
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key and (override or key not in os.environ):
             os.environ[key] = value
             n += 1
     return n

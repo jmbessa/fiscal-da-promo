@@ -215,8 +215,11 @@ def test_load_dotenv_sets_missing_and_keeps_existing(monkeypatch, tmp_path):
     env_file.write_text(chr(10).join(linhas), encoding="utf-8")
     monkeypatch.delenv("A_NOVA", raising=False)
     monkeypatch.setenv("JA_EXISTE", "original")
-    assert cli.load_dotenv(env_file) == 1
+    assert cli.load_dotenv(env_file) == 2          # .env do projeto tem precedência
     assert os.environ["A_NOVA"] == "1"
+    assert os.environ["JA_EXISTE"] == "ignorado"
+    monkeypatch.setenv("JA_EXISTE", "original")
+    assert cli.load_dotenv(env_file, override=False) == 0
     assert os.environ["JA_EXISTE"] == "original"
 
 

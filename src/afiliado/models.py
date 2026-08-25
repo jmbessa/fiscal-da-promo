@@ -26,6 +26,9 @@ class Offer:
     category: str = ""
     sales: int = 0
     rating: float = 0.0        # nota média (0 = desconhecida)
+    price_min_cents: int = 0   # 0 = desconhecido; > 0 e != price_current => produto com variações
+    price_max_cents: int = 0
+    commission_brl: float = 0.0  # comissão absoluta em R$ informada pela API
 
     @property
     def discount_pct(self) -> int:

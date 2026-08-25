@@ -19,8 +19,9 @@ Pipeline automático de divulgação de ofertas com link de afiliado
 | `TELEGRAM_OPS_CHAT_ID` | Mandar `/start` para o bot no privado; pegar o `chat.id` em `https://api.telegram.org/bot<TOKEN>/getUpdates` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Rodar `claude setup-token` na sua máquina (usa a assinatura Max) |
 | `IG_USER_ID` / `IG_ACCESS_TOKEN` | Feed automático do Instagram (fase 2A) — seguir `docs/runbooks/meta-setup.md` |
+| `MELI_CLIENT_ID` / `MELI_CLIENT_SECRET` / `MELI_REFRESH_TOKEN` | Fonte Mercado Livre (fase 3, desligada por padrão) — seguir `docs/runbooks/meli-setup.md` |
 
-No GitHub: Settings → Secrets and variables → Actions → criar os 8 secrets acima
+No GitHub: Settings → Secrets and variables → Actions → criar os secrets acima
 (todos já repassados pelo `publish.yml`).
 
 ## Instagram (fase 2A)
@@ -45,6 +46,24 @@ Dois canais, dois níveis de automação:
   variante da API em `instagram.api`) e `channels.instagram_feed.enabled: true`. O caption do feed nunca leva o
   link de afiliado — só "🔗 Link na bio e no canal do Telegram" — porque a API
   não permite CTA clicável fora da bio.
+
+## Mercado Livre (fase 3, parte 1 — desligado por padrão)
+
+Segunda fonte de ofertas, além da Shopee. Habilite em `config.yaml` →
+`sources.meli: true` e configure `MELI_CLIENT_ID`/`MELI_CLIENT_SECRET`
+(setup completo em `docs/runbooks/meli-setup.md`); sem essas credenciais o
+run segue normalmente só com Shopee, com um aviso no stdout.
+
+A autenticação tenta `client_credentials` primeiro (sem estado, ideal para
+CI) e cai para `refresh_token` quando necessário — o Mercado Livre rotaciona
+o refresh token a cada uso, então o pipeline persiste a rotação em
+`data/meli_token.json` (segredo, gitignored) a cada troca.
+
+**Pendente do spike da parte 2:** não existe API oficial de link de afiliado
+no Mercado Livre. Por ora, `resolve_affiliate_link` usa um **pool de links
+pré-gerados** em `data/meli_links.json`, abastecido manualmente pelo painel
+de afiliados — item sem link no pool é descartado (comportamento já
+existente do pipeline, promove a próxima oferta da fila).
 
 ## Comandos
 

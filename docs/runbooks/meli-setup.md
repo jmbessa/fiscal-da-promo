@@ -101,3 +101,11 @@ de links **pré-gerados manualmente**:
   fase — a busca pública não expõe comissão; de onde ela vem (e como isso
   entra no ranking por valor esperado) é decisão da parte 2.
 - `rating` também vem fixo em `0.0` — a busca não traz nota média.
+- **Actions (`publish.yml`) é efêmero — cuidado com `refresh_token`:** cada
+  execução do workflow começa do zero, sem `data/meli_token.json`
+  persistido entre runs. Se a autenticação cair no fluxo `refresh_token`
+  (passo 2b), a rotação se perde a cada execução e a autenticação quebra na
+  seguinte. Nesse caso, a fonte do ML só deve rodar na VPS
+  (`docs/runbooks/vps-setup.md`), onde `data/meli_token.json` sobrevive
+  entre execuções — não no Actions. Com `client_credentials` funcionando
+  (passo 2a, sem estado), o Actions serve normalmente.

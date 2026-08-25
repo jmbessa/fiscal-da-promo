@@ -1,3 +1,4 @@
+import io
 import json
 import os
 
@@ -221,3 +222,12 @@ def test_load_dotenv_sets_missing_and_keeps_existing(monkeypatch, tmp_path):
 
 def test_load_dotenv_missing_file_is_noop(tmp_path):
     assert cli.load_dotenv(tmp_path / "nao-existe.env") == 0
+
+
+def test_configure_stdout_makes_cp1252_stream_print_emoji():
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252")
+    cli.configure_stdout(stream)
+    print("❌ ok", file=stream)
+    stream.flush()
+    assert raw.getvalue().startswith("❌".encode("utf-8"))

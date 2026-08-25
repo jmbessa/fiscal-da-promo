@@ -1,5 +1,7 @@
 import argparse
+import io
 import os
+import sys
 from pathlib import Path
 
 import httpx
@@ -169,7 +171,20 @@ def load_dotenv(path: str | Path = ".env") -> int:
     return n
 
 
+def configure_stdout(stream=None) -> None:
+    """Garante saída UTF-8 (emojis do doctor/resumos) mesmo em console Windows
+    cp1252; sem efeito quando o stream já é UTF-8 ou não suporta reconfigure."""
+    stream = stream or sys.stdout
+    enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+    if enc != "utf8" and hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, io.UnsupportedOperation):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    configure_stdout()
     load_dotenv()
     args = _build_parser().parse_args(argv)
     cfg = config.load_config(args.config)

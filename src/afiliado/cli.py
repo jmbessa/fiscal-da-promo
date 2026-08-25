@@ -10,6 +10,7 @@ from afiliado import config, llm, pipeline
 from afiliado.channels.instagram_feed import GRAPH_HOSTS, InstagramFeedChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
+from afiliado.sources.meli import MeliSource
 from afiliado.sources.shopee import ShopeeSource
 from afiliado.state import StateDB
 from afiliado.watchlist import load_watchlist
@@ -29,6 +30,33 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _shopee() -> ShopeeSource:
     return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"])
+
+
+def _meli() -> MeliSource | None:
+    client_id = _env("MELI_CLIENT_ID")
+    client_secret = _env("MELI_CLIENT_SECRET")
+    if not (client_id and client_secret):
+        print("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente")
+        return None
+    return MeliSource(client_id, client_secret, refresh_token=_env("MELI_REFRESH_TOKEN"))
+
+
+def _build_sources(cfg: dict) -> list:
+    """Monta as fontes habilitadas em `sources:` (config.yaml).
+
+    Seção ausente equivale a `{"shopee": True}` (comportamento de antes da
+    fase 3) — o Mercado Livre nasce desligado. Fonte ligada sem env
+    necessária: aviso no stdout e segue sem ela, nunca derruba o run (mesmo
+    padrão de `_build_channels`)."""
+    src_cfg = cfg.get("sources") or {"shopee": True}
+    sources: list = []
+    if src_cfg.get("shopee", True):
+        sources.append(_shopee())
+    if src_cfg.get("meli", False):
+        meli = _meli()
+        if meli is not None:
+            sources.append(meli)
+    return sources
 
 
 def _env(name: str) -> str:
@@ -119,6 +147,23 @@ def doctor(cfg: dict) -> int:
     except Exception as exc:
         ok = False
         print(f"❌ Shopee: {exc}")
+
+    meli_client_id = os.environ.get("MELI_CLIENT_ID", "")
+    meli_client_secret = os.environ.get("MELI_CLIENT_SECRET", "")
+    if meli_client_id and meli_client_secret:
+        try:
+            meli = MeliSource(meli_client_id, meli_client_secret,
+                              refresh_token=os.environ.get("MELI_REFRESH_TOKEN", ""))
+            meli.ensure_token()
+            me_cfg = {**(cfg.get("meli") or {}), "per_category": 1}
+            offers = meli.fetch_offers({**cfg, "meli": me_cfg})
+            print(f"✅ Mercado Livre: token ok; {len(offers)} ofertas (busca de teste)")
+        except Exception as exc:
+            ok = False
+            print(f"❌ Mercado Livre: {exc}")
+    else:
+        print("ℹ️ Mercado Livre: não configurado (ver docs/runbooks/meli-setup.md)")
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
     if token and ops:
@@ -200,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(cfg)
 
     db = StateDB(cfg["state"]["path"])
-    sources = [_shopee()]
+    sources = _build_sources(cfg)
     channels = []
     if not args.dry_run:
         channels = _build_channels(cfg)

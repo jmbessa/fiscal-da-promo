@@ -28,11 +28,27 @@ selection:
   ev_weights:
     popularity: 0.3
 
+# Fase 3 (parte 1): fontes de ofertas habilitadas. Seção opcional — ausente,
+# equivale a só shopee (comportamento de antes desta fase). O Mercado Livre
+# nasce DESLIGADO: ligar exige credenciais (ver README) e o pool de links de
+# afiliado (data/meli_links.json, ver docs/runbooks/meli-setup.md).
+sources:
+  shopee: true
+  meli: false
+
 shopee:
   sort_types: [5]          # ordenações consultadas e mescladas; valores a confirmar no doctor (Task 14)
   list_type: 0
   pages: 3
   page_size: 50
+
+# Fase 3 (parte 1): descoberta no Mercado Livre (autenticação em MeliSource).
+# Geração de link de afiliado ainda não é automática — usa o pool pré-gerado
+# em data/meli_links.json (ver docs/runbooks/meli-setup.md).
+meli:
+  category_ids: ["MLB1246", "MLB1574", "MLB1276", "MLB264586"]
+  per_category: 50          # itens buscados por categoria (máx. 50 por página)
+  min_sold: 5               # ignora itens sem tração
 
 validation:
   allowed_domains: ["shopee.com.br", "shope.ee"]

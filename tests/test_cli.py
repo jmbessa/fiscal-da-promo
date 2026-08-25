@@ -310,6 +310,65 @@ def test_ops_summary_forced_by_config(monkeypatch, tmp_path):
     assert len(enviados) == 1
 
 
+def test_build_sources_defaults_to_shopee_only_when_key_absent(monkeypatch):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    sources = cli._build_sources({})
+    assert [s.name for s in sources] == ["shopee"]
+
+
+def test_run_builds_meli_source_when_enabled_and_env_present(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("MELI_CLIENT_ID", "mcid")
+    monkeypatch.setenv("MELI_CLIENT_SECRET", "msecret")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_text += "\nsources:\n  shopee: true\n  meli: true\n"
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado["sources"] = sources
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--dry-run", "--config", str(cfg_file)]) == 0
+    names = {s.name for s in chamado["sources"]}
+    assert names == {"shopee", "meli"}
+
+
+def test_run_warns_and_skips_meli_without_env(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.delenv("MELI_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MELI_CLIENT_SECRET", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_text += "\nsources:\n  shopee: true\n  meli: true\n"
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+        chamado["sources"] = sources
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--dry-run", "--config", str(cfg_file)]) == 0
+    names = {s.name for s in chamado["sources"]}
+    assert names == {"shopee"}
+    out = capsys.readouterr().out
+    assert "⚠️" in out and "meli" in out
+
+
 def test_instagram_api_variant_from_config(monkeypatch, tmp_path):
     for k, v in {"SHOPEE_APP_ID": "id", "SHOPEE_APP_SECRET": "s", "TELEGRAM_BOT_TOKEN": "tok",
                  "TELEGRAM_CHANNEL_ID": "@c", "TELEGRAM_OPS_CHAT_ID": "999",

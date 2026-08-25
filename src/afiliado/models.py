@@ -25,6 +25,7 @@ class Offer:
     offer_link: str = ""
     category: str = ""
     sales: int = 0
+    rating: float = 0.0        # nota média (0 = desconhecida)
 
     @property
     def discount_pct(self) -> int:

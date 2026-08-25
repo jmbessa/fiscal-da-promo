@@ -364,14 +364,17 @@ def _source_label(source: str) -> str:
 
 
 def _meta_text(offer: Offer) -> str:
-    fonte = _source_label(offer.source)
+    """Linha mono abaixo do preço: nota (se conhecida) · vendas (se >= 1) · fonte."""
+    fonte = "Mercado Livre" if offer.source == "meli" else "Shopee"
+    partes = []
+    if offer.rating > 0:
+        partes.append(f"{offer.rating:.1f}".replace(".", ",") + " ★")
     if offer.sales >= 1000:
-        vendidos = f"{offer.sales // 1000} mil vendidos"
+        partes.append(f"{offer.sales // 1000} mil vendidos")
     elif offer.sales > 0:
-        vendidos = f"{offer.sales} vendidos"
-    else:
-        vendidos = None
-    return f"{vendidos} · {fonte}" if vendidos else fonte
+        partes.append(f"{offer.sales} vendidos")
+    partes.append(fonte)
+    return " · ".join(partes)
 
 
 def _meta_dims(draw: ImageDraw.ImageDraw, offer: Offer, mono_size: int) -> dict:

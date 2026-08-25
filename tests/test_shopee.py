@@ -47,6 +47,7 @@ def test_fetch_offers_parses_and_skips_bad_nodes():
     assert o.commission_pct == 12.0
     assert o.category == "100636"
     assert o.offer_link == "https://s.shopee.com.br/xyz"
+    assert o.rating == 4.9
 
 
 def test_resolve_affiliate_link_short_link():

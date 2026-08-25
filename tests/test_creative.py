@@ -240,3 +240,17 @@ def test_render_no_sales_meta_omits_vendidos():
     offer = make_offer(sales=0)
     data = render_story(offer, COPY, client=_client_for(_image_handler))
     assert data[:4] == b"\x89PNG"
+
+
+def test_meta_text_includes_rating_when_known():
+    from afiliado.creative import _meta_text
+    assert _meta_text(make_offer(sales=30000, rating=4.9)) == "4,9 ★ · 30 mil vendidos · Shopee"
+    assert _meta_text(make_offer(sales=0, rating=0.0)) == "Shopee"
+    assert _meta_text(make_offer(sales=500, source="meli")) == "500 vendidos · Mercado Livre"
+
+
+def test_render_story_rating_changes_output():
+    client = _client_for(_image_handler)
+    sem = render_story(make_offer(sales=30000), COPY, client=client)
+    com = render_story(make_offer(sales=30000, rating=4.9), COPY, client=client)
+    assert sem != com

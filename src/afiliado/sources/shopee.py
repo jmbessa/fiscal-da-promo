@@ -123,4 +123,14 @@ def _parse_node(node: dict) -> Offer | None:
         offer_link=str(node.get("offerLink") or ""),
         category=str(cats[0]) if cats else "",
         sales=int(node.get("sales") or 0),
+        rating=_parse_rating(node.get("ratingStar")),
     )
+
+
+def _parse_rating(raw) -> float:
+    """ratingStar vem como string/número; qualquer coisa inválida vira 0.0 (desconhecida)."""
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return val if 0.0 < val <= 5.0 else 0.0

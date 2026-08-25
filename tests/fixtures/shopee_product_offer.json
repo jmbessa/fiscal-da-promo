@@ -9,6 +9,7 @@
           "priceDiscountRate": 50,
           "commissionRate": "0.12",
           "sales": 1500,
+          "ratingStar": "4.9",
           "imageUrl": "https://cf.shopee.com.br/file/abc.jpg",
           "productLink": "https://shopee.com.br/product/1/123456",
           "offerLink": "https://s.shopee.com.br/xyz",

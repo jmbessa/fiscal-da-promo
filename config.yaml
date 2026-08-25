@@ -58,5 +58,5 @@ channels:
     enabled: true            # arte de story + link prontos no chat de operações
     max_per_day: 6           # artes de story que chegam ao seu chat por dia
   instagram_feed:
-    enabled: false            # ligar após concluir docs/runbooks/meta-setup.md
+    enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
     max_per_day: 2

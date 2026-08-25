@@ -8,7 +8,7 @@
 | Elemento | Valor |
 |---|---|
 | Nome | **Fiscal da Promo** |
-| Handle | `@ofiscaldapromo` (Instagram e `t.me/ofiscaldapromo`) — nas artes em CAIXA ALTA mono: `@OFISCALDAPROMO` |
+| Handle | `@ofiscaldapromo` (Instagram) · `t.me/fiscaldapromo` (canal do Telegram) — nas artes em CAIXA ALTA mono: `@OFISCALDAPROMO` |
 | Conceito | O fiscal que confere o desconto antes de liberar: preço checado no histórico de 12 meses |
 | Cores | Navy `#101427` · Dourado `#E0A63C` · Creme `#F6EFE1` · Azul verificado `#7FA0F0` |
 | Fontes | Bricolage Grotesque (títulos, preços) · IBM Plex Mono (rótulos, handle, meta) |

@@ -22,8 +22,14 @@ selection:
   # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
   # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
   # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.
-  # Vazio = todas as categorias. Faixa de foco de impulso: R$25-150.
-  category_ids: ["100630", "100636", "100001", "100637", "100632"]
+  # Faixa de foco de impulso: R$25-150.
+  # Fase 3: por fonte (dict) — a Shopee usa IDs numéricos e o ML usa IDs
+  # "MLB...", então um allowlist único descartaria toda oferta de uma das
+  # fontes. Lista simples (formato antigo) continua valendo para todas as
+  # fontes; vazio/ausente = todas as categorias passam.
+  category_ids:
+    shopee: ["100630", "100636", "100001", "100637", "100632"]
+    meli: []      # vazio: a busca do ML já é restrita por meli.category_ids
   # Pesos do score de valor esperado (fase 1.5): EV = comissão em R$ × (1 + popularity × log10(vendas+1))
   ev_weights:
     popularity: 0.3
@@ -51,7 +57,10 @@ meli:
   min_sold: 5               # ignora itens sem tração
 
 validation:
-  allowed_domains: ["shopee.com.br", "shope.ee"]
+  # mercadolivre.com.br e mercadolivre.com precisam estar os dois: a checagem
+  # casa host == d ou host.endswith("." + d), e um não cobre o outro.
+  allowed_domains: ["shopee.com.br", "shope.ee",
+                    "mercadolivre.com.br", "mercadolivre.com", "meli.la"]
 
 copy:
   tone: "empolgado, direto, sem exageros enganosos, pt-BR"

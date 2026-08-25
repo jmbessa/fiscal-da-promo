@@ -60,6 +60,36 @@ def test_filter_offers_category_allowlist(tmp_path):
     db.close()
 
 
+def test_filter_offers_category_por_fonte(tmp_path):
+    # category_ids em dict: cada fonte tem seu próprio allowlist (vazio = todas
+    # as categorias passam para aquela fonte). Sem isso, ofertas do meli
+    # (categorias MLB...) eram sempre descartadas pelo allowlist da shopee.
+    db = StateDB(tmp_path / "s.db")
+    cfg = {**CFG, "selection": {**CFG["selection"],
+                                "category_ids": {"shopee": ["100636"], "meli": []}}}
+    offers = [
+        make_offer(item_id="shopee-ok", source="shopee", category="100636"),
+        make_offer(item_id="shopee-fora", source="shopee", category="999"),
+        make_offer(item_id="meli-qualquer", source="meli", category="MLB1000"),
+    ]
+    result = {o.item_id for o in selection.filter_offers(offers, db, cfg)}
+    assert result == {"shopee-ok", "meli-qualquer"}
+    db.close()
+
+
+def test_filter_offers_category_lista_legado(tmp_path):
+    # Lista simples (formato antigo) continua valendo para TODAS as fontes.
+    db = StateDB(tmp_path / "s.db")
+    cfg = {**CFG, "selection": {**CFG["selection"], "category_ids": ["100636"]}}
+    offers = [
+        make_offer(item_id="shopee-ok", source="shopee", category="100636"),
+        make_offer(item_id="shopee-fora", source="shopee", category="999"),
+        make_offer(item_id="meli-fora", source="meli", category="MLB1000"),
+    ]
+    assert [o.item_id for o in selection.filter_offers(offers, db, cfg)] == ["shopee-ok"]
+    db.close()
+
+
 def test_ev_score():
     o1 = make_offer()  # price_current=24999, commission_pct=12.0, sales=0
     assert selection.ev_score(o1, CFG) == pytest.approx(29.9988)

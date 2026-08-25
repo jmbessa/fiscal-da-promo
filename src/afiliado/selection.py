@@ -8,13 +8,25 @@ from afiliado.watchlist import Watchlist
 MAX_CANDIDATES_FOR_PROMPT = 30
 
 
+def _allowed_categories(cfg: dict, source: str) -> set[str]:
+    """IDs de categoria permitidos para uma fonte, a partir de
+    `selection.category_ids`. Aceita lista (formato legado: vale para todas
+    as fontes) ou dict por fonte (`{"shopee": [...], "meli": [...]}`). Vazio
+    ou ausente = todas as categorias passam para aquela fonte."""
+    raw = cfg["selection"].get("category_ids") or []
+    if isinstance(raw, dict):
+        raw = raw.get(source) or []
+    return {str(c) for c in raw}
+
+
 def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
     sel = cfg["selection"]
-    allowed_cats = {str(c) for c in sel.get("category_ids") or []}
+    cats_by_source: dict[str, set[str]] = {}
     result = []
     for o in offers:
         if not (o.title and o.image_url and o.product_url):
             continue
+        allowed_cats = cats_by_source.setdefault(o.source, _allowed_categories(cfg, o.source))
         if allowed_cats and o.category not in allowed_cats:
             continue
         if o.discount_pct < sel["min_discount_pct"]:

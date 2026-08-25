@@ -154,6 +154,18 @@ def test_fetch_offers_mapeia_e_filtra(tmp_path):
     assert sem_original.price_original_cents == sem_original.price_current_cents == 5990
 
 
+def test_fetch_offers_usa_commission_pct_do_config(tmp_path):
+    # A busca do ML não traz comissão por item; sem uma estimativa em
+    # config.yaml (meli.commission_pct), toda oferta tem ev_score=0 e nunca
+    # sobrevive ao piso de valor esperado nem ao ranking contra a Shopee.
+    cfg_com = {"meli": {**CFG["meli"], "commission_pct": 4.0}}
+    offers = source_with(_authed_handler, tmp_path).fetch_offers(cfg_com)
+    assert offers and all(o.commission_pct == 4.0 for o in offers)
+
+    offers_sem = source_with(_authed_handler, tmp_path).fetch_offers(CFG)
+    assert offers_sem and all(o.commission_pct == 0.0 for o in offers_sem)
+
+
 def test_fetch_offers_erro_http_vira_source_error(tmp_path):
     def handler(request: httpx.Request):
         if request.url.path == "/oauth/token":

@@ -3,10 +3,12 @@ para uma oferta do Mercado Livre. Só a fonte e o canal são dublês; o HTTP da
 validação de link/imagem vai por httpx.MockTransport (nunca a rede real).
 
 Existe porque nenhum outro teste exercitava esse caminho — foi a ausência
-dele que deixou passar, por 156 testes verdes, dois bugs Critical que faziam
-o ML publicar zero ofertas em silêncio: `selection.category_ids` só
-reconhecia categorias da Shopee, e `validation.allowed_domains` não incluía
-domínios do ML."""
+dele que deixou passar, por 156 testes verdes, bugs Critical que faziam o ML
+publicar zero ofertas em silêncio: `selection.category_ids` só reconhecia
+categorias da Shopee, `validation.allowed_domains` não incluía domínios do
+ML, e `commission_pct` fixo em 0.0 zerava o `ev_score` de toda oferta do ML
+— com `selection.min_ev_brl` real (0.50) ativo, ela nunca sobreviveria ao
+piso (nem competiria no ranking contra a Shopee, mesmo sem piso)."""
 
 import httpx
 
@@ -15,15 +17,21 @@ from afiliado.channels.base import PublishResult
 from tests.test_models import make_offer
 from afiliado.state import StateDB
 
-# Espelha as partes relevantes do config.yaml real (category_ids por fonte e
-# allowed_domains com os domínios do ML) — o resto é o mínimo necessário para
-# o pipeline rodar sem depender de rede/LLM real.
+# Mesmo valor de config.yaml -> meli.commission_pct (comissão média estimada,
+# já que a busca não traz comissão por item).
+MELI_COMMISSION_PCT = 4.0
+
+# Espelha as partes relevantes do config.yaml real (category_ids por fonte,
+# allowed_domains com os domínios do ML, e min_ev_brl — o piso real de
+# produção, para provar que a oferta do ML sobrevive a ele) — o resto é o
+# mínimo necessário para o pipeline rodar sem depender de rede/LLM real.
 CFG = {
     "selection": {
         "posts_per_run": 1, "min_discount_pct": 20, "price_min_brl": 20,
         "price_max_brl": 1000, "dedupe_days": 30,
         "category_ids": {"shopee": ["100630", "100636"], "meli": []},
         "ev_weights": {"popularity": 0.3},
+        "min_ev_brl": 0.50,
     },
     "llm": {"model": "haiku"},
     "copy": {"tone": "empolgado, direto, sem exageros enganosos, pt-BR"},
@@ -72,7 +80,7 @@ def test_pipeline_publica_oferta_meli_ponta_a_ponta(tmp_path, monkeypatch):
 
     offer = make_offer(
         source="meli", item_id="MLB123456", category="MLB1000",
-        title="Fone de Ouvido Bluetooth XYZ", commission_pct=0.0,
+        title="Fone de Ouvido Bluetooth XYZ", commission_pct=MELI_COMMISSION_PCT,
         price_current_cents=14990, price_original_cents=19990,
         image_url="https://http2.mlstatic.com/D_NQ_NP_123-W.jpg",
         product_url="https://produto.mercadolivre.com.br/MLB-123456-fone-de-ouvido",
@@ -85,6 +93,10 @@ def test_pipeline_publica_oferta_meli_ponta_a_ponta(tmp_path, monkeypatch):
 
     summary = pipeline.run(CFG, [FakeMeliSource(offer)], [ch], db, validator=validator)
 
+    # Com commission_pct=0.0 (regressão), ev_score=0.0 < min_ev_brl=0.50 e a
+    # oferta é descartada por selection.filter_offers ANTES do try/except que
+    # alimenta summary.discarded em pipeline.run — o mesmo "some em silêncio"
+    # das outras duas correções. Ver verificação manual no relatório.
     assert summary.discarded == []
     assert len(ch.sent) == 1
     assert ch.sent[0].offer.item_id == "MLB123456"

@@ -139,6 +139,10 @@ class MeliSource:
         me = cfg["meli"]
         token = self.ensure_token()
         min_sold = me.get("min_sold", 0)
+        # A busca não traz comissão por item; usa a estimativa média de
+        # config.yaml (meli.commission_pct) para o ranking por valor
+        # esperado não zerar toda oferta do ML contra a Shopee.
+        commission_pct = float(me.get("commission_pct") or 0.0)
         headers = {"Authorization": f"Bearer {token}"}
         offers: list[Offer] = []
         seen_ids: set[str] = set()
@@ -158,7 +162,7 @@ class MeliSource:
             except ValueError as exc:
                 raise SourceError(f"meli API: resposta não é JSON válido: {exc}") from exc
             for result in data.get("results") or []:
-                offer = _parse_result(result, min_sold)
+                offer = _parse_result(result, min_sold, commission_pct)
                 if offer and offer.item_id not in seen_ids:
                     seen_ids.add(offer.item_id)
                     offers.append(offer)
@@ -187,7 +191,7 @@ class MeliSource:
         return self._links_pool
 
 
-def _parse_result(r: dict, min_sold: int) -> Offer | None:
+def _parse_result(r: dict, min_sold: int, commission_pct: float = 0.0) -> Offer | None:
     if "id" not in r or not r.get("title") or r.get("price") is None:
         return None
     try:
@@ -212,7 +216,7 @@ def _parse_result(r: dict, min_sold: int) -> Offer | None:
         title=str(r["title"]).strip(),
         price_original_cents=original_cents,
         price_current_cents=price_cents,
-        commission_pct=0.0,
+        commission_pct=commission_pct,
         image_url=_larger_thumbnail(str(r.get("thumbnail") or "")),
         product_url=str(r.get("permalink") or ""),
         category=str(r.get("category_id") or ""),

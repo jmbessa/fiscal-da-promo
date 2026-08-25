@@ -55,6 +55,10 @@ meli:
   category_ids: ["MLB1246", "MLB1574", "MLB1276", "MLB264586"]
   per_category: 50          # itens buscados por categoria (máx. 50 por página)
   min_sold: 5               # ignora itens sem tração
+  # Comissão média estimada do programa de afiliados do ML, usada no cálculo de
+  # valor esperado enquanto a API não expõe a taxa por item (a busca não traz).
+  # Ajuste com as taxas reais do seu painel de afiliados por categoria.
+  commission_pct: 4.0
 
 validation:
   # mercadolivre.com.br e mercadolivre.com precisam estar os dois: a checagem

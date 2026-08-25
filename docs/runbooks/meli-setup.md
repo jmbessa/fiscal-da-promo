@@ -97,10 +97,16 @@ de links **pré-gerados manualmente**:
 
 ## Notas
 
-- `commission_pct` das ofertas do Mercado Livre vem fixo em `0.0` nesta
-  fase — a busca pública não expõe comissão; de onde ela vem (e como isso
-  entra no ranking por valor esperado) é decisão da parte 2.
-- `rating` também vem fixo em `0.0` — a busca não traz nota média.
+- `commission_pct` das ofertas do Mercado Livre vem de `meli.commission_pct`
+  em `config.yaml` — uma **estimativa média** (padrão `4.0`, ou seja, 4%),
+  não a taxa real por item: a busca pública não expõe comissão por item.
+  **Ajuste esse valor com as taxas reais do seu painel de afiliados**
+  (variam por categoria); um valor desatualizado ou zerado distorce o
+  ranking por valor esperado (`ev_score`) e pode fazer o ML perder posição
+  para a Shopee — ou, com `selection.min_ev_brl` ativo, ser descartado
+  direto pelo piso. A parte 2 (spike do link de afiliado) deve reavaliar se
+  dá para obter a taxa de comissão por item em vez da estimativa média.
+- `rating` vem fixo em `0.0` — a busca não traz nota média.
 - **Actions (`publish.yml`) é efêmero — cuidado com `refresh_token`:** cada
   execução do workflow começa do zero, sem `data/meli_token.json`
   persistido entre runs. Se a autenticação cair no fluxo `refresh_token`

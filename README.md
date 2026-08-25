@@ -20,8 +20,8 @@ Pipeline automático de divulgação de ofertas com link de afiliado
 | `CLAUDE_CODE_OAUTH_TOKEN` | Rodar `claude setup-token` na sua máquina (usa a assinatura Max) |
 | `IG_USER_ID` / `IG_ACCESS_TOKEN` | Feed automático do Instagram (fase 2A) — seguir `docs/runbooks/meta-setup.md` |
 
-No GitHub: Settings → Secrets and variables → Actions → criar os secrets acima
-(os dois últimos só são necessários depois de concluir o runbook do Instagram).
+No GitHub: Settings → Secrets and variables → Actions → criar os 8 secrets acima
+(todos já repassados pelo `publish.yml`).
 
 ## Instagram (fase 2A)
 

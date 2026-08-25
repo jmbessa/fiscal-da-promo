@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.png binary
+*.ttf binary
+*.db binary

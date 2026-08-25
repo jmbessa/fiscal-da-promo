@@ -43,10 +43,14 @@ sources:
   meli: false
 
 shopee:
-  sort_types: [5]          # ordenações consultadas e mescladas; valores a confirmar no doctor (Task 14)
+  sort_types: [2]           # a API praticamente ignora a ordenação; 2 = mais vendidos
   list_type: 0
-  pages: 3
+  pages: 2
   page_size: 50
+  # Buscar POR categoria muda tudo: sem isso a API devolve majoritariamente a
+  # categoria 100644 (fora da nossa lista). Medido em 2026-08-25: desconto médio
+  # sobe de 19% para ~47% e a mediana de vendas de 282 para milhares.
+  category_ids: ["100630", "100636", "100001", "100637", "100632"]
 
 # Fase 3 (parte 1): descoberta no Mercado Livre (autenticação em MeliSource).
 # Geração de link de afiliado ainda não é automática — usa o pool pré-gerado

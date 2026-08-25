@@ -11,11 +11,12 @@ from afiliado.models import Offer
 GRAPHQL_URL = "https://open-api.affiliate.shopee.com.br/graphql"
 
 PRODUCT_OFFER_QUERY = """
-query productOfferV2($page: Int, $limit: Int, $sortType: Int, $listType: Int) {
-  productOfferV2(page: $page, limit: $limit, sortType: $sortType, listType: $listType) {
+query productOfferV2($page: Int, $limit: Int, $sortType: Int, $listType: Int, $productCatId: Int) {
+  productOfferV2(page: $page, limit: $limit, sortType: $sortType, listType: $listType, productCatId: $productCatId) {
     nodes {
       itemId productName price priceDiscountRate commissionRate sales
       imageUrl productLink offerLink productCatIds
+      priceMin priceMax commission ratingStar periodEndTime
     }
   }
 }
@@ -65,19 +66,29 @@ class ShopeeSource:
         sh = cfg["shopee"]
         offers: list[Offer] = []
         seen_ids: set[str] = set()
-        for sort_type in sh["sort_types"]:
-            for page in range(1, sh["pages"] + 1):
-                data = self._post({
-                    "query": PRODUCT_OFFER_QUERY,
-                    "variables": {"page": page, "limit": sh["page_size"],
-                                  "sortType": sort_type, "listType": sh["list_type"]},
-                })
-                nodes = (data.get("productOfferV2") or {}).get("nodes") or []
-                for node in nodes:
-                    offer = _parse_node(node)
-                    if offer and offer.item_id not in seen_ids:
-                        seen_ids.add(offer.item_id)
-                        offers.append(offer)
+        # Sem productCatId, a API devolve majoritariamente uma única categoria
+        # fora da nossa allowlist (medido contra a API real, ver Fase 1.9) —
+        # por isso a busca sempre itera por categoria. category_ids vazia/
+        # ausente cai em [None]: uma única busca sem productCatId, igual ao
+        # comportamento anterior a esta fase.
+        category_ids = sh.get("category_ids") or [None]
+        for category_id in category_ids:
+            for sort_type in sh["sort_types"]:
+                for page in range(1, sh["pages"] + 1):
+                    variables = {"page": page, "limit": sh["page_size"],
+                                 "sortType": sort_type, "listType": sh["list_type"]}
+                    if category_id is not None:
+                        variables["productCatId"] = int(category_id)
+                    data = self._post({
+                        "query": PRODUCT_OFFER_QUERY,
+                        "variables": variables,
+                    })
+                    nodes = (data.get("productOfferV2") or {}).get("nodes") or []
+                    for node in nodes:
+                        offer = _parse_node(node)
+                        if offer and offer.item_id not in seen_ids:
+                            seen_ids.add(offer.item_id)
+                            offers.append(offer)
         return offers
 
     def resolve_affiliate_link(self, offer: Offer) -> str:
@@ -97,6 +108,13 @@ class ShopeeSource:
 def _parse_node(node: dict) -> Offer | None:
     if "itemId" not in node:
         return None
+    period_end = node.get("periodEndTime")
+    if period_end is not None:
+        try:
+            if float(period_end) < time.time():
+                return None
+        except (TypeError, ValueError):
+            pass
     try:
         price_cents = int(Decimal(str(node["price"])) * 100)
     except (KeyError, TypeError, InvalidOperation):
@@ -124,7 +142,28 @@ def _parse_node(node: dict) -> Offer | None:
         category=str(cats[0]) if cats else "",
         sales=int(node.get("sales") or 0),
         rating=_parse_rating(node.get("ratingStar")),
+        price_min_cents=_cents_or_zero(node.get("priceMin")),
+        price_max_cents=_cents_or_zero(node.get("priceMax")),
+        commission_brl=_commission_brl(node.get("commission")),
     )
+
+
+def _cents_or_zero(raw) -> int:
+    """priceMin/priceMax vêm como string decimal; ausentes, inválidos ou
+    zero viram 0 (desconhecido)."""
+    try:
+        val = Decimal(str(raw))
+    except (TypeError, InvalidOperation):
+        return 0
+    return int(val * 100) if val > 0 else 0
+
+
+def _commission_brl(raw) -> float:
+    """commission (R$ absoluto) vem como string decimal; ausente/inválido vira 0.0."""
+    try:
+        return float(Decimal(str(raw if raw is not None else "0")))
+    except InvalidOperation:
+        return 0.0
 
 
 def _parse_rating(raw) -> float:

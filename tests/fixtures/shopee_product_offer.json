@@ -6,14 +6,20 @@
           "itemId": 123456,
           "productName": "Tênis Nike SB Chron 2",
           "price": "249.99",
+          "priceMin": "199.99",
+          "priceMax": "249.99",
           "priceDiscountRate": 50,
           "commissionRate": "0.12",
+          "commission": "29.9988",
           "sales": 1500,
           "ratingStar": "4.9",
           "imageUrl": "https://cf.shopee.com.br/file/abc.jpg",
           "productLink": "https://shopee.com.br/product/1/123456",
           "offerLink": "https://s.shopee.com.br/xyz",
-          "productCatIds": [100636]
+          "productCatIds": [100636],
+          "shopName": "Loja Exemplo",
+          "shopId": 629793707,
+          "periodEndTime": 32503651199
         },
         {
           "itemId": 777,

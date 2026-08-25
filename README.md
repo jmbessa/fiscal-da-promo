@@ -39,12 +39,10 @@ Dois canais, dois níveis de automação:
   colar o link recebido no sticker de link. Não depende de nenhuma credencial
   da Meta. O teto diário (`max_per_day: 6`) evita acumular mais artes do que
   dá pra postar manualmente num dia.
-- **`instagram_feed` (100% automático via Graph API, desligado por padrão,
-  teto de 2/dia)** — publica direto no feed (1080×1350) sem intervenção
-  humana. Fica desligado em `config.yaml` (`channels.instagram_feed.enabled:
-  false`) até você concluir `docs/runbooks/meta-setup.md` (conta business,
-  página do Facebook vinculada, app na Meta for Developers e token de acesso)
-  e exportar `IG_USER_ID` / `IG_ACCESS_TOKEN`. O caption do feed nunca leva o
+- **`instagram_feed` (100% automático via Graph API, teto de 2/dia)** —
+  publica direto no feed (1080×1350) sem intervenção humana. Requer
+  `IG_USER_ID` / `IG_ACCESS_TOKEN` (obtidos via `docs/runbooks/meta-setup.md`;
+  variante da API em `instagram.api`) e `channels.instagram_feed.enabled: true`. O caption do feed nunca leva o
   link de afiliado — só "🔗 Link na bio e no canal do Telegram" — porque a API
   não permite CTA clicável fora da bio.
 

@@ -36,7 +36,8 @@ def _meli() -> MeliSource | None:
     client_id = _env("MELI_CLIENT_ID")
     client_secret = _env("MELI_CLIENT_SECRET")
     if not (client_id and client_secret):
-        print("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente")
+        print("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
+              "(ver docs/runbooks/meli-setup.md)")
         return None
     return MeliSource(client_id, client_secret, refresh_token=_env("MELI_REFRESH_TOKEN"))
 
@@ -148,12 +149,11 @@ def doctor(cfg: dict) -> int:
         ok = False
         print(f"❌ Shopee: {exc}")
 
-    meli_client_id = os.environ.get("MELI_CLIENT_ID", "")
-    meli_client_secret = os.environ.get("MELI_CLIENT_SECRET", "")
-    if meli_client_id and meli_client_secret:
+    meli = _meli()  # reaproveita o helper de _build_sources: mesma leitura de
+                    # env (_env, já com .strip()) e a mesma construção; sem
+                    # credenciais, _meli() já imprime o aviso e não falha o doctor.
+    if meli is not None:
         try:
-            meli = MeliSource(meli_client_id, meli_client_secret,
-                              refresh_token=os.environ.get("MELI_REFRESH_TOKEN", ""))
             meli.ensure_token()
             me_cfg = {**(cfg.get("meli") or {}), "per_category": 1}
             offers = meli.fetch_offers({**cfg, "meli": me_cfg})
@@ -161,8 +161,6 @@ def doctor(cfg: dict) -> int:
         except Exception as exc:
             ok = False
             print(f"❌ Mercado Livre: {exc}")
-    else:
-        print("ℹ️ Mercado Livre: não configurado (ver docs/runbooks/meli-setup.md)")
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")

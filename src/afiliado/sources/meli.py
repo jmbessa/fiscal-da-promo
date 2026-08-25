@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -77,6 +78,10 @@ class MeliSource:
         return self._access_token
 
     def _post_token(self, payload: dict) -> dict | None:
+        # json=payload é intencional, não "esquecido": testado contra o
+        # endpoint real com credenciais inválidas, JSON e
+        # x-www-form-urlencoded devolvem o mesmo erro (invalid_client) — as
+        # duas formas são aceitas. Não trocar por form-encoded.
         try:
             r = self.client.post(TOKEN_URL, json=payload)
         except httpx.HTTPError:
@@ -106,14 +111,27 @@ class MeliSource:
         return self.refresh_token
 
     def _persist_token(self, refresh_token: str, access_token: str, expires_in) -> None:
-        self.token_path.parent.mkdir(parents=True, exist_ok=True)
+        """Grava em arquivo temporário no mesmo diretório e troca com
+        `os.replace` (atômico no mesmo sistema de arquivos): uma interrupção
+        no meio nunca deixa `token_path` truncado/corrompido — o pior caso é
+        o arquivo temporário sobrar, nunca perder a rotação do refresh_token
+        já persistida. Qualquer OSError (permissão, disco cheio) vira
+        SourceError em vez de escapar cru — perder a rotação em silêncio
+        quebraria a autenticação na próxima execução."""
         payload = {
             "refresh_token": refresh_token,
             "access_token": access_token,
             "expires_at": time.time() + float(expires_in or 0),
         }
-        self.token_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path = self.token_path.with_name(self.token_path.name + ".tmp")
+        try:
+            self.token_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_path, self.token_path)
+        except OSError as exc:
+            tmp_path.unlink(missing_ok=True)
+            raise SourceError(f"meli: falha ao persistir o token rotacionado: {exc}") from exc
 
     # -- descoberta -------------------------------------------------------
 

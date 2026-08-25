@@ -82,6 +82,39 @@ def test_fallback_refresh_token_persiste_rotacao(tmp_path):
     assert saved["access_token"] == "TOK-NEW"
 
 
+def _refresh_only_handler(request: httpx.Request) -> httpx.Response:
+    """client_credentials sempre recusado -> força o caminho refresh_token,
+    que é o único que grava em disco (usado pelos testes de persistência)."""
+    if request.url.path == "/oauth/token":
+        body = json.loads(request.content)
+        if body["grant_type"] == "client_credentials":
+            return httpx.Response(400, json={"error": "invalid_client"})
+        return httpx.Response(200, json={
+            "access_token": "TOK-NEW", "refresh_token": "NEW-REFRESH", "expires_in": 21600})
+    raise AssertionError(f"caminho inesperado: {request.url.path}")
+
+
+def test_persist_token_falha_vira_source_error(tmp_path, monkeypatch):
+    import os
+
+    def boom(*a, **k):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(os, "replace", boom)
+    src = source_with(_refresh_only_handler, tmp_path, refresh_token="OLD-REFRESH")
+    with pytest.raises(SourceError, match="persistir"):
+        src.ensure_token()
+
+
+def test_persist_token_e_atomico(tmp_path):
+    token_path = tmp_path / "meli_token.json"
+    src = source_with(_refresh_only_handler, tmp_path, refresh_token="OLD-REFRESH",
+                      token_path=token_path)
+    src.ensure_token()
+    # só o arquivo final sobrevive: nenhum .tmp deixado para trás pela troca atômica
+    assert list(tmp_path.iterdir()) == [token_path]
+
+
 def test_token_do_arquivo_tem_precedencia_sobre_env(tmp_path):
     token_path = tmp_path / "meli_token.json"
     token_path.write_text(json.dumps({"refresh_token": "do-arquivo"}), encoding="utf-8")

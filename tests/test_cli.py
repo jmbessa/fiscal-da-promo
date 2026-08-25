@@ -1,4 +1,5 @@
 import json
+import os
 
 from afiliado import cli, pipeline
 from afiliado.watchlist import Watchlist
@@ -205,3 +206,18 @@ def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
     assert cli.main(["run", "--config", str(cfg_file)]) == 0
     story = next(c for c in chamado["channels"] if c.name == "story_dispatch")
     assert story.brand_name == "Fiscal da Promo"
+
+
+def test_load_dotenv_sets_missing_and_keeps_existing(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    linhas = ["A_NOVA=1", 'JA_EXISTE="ignorado"', "# comentario", "SEM_IGUAL", ""]
+    env_file.write_text(chr(10).join(linhas), encoding="utf-8")
+    monkeypatch.delenv("A_NOVA", raising=False)
+    monkeypatch.setenv("JA_EXISTE", "original")
+    assert cli.load_dotenv(env_file) == 1
+    assert os.environ["A_NOVA"] == "1"
+    assert os.environ["JA_EXISTE"] == "original"
+
+
+def test_load_dotenv_missing_file_is_noop(tmp_path):
+    assert cli.load_dotenv(tmp_path / "nao-existe.env") == 0

@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 
 import httpx
 
@@ -148,7 +149,28 @@ def doctor(cfg: dict) -> int:
     return 0 if ok else 1
 
 
+def load_dotenv(path: str | Path = ".env") -> int:
+    """Carrega KEY=VALUE de um .env local para o ambiente SEM sobrescrever
+    variáveis já definidas (produção usa secrets reais; .env é só conforto
+    local e está no .gitignore). Retorna quantas variáveis foram definidas."""
+    p = Path(path)
+    if not p.is_file():
+        return 0
+    n = 0
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            n += 1
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     args = _build_parser().parse_args(argv)
     cfg = config.load_config(args.config)
     if args.cmd == "doctor":

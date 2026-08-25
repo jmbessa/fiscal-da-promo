@@ -1,5 +1,7 @@
 import io
 import json
+
+import pytest
 import os
 
 from afiliado import cli, pipeline
@@ -209,6 +211,7 @@ def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
     assert story.brand_name == "Fiscal da Promo"
 
 
+@pytest.mark.dotenv_real
 def test_load_dotenv_sets_missing_and_keeps_existing(monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     linhas = ["A_NOVA=1", 'JA_EXISTE="ignorado"', "# comentario", "SEM_IGUAL", ""]
@@ -223,6 +226,7 @@ def test_load_dotenv_sets_missing_and_keeps_existing(monkeypatch, tmp_path):
     assert os.environ["JA_EXISTE"] == "original"
 
 
+@pytest.mark.dotenv_real
 def test_load_dotenv_missing_file_is_noop(tmp_path):
     assert cli.load_dotenv(tmp_path / "nao-existe.env") == 0
 

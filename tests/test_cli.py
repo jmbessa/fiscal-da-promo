@@ -351,6 +351,79 @@ def test_run_abortado_manda_o_resumo_com_os_avisos_e_sai_com_erro(monkeypatch, t
     assert "fonte shopee falhou: HTTP 503" in enviados[0]
 
 
+def test_heartbeat_e_enviado_mesmo_com_notify_empty_runs_false(monkeypatch, tmp_path):
+    # M12: o "Bom dia" é um aviso, então passa pelo mesmo caminho de envio —
+    # run "vazio" com heartbeat notifica.
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_text += chr(10).join(["", "ops:", "  notify_empty_runs: false", ""])
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda token, chat, text, *a, **k: enviados.append(text))
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        return pipeline.RunSummary(
+            warnings=["☀️ Bom dia — ontem: 12 publicados, 3 descartados em 190 runs"])
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    assert len(enviados) == 1 and "Bom dia" in enviados[0]
+
+
+def test_sinal_avisa_o_ops_e_sai_com_128_mais_n(monkeypatch):
+    # M12: o SIGTERM do TimeoutStartSec matava o Python sem exceção — sem
+    # resumo, sem "❌ Run abortado", ops em silêncio.
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda token, chat, text, *a, **k: enviados.append(text))
+    handler = cli._signal_handler("tok", "999")
+    with pytest.raises(SystemExit) as info:
+        handler(15, None)
+    assert info.value.code == 143
+    assert enviados == ["❌ Run interrompido (sinal 15)"]
+
+
+def test_sinal_sem_ops_so_sai(monkeypatch):
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append(a))
+    with pytest.raises(SystemExit) as info:
+        cli._signal_handler("", "")(2, None)
+    assert info.value.code == 130 and enviados == []
+
+
+def test_main_instala_handlers_de_sigterm_e_sigint(monkeypatch, tmp_path):
+    import signal
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    instalados = {}
+    monkeypatch.setattr(cli.signal, "signal", lambda signum, h: instalados.__setitem__(signum, h))
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        (open("config.yaml", encoding="utf-8").read()
+         .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+         .replace("data/watchlist.json",
+                  str(tmp_path / "sem-watchlist.json").replace("\\", "/"))),
+        encoding="utf-8")
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    assert signal.SIGTERM in instalados and signal.SIGINT in instalados
+
+
 def test_build_sources_defaults_to_shopee_only_when_key_absent(monkeypatch):
     monkeypatch.setenv("SHOPEE_APP_ID", "id")
     monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")

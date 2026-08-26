@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 
 import httpx
@@ -25,6 +25,10 @@ _VALOR = re.compile(r"R\$\s?[\d.,]+|\d+")
 # Acima disto, descartes iguais viram uma linha só (C5: 37 linhas já
 # estouravam os 4096 chars do Telegram e o resumo sumia em silêncio).
 AGRUPA_DESCARTES_A_PARTIR_DE = 4
+# Canal que falha tantas vezes SEGUIDAS no mesmo run (bot removido, chat id
+# errado) fecha até o próximo run — a variante "canal falhando" do C2: sem
+# isto cada oferta da fila pagava LLM + link para uma publicação que ia falhar.
+MAX_FALHAS_SEGUIDAS_POR_CANAL = 3
 
 
 def _motivo(descarte: str) -> str:
@@ -146,6 +150,14 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     sel = cfg["selection"]
     llm.stats.reset()
 
+    # Heartbeat (fase 5A): o primeiro run do dia local diz bom dia com a
+    # contagem de ontem. Vai SEMPRE ao ops (é um aviso, e aviso notifica) —
+    # uma VPS morta deixa de ser indistinguível de "sem oferta boa".
+    if not dry_run:
+        ontem = db.day_stats(db.local_today() - timedelta(days=1))
+        warn(f"☀️ Bom dia — ontem: {ontem.published} publicados, "
+             f"{ontem.discarded} descartados em {ontem.runs} runs", key="heartbeat")
+
     # Avisos de quem montou fontes/canais (ex.: canal ligado sem env) — antes
     # eram só um print no journal e o chat de ops via "✅ Run concluído".
     for aviso in warnings_iniciais or []:
@@ -205,8 +217,12 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     usados: dict[str, int] = {}
     usados_dia = {ch.name: db.count_posts_today(ch.name)
                   for ch in channels if orcamento[ch.name] is not None}
+    falhas_seguidas: dict[str, int] = {}
+    fechados: set[str] = set()
 
     def aberto(ch) -> bool:
+        if ch.name in fechados:
+            return False
         orc = orcamento[ch.name]
         if orc is not None and usados_dia.get(ch.name, 0) >= orc:
             return False
@@ -287,13 +303,19 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                     usados_dia[ch.name] = usados_dia.get(ch.name, 0) + 1
                 db.record_post(post, ch.name, res.message_id)
                 published_any = True
+                falhas_seguidas[ch.name] = 0
             else:
                 summary.discarded.append(f"{rotulo}: publicação falhou em {ch.name}: {res.error}")
+                falhas_seguidas[ch.name] = falhas_seguidas.get(ch.name, 0) + 1
+                if falhas_seguidas[ch.name] >= MAX_FALHAS_SEGUIDAS_POR_CANAL:
+                    fechados.add(ch.name)
+                    warn(f"⚠️ {ch.name}: {MAX_FALHAS_SEGUIDAS_POR_CANAL} falhas seguidas — "
+                         "canal fechado neste run")
         if published_any:
             summary.published.append(rotulo)
             count += 1
-            if not any(aberto(ch) for ch in channels):
-                break   # ninguém mais pode publicar: a próxima oferta não paga nada
+        if not any(aberto(ch) for ch in channels):
+            break   # ninguém mais pode publicar: a próxima oferta não paga nada
 
     for ch in channels:
         if ch.name in tetos_atingidos:

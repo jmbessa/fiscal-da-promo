@@ -484,6 +484,46 @@ def test_run_sem_canais_nao_gasta_a_fila(tmp_path, monkeypatch):
     db.close()
 
 
+def test_run_canal_que_so_falha_fecha_apos_tres_falhas_seguidas(tmp_path, monkeypatch):
+    # Variante "canal falhando" do C2 (bot removido, chat id errado): o canal
+    # está "aberto" mas toda publicação falha — e cada oferta da fila pagava
+    # LLM + link. Três falhas seguidas fecham o canal neste run.
+    _congela(monkeypatch, 23, 55)
+    chamadas_llm = []
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: chamadas_llm.append(1) or None)
+    db = StateDB(tmp_path / "s.db")
+    src = ContadorSource([make_offer(item_id=str(i)) for i in range(20)])
+    ch = NamedFakeChannel("telegram", always_fail=True)
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 10}}
+    summary = pipeline.run(cfg, [src], [ch], db, validator=no_network_validator)
+    assert len(ch.sent) == 3
+    assert src.links == 3
+    assert len(chamadas_llm) == 1 + 3 * 2          # ranking + 2 tentativas de copy × 3
+    assert len(summary.discarded) == 3
+    assert any("3 falhas seguidas" in w for w in summary.warnings)
+    db.close()
+
+
+def test_run_falha_isolada_nao_fecha_o_canal(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class FalhaNaSegunda(NamedFakeChannel):
+        def publish(self, post):
+            self.sent.append(post)
+            if len(self.sent) == 2:
+                return PublishResult(False, error="oscilou")
+            return PublishResult(True, str(len(self.sent)))
+
+    ch = FalhaNaSegunda("telegram")
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 3}}
+    summary = pipeline.run(cfg, [FakeSource([make_offer(item_id=str(i)) for i in range(4)])],
+                           [ch], db, validator=no_network_validator)
+    assert len(summary.published) == 3 and len(ch.sent) == 4
+    assert not any("falhas seguidas" in w for w in summary.warnings)
+    db.close()
+
+
 def test_pacing_budget_exemplos_do_brief():
     def em(hh, mm):
         return datetime(2026, 8, 26, hh, mm, tzinfo=BRT)
@@ -644,6 +684,52 @@ def test_dry_run_nao_escreve_no_banco_nem_baixa_imagem(tmp_path, monkeypatch):
     assert len(summary.published) == 2
     assert summary.discarded == []
     assert contagens() == antes
+    db.close()
+
+
+# --- Fase 5A (M12): heartbeat -------------------------------------------------
+
+def test_run_heartbeat_so_no_primeiro_run_do_dia(tmp_path, monkeypatch):
+    # Teste obrigatório 14: uma VPS morta (Oracle recolhe VM ociosa) era
+    # indistinguível de "sem oferta boa". O primeiro run do dia local diz
+    # bom dia com a contagem de ontem; os 191 seguintes não repetem.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 22, 0, dia=25)          # ontem, dia BRT 25/08
+    _ja_postados(db, "telegram", 2)
+    db.record_run(published=2, discarded=3)
+    db.record_run(published=0, discarded=0)
+    _congela(monkeypatch, 8, 0, dia=26)
+    s1 = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db, validator=no_network_validator)
+    s2 = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db, validator=no_network_validator)
+    assert s1.warnings[0] == "☀️ Bom dia — ontem: 2 publicados, 3 descartados em 2 runs"
+    assert not any("Bom dia" in w for w in s2.warnings)
+    _congela(monkeypatch, 8, 0, dia=27)
+    s3 = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db, validator=no_network_validator)
+    assert any(w.startswith("☀️ Bom dia — ontem: 0 publicados, 0 descartados em 2 runs")
+               for w in s3.warnings)
+    db.close()
+
+
+def test_run_heartbeat_aparece_mesmo_com_todos_no_teto(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    _congela(monkeypatch, 23, 55)
+    db = StateDB(tmp_path / "s.db")
+    ch = _canal("telegram", 1)
+    _ja_postados(db, "telegram", 1)
+    summary = pipeline.run(CFG, [FakeSource([make_offer()])], [ch], db,
+                           validator=no_network_validator)
+    assert any("Bom dia" in w for w in summary.warnings)
+    assert any("teto diário atingido em todos os canais" in w for w in summary.warnings)
+    db.close()
+
+
+def test_dry_run_nao_emite_heartbeat(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    summary = pipeline.run(CFG, [FakeSource([])], [], db, dry_run=True,
+                           validator=no_network_validator)
+    assert not any("Bom dia" in w for w in summary.warnings)
     db.close()
 
 

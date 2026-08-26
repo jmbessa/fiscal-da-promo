@@ -1,6 +1,7 @@
 import argparse
 import io
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -261,6 +262,26 @@ def load_dotenv(path: str | Path = ".env", override: bool = True) -> int:
     return n
 
 
+def _signal_handler(token: str, ops: str):
+    """SIGTERM (TimeoutStartSec do systemd) e SIGINT matavam o Python sem
+    exceção: sem resumo, sem "❌ Run abortado", ops em silêncio (fase 5A).
+    Avisa o chat de operações e sai com 128+n, como um processo morto por
+    sinal."""
+    def handler(signum, frame):
+        if token and ops:
+            send_text(token, ops, f"❌ Run interrompido (sinal {signum})")
+        raise SystemExit(128 + int(signum))
+    return handler
+
+
+def _install_signal_handlers(token: str, ops: str) -> None:
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _signal_handler(token, ops))
+        except (ValueError, OSError):
+            pass   # fora da thread principal (embutido/testes): segue sem handler
+
+
 def configure_stdout(stream=None) -> None:
     """Garante saída UTF-8 (emojis do doctor/resumos) mesmo em console Windows
     cp1252; sem efeito quando o stream já é UTF-8 ou não suporta reconfigure."""
@@ -289,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         avisos += avisos_canais
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
+    _install_signal_handlers(token, "" if args.dry_run else ops)
     try:
         wl = load_watchlist((cfg.get("watchlist") or {}).get("path", "data/watchlist.json"))
     except Exception:

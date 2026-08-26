@@ -9,6 +9,9 @@ from afiliado.models import Offer
 
 @dataclass(frozen=True)
 class PriceFloor:
+    """Mínima curada com a janela que a mediu. `window_days` ausente no
+    arquivo carrega 0 (não 365): o selo diz "últimos N dias" e não pode
+    inventar N — com 0, `pricing.verdict` não emite selo nenhum."""
     min_price_cents: int
     window_days: int
 
@@ -17,7 +20,9 @@ class PriceFloor:
 class PriceRef:
     """Referência curada: mediana (`ref_cents`), topo do quartil mais barato
     (`p25_cents`) e a janela real em dias. Entrada sem p25 carrega 0 — e
-    sem p25 o post nunca alega desconto (conservador por construção)."""
+    sem p25 o post nunca alega desconto (conservador por construção). Idem
+    para `window_days`: ausente vira 0 (não 90) e a regra do quartil, que
+    exige >= 14 dias MEDIDOS, nunca dispara por um default silencioso."""
     ref_cents: int
     window_days: int
     p25_cents: int = 0
@@ -81,10 +86,11 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
             category_boosts={str(k): float(v) for k, v in raw_category_boosts.items()},
             hot_items={str(k): float(v.get("boost", 1.0)) if isinstance(v, dict) else float(v)
                        for k, v in raw_hot_items.items()},
-            price_floors={str(k): PriceFloor(int(v["min_price_cents"]), int(v.get("window_days", 365)))
+            price_floors={str(k): PriceFloor(int(v["min_price_cents"]),
+                                             int(v.get("window_days") or 0))
                           for k, v in raw_price_floors.items()
                           if isinstance(v, dict) and "min_price_cents" in v},
-            price_refs={str(k): PriceRef(int(v["ref_cents"]), int(v.get("window_days", 90)),
+            price_refs={str(k): PriceRef(int(v["ref_cents"]), int(v.get("window_days") or 0),
                                          int(v.get("p25_cents") or 0))
                         for k, v in raw_price_refs.items()
                         if isinstance(v, dict) and "ref_cents" in v},

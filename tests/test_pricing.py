@@ -350,7 +350,9 @@ def test_record_observations_grava_o_preco_atual(tmp_path):
 
 def test_enrich_degrau_1_valor_ja_presente_vence(tmp_path):
     db = StateDB(tmp_path / "s.db")
-    _seed_history(db, [1000] * 20)
+    # Histórico próprio ACIMA do piso da oferta: o piso curado só cede a uma
+    # observação nossa MAIS BARATA (ver os testes do Fix 3 abaixo).
+    _seed_history(db, [9000] * 20)
     wl = _wl(price_refs={"123456": PriceRef(2000, 90, 1900)},
              price_floors={"123456": PriceFloor(1500, 90)})
     offer = make_offer(price_ref_cents=7890, price_p25_cents=7000, price_window_days=91,
@@ -362,7 +364,7 @@ def test_enrich_degrau_1_valor_ja_presente_vence(tmp_path):
 
 def test_enrich_degrau_2_watchlist_traz_ref_p25_e_janelas(tmp_path):
     db = StateDB(tmp_path / "s.db")
-    _seed_history(db, [1000] * 20)
+    _seed_history(db, [3000] * 20)          # acima do piso curado: não o baixa
     wl = _wl(price_refs={"123456": PriceRef(2590, 90, 2428)},
              price_floors={"123456": PriceFloor(1699, 196)})
     (out,) = pricing.enrich_offers([make_offer()], db, wl, CFG)
@@ -401,6 +403,77 @@ def test_enrich_degrau_3_exige_observacoes_minimas(tmp_path):
     # o piso segue a mesma exigência: poucos dias observados não são "mínima
     # histórica" e não podem virar selo de menor preço.
     assert out.price_floor_cents == 0 and out.price_floor_window_days == 0
+    db.close()
+
+
+# -- Fix 3: o piso curado envelhece; a observação própria só pode BAIXÁ-LO ----
+
+def test_enrich_piso_curado_cede_a_observacao_propria_mais_barata(tmp_path):
+    # Piso curado 24000 (watchlist de meses atrás) e UMA observação nossa de
+    # 23500: o selo "menor preço" só pode sair a <= 23500. Sem isto, o piso
+    # envelhecia sem limite e o post carimbava "menor preço dos últimos 12
+    # meses" num preço que nós mesmos já tínhamos visto mais barato.
+    db = StateDB(tmp_path / "s.db")
+    _seed_history(db, [23500])                       # um único dia observado
+    wl = _wl(price_floors={"123456": PriceFloor(24000, 365)})
+    (acima,) = pricing.enrich_offers([make_offer(price_current_cents=23600)], db, wl, CFG)
+    assert acima.price_floor_cents == 23500
+    assert acima.price_floor_window_days == 365      # a MAIOR das duas janelas
+    assert pricing.verdict(acima, 10).seal == ""     # 23600 > 23500: sem selo
+    (no_piso,) = pricing.enrich_offers([make_offer(price_current_cents=23500)], db, wl, CFG)
+    assert pricing.verdict(no_piso, 10).seal == "🏷️ Menor preço dos últimos 12 meses (verificado)"
+    db.close()
+
+
+def test_enrich_piso_baixa_sem_exigir_ref_min_observations(tmp_path):
+    # Um dia observado não vira PISO do nada (degrau 3 exige 14 dias), mas
+    # BAIXA um piso curado: um preço que nós vimos existiu — negá-lo é que
+    # seria invenção.
+    db = StateDB(tmp_path / "s.db")
+    _seed_history(db, [23500])
+    (sem_curado,) = pricing.enrich_offers([make_offer()], db, None, CFG)
+    assert sem_curado.price_floor_cents == 0         # nada curado, 1 dia < 14
+    wl = _wl(price_floors={"123456": PriceFloor(24000, 365)})
+    (com_curado,) = pricing.enrich_offers([make_offer()], db, wl, CFG)
+    assert com_curado.price_floor_cents == 23500
+    db.close()
+
+
+def test_enrich_observacao_propria_nunca_sobe_o_piso(tmp_path):
+    # O caminho é de mão única: histórico próprio mais CARO não afrouxa o selo
+    # nem encurta a janela do piso curado.
+    db = StateDB(tmp_path / "s.db")
+    _seed_history(db, [30000] * 20)
+    wl = _wl(price_floors={"123456": PriceFloor(24000, 365)})
+    (out,) = pricing.enrich_offers([make_offer(price_current_cents=24000)], db, wl, CFG)
+    assert (out.price_floor_cents, out.price_floor_window_days) == (24000, 365)
+    assert pricing.verdict(out, 10).seal.endswith("últimos 12 meses (verificado)")
+    db.close()
+
+
+def test_enrich_piso_do_pool_do_ml_tambem_cede(tmp_path):
+    # Degrau 1 (mínima histórica do pool do ML) segue a mesma regra: o preço
+    # vivo que gravamos ontem é observação nossa e vale mais que a mínima do
+    # JoomPulse — que pode ser de outro anúncio (o vencedor do buy box muda).
+    db = StateDB(tmp_path / "s.db")
+    _seed_history(db, [2900] * 3, source="meli", item_id="MLB1")
+    offer = make_offer(source="meli", item_id="MLB1", price_current_cents=2900,
+                       price_ref_cents=7890, price_p25_cents=3051, price_window_days=91,
+                       price_floor_cents=3051, price_floor_window_days=365)
+    (out,) = pricing.enrich_offers([offer], db, None, CFG)
+    assert (out.price_floor_cents, out.price_floor_window_days) == (2900, 365)
+    db.close()
+
+
+def test_enrich_piso_sem_janela_curada_herda_a_janela_medida(tmp_path):
+    # Piso curado sem janela (0) que a nossa observação baixa: a janela passa
+    # a ser a nossa, medida — e aí o selo pode existir, dizendo N de verdade.
+    db = StateDB(tmp_path / "s.db")
+    _seed_history(db, [2000] * 5)
+    wl = _wl(price_floors={"123456": PriceFloor(2500, 0)})
+    (out,) = pricing.enrich_offers([make_offer(price_current_cents=2000)], db, wl, CFG)
+    assert (out.price_floor_cents, out.price_floor_window_days) == (2000, 5)
+    assert pricing.verdict(out, 10).seal == "🏷️ Menor preço dos últimos 5 dias (verificado)"
     db.close()
 
 

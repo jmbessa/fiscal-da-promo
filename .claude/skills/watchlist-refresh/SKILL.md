@@ -145,6 +145,10 @@ Para cada item, restrito aos **últimos 90 dias**:
 5. **`price_floors[<itemId>].min_price_cents` = menor `modelPrice` da janela**
    × 100 (inteiro); `window_days` = dias entre o `priceStart` mais antigo do
    item e hoje.
+6. `window_days` é **obrigatório** nos dois mapas: ausente, o pipeline carrega
+   **0** (não 90/365) — e com 0 não há selo ("últimos N dias" sem N) nem modo
+   A (a janela nunca chega aos 14 dias). Escrever a janela medida é a única
+   forma de a entrada valer alguma coisa.
 
 Item sem nenhuma linha no cubo fica de fora dos dois mapas: sem referência o
 pipeline ainda publica, só não alega desconto (modo B do post).

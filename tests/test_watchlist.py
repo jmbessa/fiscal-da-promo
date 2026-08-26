@@ -82,6 +82,21 @@ def test_load_watchlist_price_refs_sem_p25_carrega_zero(tmp_path):
     assert wl.price_ref("9212570285").p25_cents == 0
 
 
+def test_load_watchlist_sem_window_days_carrega_zero(tmp_path):
+    # Janela ausente vale 0, não 365/90: o texto do selo diz "últimos N dias"
+    # e a regra do quartil exige >= 14 dias MEDIDOS — um default silencioso
+    # inventava a janela (365 dias de mínima a partir de um arquivo que não
+    # disse nada). Com 0, nem selo nem modo A disparam.
+    path = write_watchlist(tmp_path / "watchlist.json", {
+        "generated_at": "2026-08-23",
+        "price_floors": {"a": {"min_price_cents": 4999}},
+        "price_refs": {"b": {"ref_cents": 2590, "p25_cents": 2428}},
+    })
+    wl = load_watchlist(path)
+    assert wl.price_floors == {"a": PriceFloor(4999, 0)}
+    assert wl.price_refs == {"b": PriceRef(2590, 0, 2428)}
+
+
 def test_facts_only_mantem_refs_e_pisos_e_zera_boosts():
     # C11: watchlist vencida perde só os boosts; referências e pisos são
     # fatos datados e continuam na régua.
@@ -114,7 +129,7 @@ def test_load_watchlist_price_refs_malformada_degrada(tmp_path):
     })
     wl = load_watchlist(path)
     assert wl is not None
-    assert wl.price_refs == {"bom": PriceRef(2590, 90)}
+    assert wl.price_refs == {"bom": PriceRef(2590, 0)}      # sem window_days: 0
 
 
 def test_watchlist_sem_price_refs_fica_vazia():

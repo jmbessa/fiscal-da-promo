@@ -121,7 +121,10 @@ legendas e copy só obedecem:
 - **Modo B** (preço + prova social) em todo o resto — inclusive quando o
   vendedor anuncia "de R$ 350", que nunca aparece.
 - **Selo** "Menor preço dos últimos N dias/M meses (verificado)" só quando o
-  preço ≤ mínima conhecida, com a janela real; sem tolerância.
+  preço ≤ mínima conhecida, com a janela real; sem tolerância. A mínima
+  curada (watchlist/pool) não envelhece impune: se o nosso próprio histórico
+  de preços viu mais barato, a mínima passa a ser a NOSSA (a observação
+  própria só baixa o piso, nunca o sobe).
 - Mercado Livre: o pool (`/meli-pool-refresh`) traz mediana/p25/janela/mínima
   do anúncio que vence o buy box, e o preço publicado é o desse anúncio
   (`refresh_price`), nunca o vendedor mais barato. O vencedor muda: a

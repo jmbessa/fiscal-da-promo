@@ -28,10 +28,11 @@ selection:
   # deixou de decidir SE publicamos e passa a decidir só O QUE o post alega:
   # o corte de preço aqui é apenas não anunciar item mais caro que o típico.
   # Regra do quartil (5B): o post só alega desconto quando o preço de hoje
-  # está no quartil mais barato da janela (<= p25), a janela tem >= 14 dias
-  # distintos e o desconto contra a mediana atinge min_real_discount_pct. O
-  # selo de menor preço é ESTRITO (preço <= mínima) e diz a janela medida —
-  # a margem de 5% que existia aqui saiu.
+  # está ESTRITAMENTE abaixo do quartil mais barato da janela (preço < p25 —
+  # um preço que ocupa 1/4 dos dias É o p25 e não é promoção), a janela tem
+  # >= 14 dias distintos e o desconto contra a mediana atinge
+  # min_real_discount_pct. O selo de menor preço é ESTRITO (preço <= mínima) e
+  # diz a janela medida — a margem de 5% que existia aqui saiu.
   max_above_ref: 1.00          # não anuncia item mais caro que o preço típico
   require_price_ref: false     # true = só publica com referência conhecida
   min_real_discount_pct: 10    # abaixo disso o post não alega desconto: mostra preço + prova social

@@ -9,10 +9,11 @@ O desconto deixou de ser um PORTÃO (decidir se publicamos) e virou um RÓTULO
   "de R$ 68,90" por um dia só). Junto dela viajam o 25º percentil (p25) e
   o tamanho real da janela em dias distintos;
 - o VEREDITO (`verdict`): a regra do quartil, aprovada pelo dono — o post só
-  alega desconto quando o preço de hoje está no quartil mais barato da
-  janela (`current <= p25`), a janela tem >= 14 dias distintos e o desconto
-  contra a mediana atinge `min_real_discount_pct`. O selo de menor preço é
-  ESTRITO (`current <= piso`, sem tolerância) e diz a janela que mediu;
+  alega desconto quando o preço de hoje está ABAIXO do quartil mais barato da
+  janela (`current < p25`, estrito: ver a docstring de `verdict`), a janela
+  tem >= 14 dias distintos e o desconto contra a mediana atinge
+  `min_real_discount_pct`. O selo de menor preço é ESTRITO (`current <=
+  piso`, sem tolerância) e diz a janela que mediu;
 - o TEXTO (`price_line`): modo A com "De/Por", modo B com preço + prova
   social — sempre a partir de um `Verdict` já decidido.
 
@@ -184,6 +185,14 @@ def enrich_offers(offers: list[Offer], db: StateDB, watchlist: Watchlist | None,
     gravou o preço de hoje (ver `record_observations`), então um histórico de
     um dia só faria toda oferta parecer "menor preço dos últimos 1 dias".
 
+    O piso CURADO (degraus 1 e 2) ainda passa pelo price_log, mas só num
+    sentido: a observação própria pode BAIXÁ-LO, nunca subi-lo, e para isso
+    não exige `ref_min_observations` — um preço que nós vimos existiu, e negá-lo
+    é que seria invenção. Sem isso o piso envelhecia sem limite (uma mínima
+    curada há meses carimbava "menor preço dos últimos 12 meses" num preço que
+    nós mesmos já tínhamos visto mais barato). Quando o piso desce, a janela do
+    selo é a MAIOR das duas — a nossa medida cobre o que a curada cobria.
+
     Usa dataclasses.replace (Offer é frozen)."""
     sel = cfg.get("selection") or {}
     janela = int(setting(sel, "ref_window_days", DEFAULT_REF_WINDOW_DAYS))
@@ -208,11 +217,14 @@ def enrich_offers(offers: list[Offer], db: StateDB, watchlist: Watchlist | None,
             wl_piso = watchlist.price_floor(offer.item_id)
             if wl_piso is not None and wl_piso.min_price_cents > 0:
                 piso, dias_piso = int(wl_piso.min_price_cents), int(wl_piso.window_days)
+        if historico is None:
+            historico = db.price_history(offer.source, offer.item_id, janela)
         if piso <= 0:
-            if historico is None:
-                historico = db.price_history(offer.source, offer.item_id, janela)
             if len(historico) >= minimo_obs:
                 piso, dias_piso = min(historico), len(historico)
+        elif historico and min(historico) < piso:
+            # Piso curado que envelheceu: a observação própria só desce.
+            piso, dias_piso = min(historico), max(dias_piso, len(historico))
 
         novo = dataclasses.replace(
             offer, price_ref_cents=ref, price_p25_cents=p25, price_window_days=dias,

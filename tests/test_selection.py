@@ -247,6 +247,20 @@ def test_rank_offers_partial_valid_ids_falls_back(monkeypatch):
     assert ranked == fallback
 
 
+@pytest.mark.parametrize("chosen", [None, 5, {"a": 1}, "id1"])
+def test_rank_offers_chosen_invalido_cai_no_fallback_sem_excecao(monkeypatch, chosen):
+    # `{"chosen": null}` (ou int, dict, string) do LLM derrubava o run inteiro
+    # com TypeError fora de qualquer try — e, como o item gatilho nunca era
+    # publicado, derrubava de novo a cada 5 min. Qualquer coisa que não seja
+    # lista cai no ranking determinístico. Com "id1" (string iterável) o bug
+    # era mais sutil: iterava os CARACTERES e escolhia o item "1".
+    cands = [make_offer(item_id=str(i), commission_pct=float(i + 1)) for i in range(4)]
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 1}}
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: {"chosen": chosen})
+    ranked = selection.rank_offers(cands, [], cfg)
+    assert [o.item_id for o in ranked] == ["3"]   # maior EV, nunca o "1" dos caracteres
+
+
 def test_rank_offers_caps_candidates_at_30(monkeypatch):
     cands = [make_offer(item_id=str(i), commission_pct=float(i + 1)) for i in range(40)]
     captured = {}

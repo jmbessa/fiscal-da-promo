@@ -192,6 +192,27 @@ def test_enrich_degrau_3_exige_observacoes_minimas(tmp_path):
     db.close()
 
 
+def test_enrich_honra_ref_min_observations_zero(tmp_path):
+    # Config `0` virava o default em silêncio (`sel.get(k) or DEFAULT`):
+    # ref_min_observations: 0 era lido como 5. Só o valor AUSENTE cai no default.
+    db = StateDB(tmp_path / "s.db")
+    _seed_history(db, [2600])  # um único dia observado
+    cfg = {"selection": {"ref_window_days": 90, "ref_min_observations": 0,
+                         "min_real_discount_pct": 10}}
+    (out,) = pricing.enrich_offers([make_offer()], db, None, cfg)
+    assert out.price_ref_cents == 2600
+    assert out.price_floor_cents == 2600
+    db.close()
+
+
+def test_setting_so_o_ausente_cai_no_default():
+    assert pricing.setting({"x": 0}, "x", 10) == 0
+    assert pricing.setting({"x": 0.0}, "x", 1.05) == 0.0
+    assert pricing.setting({"x": None}, "x", 10) == 10
+    assert pricing.setting({}, "x", 10) == 10
+    assert pricing.setting({"x": 3}, "x", 10) == 3
+
+
 def test_enrich_degrau_3_respeita_a_janela(tmp_path):
     db = StateDB(tmp_path / "s.db")
     hoje = date.today()

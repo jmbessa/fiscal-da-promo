@@ -24,6 +24,14 @@ DEFAULT_REF_MIN_OBSERVATIONS = 5
 DEFAULT_MIN_REAL_DISCOUNT_PCT = 10
 
 
+def setting(section: dict, key: str, default):
+    """`section.get(key)` que honra `0`/`0.0`: só o valor AUSENTE (ou nulo)
+    cai no default. `sel.get(k) or DEFAULT` transformava `min_real_discount_pct:
+    0` em 10 e `ref_min_observations: 0` em 5 em silêncio (A11)."""
+    value = section.get(key)
+    return default if value is None else value
+
+
 def median_cents(valores: list[int]) -> int:
     """Mediana inteira (média dos dois centrais quando o total é par). 0 se vazio."""
     if not valores:
@@ -123,8 +131,8 @@ def enrich_offers(offers: list[Offer], db: StateDB, watchlist: Watchlist | None,
 
     Usa dataclasses.replace (Offer é frozen)."""
     sel = cfg.get("selection") or {}
-    janela = int(sel.get("ref_window_days") or DEFAULT_REF_WINDOW_DAYS)
-    minimo_obs = int(sel.get("ref_min_observations") or DEFAULT_REF_MIN_OBSERVATIONS)
+    janela = int(setting(sel, "ref_window_days", DEFAULT_REF_WINDOW_DAYS))
+    minimo_obs = int(setting(sel, "ref_min_observations", DEFAULT_REF_MIN_OBSERVATIONS))
 
     resultado: list[Offer] = []
     for offer in offers:

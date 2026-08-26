@@ -89,10 +89,10 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             price_floor = watchlist.price_floor(offer.item_id) if watchlist is not None else None
             text = message.build_message(
                 offer, copy, link, price_floor=price_floor,
-                min_real_discount_pct=int(
-                    sel.get("min_real_discount_pct") or pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT),
-                seal_tolerance=float(
-                    sel.get("seal_tolerance") or message.DEFAULT_SEAL_TOLERANCE))
+                min_real_discount_pct=int(pricing.setting(
+                    sel, "min_real_discount_pct", pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT)),
+                seal_tolerance=float(pricing.setting(
+                    sel, "seal_tolerance", message.DEFAULT_SEAL_TOLERANCE)))
             post = Post(offer=offer, copy=copy, affiliate_link=link, message_text=text,
                        price_floor=price_floor)
             validator(post, cfg)
@@ -135,6 +135,6 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
 
     if not dry_run:
         db.record_run(len(summary.published), len(summary.discarded),
-                      ref_window_days=int(sel.get("ref_window_days")
-                                          or pricing.DEFAULT_REF_WINDOW_DAYS))
+                      ref_window_days=int(pricing.setting(
+                          sel, "ref_window_days", pricing.DEFAULT_REF_WINDOW_DAYS)))
     return summary

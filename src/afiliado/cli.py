@@ -88,10 +88,10 @@ def _regua(cfg: dict) -> dict:
     texto do Telegram, para os três concordarem quando o config muda."""
     sel = cfg.get("selection") or {}
     return {
-        "min_real_discount_pct": int(
-            sel.get("min_real_discount_pct") or pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT),
-        "seal_tolerance": float(
-            sel.get("seal_tolerance") or message.DEFAULT_SEAL_TOLERANCE),
+        "min_real_discount_pct": int(pricing.setting(
+            sel, "min_real_discount_pct", pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT)),
+        "seal_tolerance": float(pricing.setting(
+            sel, "seal_tolerance", message.DEFAULT_SEAL_TOLERANCE)),
     }
 
 

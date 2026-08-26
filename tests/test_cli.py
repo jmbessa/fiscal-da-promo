@@ -410,6 +410,13 @@ def test_build_channels_passes_regua_from_config(monkeypatch):
         assert canal.seal_tolerance == 1.10
 
 
+def test_regua_honra_config_zero():
+    # `min_real_discount_pct: 0` e `seal_tolerance: 0` chegam como 0 aos
+    # canais — antes `or DEFAULT` os trocava por 10 e 1.05 em silêncio.
+    assert cli._regua({"selection": {"min_real_discount_pct": 0, "seal_tolerance": 0}}) == {
+        "min_real_discount_pct": 0, "seal_tolerance": 0.0}
+
+
 def test_build_channels_regua_defaults_match_pricing_and_message(monkeypatch):
     from afiliado import message, pricing
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")

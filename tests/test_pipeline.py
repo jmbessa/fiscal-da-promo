@@ -381,6 +381,29 @@ def test_run_usa_o_historico_como_referencia(tmp_path, monkeypatch):
     db.close()
 
 
+def test_run_config_zero_chega_ao_build_message(tmp_path, monkeypatch):
+    # A11: `min_real_discount_pct: 0` / `seal_tolerance: 0` no config eram
+    # trocados pelo default antes de chegar ao texto do post.
+    from afiliado import message
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    capturado = {}
+    original = message.build_message
+
+    def espiao(offer, copy, link, **kw):
+        capturado.update(kw)
+        return original(offer, copy, link, **kw)
+
+    monkeypatch.setattr(message, "build_message", espiao)
+    cfg = {**CFG, "selection": {**CFG["selection"],
+                                "min_real_discount_pct": 0, "seal_tolerance": 0}}
+    db = StateDB(tmp_path / "s.db")
+    pipeline.run(cfg, [FakeSource([make_offer()])], [FakeChannel()], db,
+                 validator=no_network_validator)
+    assert capturado["min_real_discount_pct"] == 0
+    assert capturado["seal_tolerance"] == 0.0
+    db.close()
+
+
 def test_run_expoe_o_aviso_do_pool_do_meli(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")

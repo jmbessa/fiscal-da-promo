@@ -99,9 +99,14 @@ def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict,
     presented = order_by_ev(candidates, cfg, watchlist)[:MAX_CANDIDATES_FOR_PROMPT]
     data = llm.ask_json(_rank_prompt(presented, recent_titles, n, watchlist),
                         model=cfg["llm"]["model"])
-    if isinstance(data, dict):
+    # Só uma LISTA vale: `{"chosen": null}` levantava TypeError fora de
+    # qualquer try e derrubava o run a cada 5 min (A1); uma string ("id1")
+    # seria iterada caractere a caractere. Qualquer outra forma cai no
+    # ranking determinístico.
+    chosen = data.get("chosen") if isinstance(data, dict) else None
+    if isinstance(chosen, list):
         by_id = {o.item_id: o for o in presented}
-        ids = list(dict.fromkeys(str(i) for i in data.get("chosen", [])))
+        ids = list(dict.fromkeys(str(i) for i in chosen))
         picked = [by_id[i] for i in ids if i in by_id][:n]
         if len(picked) == n:
             return picked

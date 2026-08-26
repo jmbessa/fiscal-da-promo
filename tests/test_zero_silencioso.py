@@ -108,3 +108,30 @@ def test_config_real_nao_tem_mais_portao_de_desconto():
     assert "min_discount_pct" not in cfg["selection"]
     assert "max_above_historic_min" not in (cfg.get("meli") or {})
     assert cfg["selection"]["max_above_ref"] >= 1.0
+
+
+def test_oferta_sem_referencia_e_publicavel_e_o_texto_nao_alega_desconto(tmp_path):
+    """Teste obrigatório 3, ponta a ponta com o config real: sem referência a
+    oferta PASSA no filtro e na validação (é a decisão de volume máximo) e o
+    texto não alega desconto nenhum."""
+    from afiliado import message, validate
+    from afiliado.models import CopyParts
+    from tests.test_models import make_offer
+
+    cfg = load_config(CONFIG_REAL)
+    db = StateDB(tmp_path / "s.db")
+    offer = make_offer(category="100630", price_original_cents=49999,
+                       price_current_cents=24999, rating=4.8, sales=12000)
+    assert offer.price_ref_cents == 0
+    assert offer.discount_pct == 50          # o "de" do vendedor diz 50%...
+
+    assert selection.filter_offers([offer], db, cfg) == [offer]
+    validate.check_price(offer, cfg)         # não levanta
+
+    copy = CopyParts(headline="Achado do dia", description="d", cta="c")
+    texto = message.build_message(offer, copy, "https://shope.ee/x")
+    assert "OFF" not in texto                # ...e o post não repete nada disso
+    assert "<s>" not in texto
+    assert "R$ 499,99" not in texto
+    assert "R$ 249,99" in texto
+    db.close()

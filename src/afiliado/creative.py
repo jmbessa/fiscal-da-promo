@@ -163,10 +163,10 @@ def _fit_card(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
 
 
 def _draw_badge(
-    draw: ImageDraw.ImageDraw, right_x: float, top_y: float, discount_pct: int,
+    draw: ImageDraw.ImageDraw, right_x: float, top_y: float, real_discount_pct: int,
     font_size: int, pad_y: int, pad_x: int, radius: int = 12,
 ) -> None:
-    text = f"-{discount_pct}%"
+    text = f"-{real_discount_pct}%"
     font = _font("sans", font_size, 800)
     bbox = draw.textbbox((0, 0), text, font=font)
     w = (bbox[2] - bbox[0]) + 2 * pad_x
@@ -179,7 +179,7 @@ def _draw_badge(
 def _draw_card(
     canvas: Image.Image, draw: ImageDraw.ImageDraw, product: Image.Image,
     x: int, y: int, w: int, h: int, radius: int, margin: int,
-    discount_pct: int, badge_font_size: int, badge_pad_y: int, badge_pad_x: int,
+    real_discount_pct: int, badge_font_size: int, badge_pad_y: int, badge_pad_x: int,
     badge_offset: int,
 ) -> None:
     card = Image.new("RGB", (w, h), WHITE)
@@ -191,10 +191,11 @@ def _draw_card(
     mask = Image.new("L", (w, h), 0)
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
     canvas.paste(card, (x, y), mask)
-    # discount_pct == 0 = sem desconto verificado: nada de selo de
-    # porcentagem (o post desse item destaca prova social, não preço).
-    if discount_pct > 0:
-        _draw_badge(draw, x + w - badge_offset, y + badge_offset, discount_pct,
+    # 0 = sem desconto verificado: nada de selo de porcentagem (o post
+    # desse item destaca prova social, não preço). O desconto do vendedor
+    # (Offer.discount_pct) não entra aqui — ver afiliado.pricing.
+    if real_discount_pct > 0:
+        _draw_badge(draw, x + w - badge_offset, y + badge_offset, real_discount_pct,
                     badge_font_size, badge_pad_y, badge_pad_x)
 
 

@@ -1,4 +1,6 @@
+import os
 import subprocess
+from pathlib import Path
 
 from afiliado import llm
 
@@ -44,6 +46,76 @@ def test_ask_json_cli_failure_returns_none(monkeypatch):
 def test_ask_json_cli_missing_returns_none(monkeypatch):
     monkeypatch.setattr(llm.shutil, "which", lambda _: None)
     assert llm.ask_json("x") is None
+
+
+SEGREDOS = {"TELEGRAM_BOT_TOKEN": "1:segredo", "TELEGRAM_CHANNEL_ID": "@c",
+            "TELEGRAM_OPS_CHAT_ID": "9", "SHOPEE_APP_ID": "a", "SHOPEE_APP_SECRET": "s",
+            "MELI_CLIENT_ID": "m", "MELI_CLIENT_SECRET": "ms", "MELI_REFRESH_TOKEN": "mr",
+            "IG_USER_ID": "i", "IG_ACCESS_TOKEN": "it"}
+
+
+def _captura(monkeypatch):
+    capturado = {}
+
+    def fake(args, **kwargs):
+        capturado["args"] = list(args)
+        capturado.update(kwargs)
+        capturado["cwd_conteudo"] = os.listdir(kwargs["cwd"])   # durante a chamada
+        return subprocess.CompletedProcess(args=args, returncode=0,
+                                           stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(llm.shutil, "which", lambda _: "claude")
+    monkeypatch.setattr(llm.subprocess, "run", fake)
+    return capturado
+
+
+def test_ask_json_roda_sem_ferramentas_e_sem_settings_do_projeto(monkeypatch):
+    # A2: `claude -p` é um agente com ferramentas; sem estas flags ele lê o
+    # .env do CWD e executa hooks de .claude/settings.json do repo. `--bare`
+    # NÃO entra: desliga a autenticação OAuth (verificado ao vivo).
+    capturado = _captura(monkeypatch)
+    assert llm.ask_json("x", model="haiku") == {"ok": True}
+    args = capturado["args"]
+    assert args[1:3] == ["-p", "x"]
+    assert args[args.index("--tools") + 1] == ""
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert "--strict-mcp-config" in args
+    assert "--no-session-persistence" in args
+    assert "--bare" not in args
+    assert args[args.index("--model") + 1] == "haiku"
+
+
+def test_ask_json_env_e_lista_branca_sem_segredos(monkeypatch, tmp_path):
+    for k, v in SEGREDOS.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    capturado = _captura(monkeypatch)
+    llm.ask_json("x")
+    env = capturado["env"]
+    for k in SEGREDOS:
+        assert k not in env
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token"
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cfg")
+    assert "PATH" in env
+    assert set(env) <= set(llm.ENV_WHITELIST)
+
+
+def test_ask_json_claude_config_dir_so_entra_se_existir(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    capturado = _captura(monkeypatch)
+    llm.ask_json("x")
+    assert "CLAUDE_CONFIG_DIR" not in capturado["env"]
+
+
+def test_ask_json_cwd_e_diretorio_temporario_vazio(monkeypatch):
+    capturado = _captura(monkeypatch)
+    llm.ask_json("x")
+    cwd = Path(capturado["cwd"])
+    assert cwd.resolve() != Path.cwd().resolve()
+    assert not (cwd / ".env").exists() and not (cwd / ".claude").exists()
+    assert capturado["cwd_conteudo"] == []
+    assert not cwd.exists()             # descartado depois da chamada
 
 
 def test_ask_json_conta_chamadas_e_falhas(monkeypatch):

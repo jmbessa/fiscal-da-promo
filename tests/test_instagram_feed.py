@@ -146,3 +146,23 @@ def test_art_is_hosted_as_jpeg():
     body = next(b for k, b in (x for x in seen if isinstance(x, tuple)) if k == "photo_body")
     assert b"art.jpg" in body and b"image/jpeg" in body
     assert bytes.fromhex("ffd8ff") in body          # magic number do JPEG
+
+
+def _caption_for(**offer_kw) -> str:
+    return InstagramFeedChannel._build_caption(make_post(**offer_kw))
+
+
+def test_caption_modo_a_usa_a_nossa_referencia():
+    caption = _caption_for(price_original_cents=35000, price_ref_cents=2600,
+                           price_current_cents=1890)
+    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)" in caption
+    assert "R$ 350,00" not in caption
+
+
+def test_caption_modo_b_sem_referencia_nao_alega_desconto():
+    caption = _caption_for(price_original_cents=35000, price_current_cents=4900,
+                           rating=4.9, sales=30000)
+    assert "R$ 49,00" in caption
+    assert "R$ 350,00" not in caption
+    assert "OFF" not in caption
+    assert "⭐ 4,9 · 30 mil vendidos" in caption

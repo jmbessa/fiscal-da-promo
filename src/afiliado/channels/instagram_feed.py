@@ -15,11 +15,11 @@ import io
 import httpx
 from PIL import Image
 
-from afiliado import creative
+from afiliado import creative, pricing
 from afiliado.channels.base import PublishResult
 from afiliado.channels.telegram import get_file_url, send_photo_bytes
 from afiliado.errors import SourceError
-from afiliado.models import Post, format_brl
+from afiliado.models import Post
 
 GRAPH_HOSTS = {
     # Conta business vinculada a Página do Facebook; escopos instagram_basic + instagram_content_publish.
@@ -120,11 +120,15 @@ class InstagramFeedChannel:
     def _build_caption(cls, post: Post) -> str:
         offer, copy = post.offer, post.copy
         titulo = cls._sanitize_title(offer.title)
+        # Mesma régua do texto do Telegram: quem decide como o preço
+        # aparece é pricing.price_line (ver afiliado.pricing).
+        linha_preco, prova_social = pricing.price_line(
+            offer, pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT)
+        bloco_preco = linha_preco + (f"\n{prova_social}" if prova_social else "")
         return (
             f"{copy.headline}\n{copy.description}\n\n"
             f"{titulo}\n"
-            f"De {format_brl(offer.price_original_cents)} por "
-            f"{format_brl(offer.price_current_cents)} ({offer.discount_pct}% OFF)\n\n"
+            f"{bloco_preco}\n\n"
             f"{copy.cta}\n"
             "🔗 Link na bio e no canal do Telegram"
         )

@@ -12,6 +12,8 @@ from afiliado.creative import (
     TITLE_MAX_LINES,
     _fit_card,
     _font,
+    _pill_left,
+    _price_pill_dims,
     _wrap_title,
     render_feed,
     render_story,
@@ -254,3 +256,80 @@ def test_render_story_rating_changes_output():
     sem = render_story(make_offer(sales=30000), COPY, client=client)
     com = render_story(make_offer(sales=30000, rating=4.9), COPY, client=client)
     assert sem != com
+
+
+# --- Os dois modos (fase 4: régua honesta) -----------------------------------
+
+def _com_desconto(**kw):
+    return make_offer(price_original_cents=35000, price_ref_cents=2600,
+                      price_current_cents=1890, **kw)
+
+
+def test_pill_left_modo_a_usa_a_nossa_referencia():
+    texto, riscado = _pill_left(_com_desconto(), 10)
+    assert texto == "R$ 26,00"      # a NOSSA referência, não os R$ 350 do vendedor
+    assert riscado is True
+
+
+def test_pill_left_modo_b_traz_prova_social_sem_glifo_ausente():
+    offer = make_offer(price_original_cents=35000, price_current_cents=4900,
+                       price_ref_cents=5200, rating=4.9, sales=30000)
+    texto, riscado = _pill_left(offer, 10)    # 6% verificado < 10
+    assert texto == "4,9 · 30 mil vendidos"   # sem a estrela: a fonte não tem o glifo
+    assert riscado is False
+
+
+def test_pill_left_modo_b_vazio_quando_nada_e_conhecido():
+    offer = make_offer(price_original_cents=35000, price_current_cents=4900,
+                       rating=0.0, sales=0)
+    assert _pill_left(offer, 10) == ("", False)
+
+
+def test_price_pill_nunca_passa_da_largura_util():
+    img = Image.new("RGB", (1080, 1920))
+    draw = ImageDraw.Draw(img)
+    longo = "4,9 · 999 mil vendidos e mais um monte de texto que não caberia jamais"
+    dims = _price_pill_dims(draw, make_offer(), 36, 96, 20, 30, 24, (longo, False),
+                            STORY_TITLE_WIDTH)
+    assert dims["width"] <= STORY_TITLE_WIDTH
+
+
+def test_arte_ignora_o_de_inflado_do_vendedor():
+    # O price_original_cents do vendedor não entra mais na arte: mudar só ele
+    # não pode mudar um pixel.
+    inflado = make_offer(price_original_cents=35000, price_current_cents=4900,
+                         rating=4.9, sales=30000)
+    sem_de = make_offer(price_original_cents=4900, price_current_cents=4900,
+                        rating=4.9, sales=30000)
+    client = _client_for(_image_handler)
+    assert render_story(inflado, COPY, client=client) == render_story(
+        sem_de, COPY, client=client)
+    assert render_feed(inflado, COPY, client=client) == render_feed(
+        sem_de, COPY, client=client)
+
+
+def test_arte_modo_b_nao_desenha_selo_de_desconto_nem_riscado():
+    # Desconto verificado de 6% (abaixo do mínimo) tem que render exatamente
+    # como uma oferta sem referência nenhuma: sem selo de %, sem preço riscado.
+    quase = make_offer(price_current_cents=4900, price_ref_cents=5200,
+                       rating=4.9, sales=30000)
+    sem_ref = make_offer(price_current_cents=4900, rating=4.9, sales=30000)
+    client = _client_for(_image_handler)
+    assert render_story(quase, COPY, client=client) == render_story(
+        sem_ref, COPY, client=client)
+
+
+def test_arte_muda_entre_os_dois_modos():
+    client = _client_for(_image_handler)
+    modo_a = render_story(_com_desconto(rating=4.9, sales=30000), COPY, client=client)
+    modo_b = render_story(make_offer(price_current_cents=1890, rating=4.9, sales=30000),
+                          COPY, client=client)
+    assert modo_a != modo_b
+
+
+def test_min_real_discount_pct_decide_o_modo():
+    client = _client_for(_image_handler)
+    offer = make_offer(price_current_cents=4900, price_ref_cents=5200,
+                       rating=4.9, sales=30000)   # 6% verificado
+    assert (render_story(offer, COPY, client=client, min_real_discount_pct=5)
+            != render_story(offer, COPY, client=client, min_real_discount_pct=10))

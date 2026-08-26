@@ -229,6 +229,13 @@ def test_pagina_incompleta_interrompe_paginacao():
     assert chamadas == [1]
 
 
+def test_refresh_price_devolve_oferta_inalterada():
+    from tests.test_models import make_offer
+    offer = make_offer(source="shopee")
+    src = source_with(lambda r: httpx.Response(200, json={}))
+    assert src.refresh_price(offer) is offer
+
+
 def test_period_end_zero_nao_e_expirado():
     """periodEndTime 0 = validade desconhecida, não 1970."""
     def handler(request):

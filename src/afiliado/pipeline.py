@@ -38,8 +38,16 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         watchlist = None
 
     offers = []
+    meli_offer_count = None
     for src in sources:
-        offers.extend(src.fetch_offers(cfg))  # SourceError propaga: aborta o run
+        src_offers = src.fetch_offers(cfg)  # SourceError propaga: aborta o run
+        if src.name == "meli":
+            meli_offer_count = len(src_offers)
+        offers.extend(src_offers)
+
+    if meli_offer_count == 0:
+        summary.warnings.append(
+            "ℹ️ meli: pool vazio ou vencido — rode /meli-links-refresh")
 
     candidates = selection.filter_offers(offers, db, cfg)
     ranked = selection.rank_offers(candidates, db.recent_titles(), cfg, watchlist)
@@ -59,7 +67,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             break
         rotulo = f"{offer.title[:40]} ({offer.discount_pct}% OFF)"
         try:
-            link = by_name[offer.source].resolve_affiliate_link(offer)
+            src = by_name[offer.source]
+            refresh = getattr(src, "refresh_price", None)
+            if refresh is not None:
+                offer = refresh(offer)
+            link = src.resolve_affiliate_link(offer)
             copy = copywriter.write_copy(offer, cfg)
             price_floor = watchlist.price_floor(offer.item_id) if watchlist is not None else None
             text = message.build_message(offer, copy, link, price_floor=price_floor)

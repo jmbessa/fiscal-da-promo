@@ -154,10 +154,12 @@ def doctor(cfg: dict) -> int:
                     # credenciais, _meli() já imprime o aviso e não falha o doctor.
     if meli is not None:
         try:
-            meli.ensure_token()
-            me_cfg = {**(cfg.get("meli") or {}), "per_category": 1}
-            offers = meli.fetch_offers({**cfg, "meli": me_cfg})
-            print(f"✅ Mercado Livre: token ok; {len(offers)} ofertas (busca de teste)")
+            meli.ensure_token()  # só valida as credenciais OAuth
+            offers = meli.fetch_offers(cfg)  # leitura local do pool, sem rede
+            if meli.pool_warning:
+                print(f"⚠️ Mercado Livre: token ok; {meli.pool_warning}")
+            else:
+                print(f"✅ Mercado Livre: token ok; {len(offers)} ofertas no pool")
         except Exception as exc:
             ok = False
             print(f"❌ Mercado Livre: {exc}")

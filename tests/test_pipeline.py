@@ -2,13 +2,13 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from afiliado import llm, pipeline, state, validate
+from afiliado import llm, pipeline, pricing, state, validate
 from afiliado.channels.base import PublishResult
 from afiliado.errors import SourceError, ValidationError
 from afiliado.models import CopyParts, Post
 from afiliado.state import StateDB
-from afiliado.watchlist import Watchlist
-from tests.test_models import make_offer
+from afiliado.watchlist import PriceFloor, PriceRef, Watchlist
+from tests.test_models import make_offer, make_offer_ref
 
 BRT = timezone(timedelta(hours=-3))
 
@@ -29,7 +29,7 @@ CFG = {
                   "price_max_brl": 1000, "dedupe_days": 30, "category_ids": [],
                   "max_above_ref": 1.00, "require_price_ref": False,
                   "min_real_discount_pct": 10, "ref_window_days": 90,
-                  "ref_min_observations": 5, "seal_tolerance": 1.05,
+                  "ref_min_observations": 5,
                   "ev_weights": {"popularity": 0.3, "discount": 0.5}},
     "llm": {"model": "haiku"},
     "copy": {"tone": "pt-BR"},
@@ -391,11 +391,31 @@ def test_run_rotulo_usa_o_desconto_depois_do_refresh(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")
     # Referência 100,00; na busca custava 99,00 (1%), no refresh cai para 50,00.
-    offer = make_offer(item_id="x", price_ref_cents=10000, price_current_cents=9900)
+    offer = make_offer_ref(10000, item_id="x", price_current_cents=9900)
     ch = FakeChannel()
     summary = pipeline.run(CFG, [RefreshingSource([offer], 5000)], [ch], db,
                            validator=no_network_validator)
     assert summary.published == ["Tênis Nike SB (50% OFF)"]
+    assert ch.sent[0].verdict.mode == "A" and ch.sent[0].verdict.discount_pct == 50
+    assert "(50% OFF)" in ch.sent[0].message_text
+    db.close()
+
+
+def test_run_rotulo_e_texto_seguem_o_veredito_nao_o_desconto_cru(tmp_path, monkeypatch):
+    # 27% verificável mas janela de 13 dias: veredito B -> rótulo sem OFF,
+    # texto sem De/Por, copy de fallback neutra. Nada no run recalcula.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offer = make_offer(item_id="x", price_ref_cents=26000, price_p25_cents=26000,
+                       price_window_days=13, price_current_cents=18900)
+    assert offer.real_discount_pct == 27
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [FakeSource([offer])], [ch], db, validator=no_network_validator)
+    assert summary.published == ["Tênis Nike SB"]
+    post = ch.sent[0]
+    assert post.verdict == pricing.NO_CLAIM
+    assert "OFF" not in post.message_text and "<s>" not in post.message_text
+    assert post.copy.headline == "🔥 Achado do dia"
     db.close()
 
 
@@ -975,26 +995,105 @@ def test_run_nao_avisa_llm_quando_nao_houve_falha(tmp_path, monkeypatch):
     db.close()
 
 
-def test_run_config_zero_chega_ao_build_message(tmp_path, monkeypatch):
-    # A11: `min_real_discount_pct: 0` / `seal_tolerance: 0` no config eram
-    # trocados pelo default antes de chegar ao texto do post.
-    from afiliado import message
+def test_run_config_zero_chega_ao_veredito(tmp_path, monkeypatch):
+    # A11: `min_real_discount_pct: 0` no config era trocado pelo default
+    # antes de chegar ao veredito do post.
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
-    capturado = {}
-    original = message.build_message
+    capturado = []
+    original = pricing.verdict
 
-    def espiao(offer, copy, link, **kw):
-        capturado.update(kw)
-        return original(offer, copy, link, **kw)
+    def espiao(offer, minimo):
+        capturado.append(minimo)
+        return original(offer, minimo)
 
-    monkeypatch.setattr(message, "build_message", espiao)
-    cfg = {**CFG, "selection": {**CFG["selection"],
-                                "min_real_discount_pct": 0, "seal_tolerance": 0}}
+    monkeypatch.setattr(pricing, "verdict", espiao)
+    cfg = {**CFG, "selection": {**CFG["selection"], "min_real_discount_pct": 0}}
     db = StateDB(tmp_path / "s.db")
     pipeline.run(cfg, [FakeSource([make_offer()])], [FakeChannel()], db,
                  validator=no_network_validator)
-    assert capturado["min_real_discount_pct"] == 0
-    assert capturado["seal_tolerance"] == 0.0
+    assert capturado == [0]
+    db.close()
+
+
+# --- Fase 5B: a régua diz a verdade ------------------------------------------
+
+def test_run_watchlist_vencida_mantem_referencias_e_pisos(tmp_path, monkeypatch):
+    # Teste obrigatório 7 (C11): vencida perde só os boosts; o "De:" e o selo
+    # continuam os mesmos do dia anterior — antes a watchlist inteira virava
+    # None e a régua trocava de número (e de veredito) de um dia para o outro.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    offer = make_offer(item_id="x", price_current_cents=2190)
+    fatos = dict(price_refs={"x": PriceRef(3000, 90, 2800)},
+                 price_floors={"x": PriceFloor(2190, 191)})
+    textos = {}
+    for nome, gerada in (("fresca", date.today()), ("vencida", date.today() - timedelta(days=15))):
+        wl = Watchlist(generated_at=gerada, valid_days=14, hot_items={"x": 5.0}, **fatos)
+        db = StateDB(tmp_path / f"{nome}.db")
+        ch = FakeChannel()
+        pipeline.run(CFG, [FakeSource([offer])], [ch], db, validator=no_network_validator,
+                     watchlist=wl)
+        db.close()
+        textos[nome] = ch.sent[0].message_text
+    assert textos["fresca"] == textos["vencida"]
+    assert "De: <s>R$ 30,00</s> | Por: <b>R$ 21,90</b> (27% OFF)" in textos["vencida"]
+    assert "🏷️ Menor preço dos últimos 6 meses (verificado)" in textos["vencida"]
+
+
+def test_run_watchlist_vencida_perde_os_boosts(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    offers = [make_offer(item_id="0", commission_pct=20.0),
+              make_offer(item_id="2", commission_pct=5.0)]
+    vencida = Watchlist(generated_at=date.today() - timedelta(days=30), valid_days=14,
+                        hot_items={"2": 50.0})
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(CFG, [FakeSource(offers)], [ch], db, validator=no_network_validator,
+                 watchlist=vencida)
+    assert ch.sent[0].offer.item_id == "0"          # sem boost o EV maior vence
+    db.close()
+
+
+class LiveMeli(FakeSource):
+    """Fonte com preço vivo no refresh e cujo preço de descoberta NÃO é uma
+    observação (é a mediana do pool) — como o MeliSource."""
+    name = "meli"
+    observes_price_on_discovery = False
+
+    def __init__(self, offers, vivo):
+        super().__init__(offers)
+        self.vivo = vivo
+
+    def refresh_price(self, offer):
+        import dataclasses
+        return dataclasses.replace(offer, price_current_cents=self.vivo)
+
+    def resolve_affiliate_link(self, offer):
+        return "https://mercadolivre.com/sec/x"
+
+
+def test_run_price_log_recebe_o_preco_vivo_e_nao_o_do_pool(tmp_path, monkeypatch):
+    # Teste obrigatório 10 (C7c): o ML gravava o preço do pool todo dia — o
+    # "histórico próprio" dele era uma constante. Agora entra o preço vivo,
+    # mesmo quando é MAIOR que o do pool (a descoberta não grava nada).
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    pool = make_offer(source="meli", item_id="MLB1", price_current_cents=7890,
+                      price_ref_cents=7890, price_p25_cents=7000, price_window_days=91)
+    cfg = {**CFG, "selection": {**CFG["selection"], "max_above_ref": 1.20}}
+    ch = FakeChannel()
+    pipeline.run(cfg, [LiveMeli([pool], 8500)], [ch], db, validator=no_network_validator)
+    assert ch.sent[0].offer.price_current_cents == 8500
+    assert db.price_history("meli", "MLB1", 1) == [8500]
+    db.close()
+
+
+def test_dry_run_nao_grava_o_preco_vivo(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    pool = make_offer(source="meli", item_id="MLB1", price_current_cents=7890, price_ref_cents=7890)
+    pipeline.run(CFG, [LiveMeli([pool], 6990)], [], db, dry_run=True,
+                 validator=no_network_validator)
+    assert db.price_history("meli", "MLB1", 1) == []
     db.close()
 
 

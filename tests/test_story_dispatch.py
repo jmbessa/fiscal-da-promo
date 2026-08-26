@@ -3,8 +3,9 @@ import io
 import httpx
 from PIL import Image
 
-from afiliado import creative
+from afiliado import creative, pricing
 from afiliado.channels.story_dispatch import StoryDispatchChannel
+from afiliado.models import NO_CLAIM, Verdict
 from tests.test_state import make_post
 
 
@@ -19,11 +20,10 @@ def _channel_with(handler) -> StoryDispatchChannel:
     return StoryDispatchChannel("TOKEN", "OPSCHAT", client=client)
 
 
-def test_min_real_discount_pct_do_canal_decide_o_modo_da_arte():
-    # Config com mínimo 30 e oferta com 20% verificado (26,00 -> 20,80): a
-    # arte enviada tem que ser a do modo B (sem selo de porcentagem) — a
-    # mesma que render_story produz com esse limite — e NÃO a do padrão (10),
-    # que traria o selo -20%.
+def test_veredito_do_post_decide_o_modo_da_arte():
+    # Oferta com 20% verificável (26,00 -> 20,80) e veredito B (mínimo 30 no
+    # config): a arte enviada é a do modo B — a mesma que render_story
+    # produz com esse veredito — e NÃO a do modo A. O canal não recalcula.
     enviados = []
 
     def handler(request):
@@ -35,16 +35,32 @@ def test_min_real_discount_pct_do_canal_decide_o_modo_da_arte():
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 2}})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    canal = StoryDispatchChannel("TOKEN", "OPSCHAT", client=client, min_real_discount_pct=30)
-    post = make_post(price_ref_cents=2600, price_current_cents=2080)
+    canal = StoryDispatchChannel("TOKEN", "OPSCHAT", client=client)
+    offer_kw = dict(price_ref_cents=2600, price_p25_cents=2600, price_window_days=90,
+                    price_current_cents=2080)
+    post = make_post(verdict=NO_CLAIM, **offer_kw)
     assert post.offer.real_discount_pct == 20
+    assert pricing.verdict(post.offer, 30) == NO_CLAIM
     assert canal.publish(post).ok
 
-    modo_b = creative.render_story(post.offer, post.copy, client=client, min_real_discount_pct=30)
-    modo_a = creative.render_story(post.offer, post.copy, client=client, min_real_discount_pct=10)
+    modo_b = creative.render_story(post.offer, post.copy, NO_CLAIM, client=client)
+    modo_a = creative.render_story(post.offer, post.copy, pricing.verdict(post.offer, 10),
+                                   client=client)
     assert modo_a != modo_b
     assert modo_b in enviados[0]
     assert modo_a not in enviados[0]
+
+
+def test_caption_do_despacho_traz_preco_e_selo_do_veredito():
+    v = Verdict("A", 27, "🏷️ Menor preço dos últimos 3 meses (verificado)", 90)
+    post = make_post(verdict=v, price_ref_cents=2600, price_current_cents=1890)
+    caption = StoryDispatchChannel._build_caption(post)
+    assert "STORY PRONTO" in caption and "Tênis Nike SB" in caption
+    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)" in caption
+    assert "🏷️ Menor preço dos últimos 3 meses (verificado)" in caption
+    neutra = StoryDispatchChannel._build_caption(make_post(price_current_cents=1890, rating=4.9))
+    assert "R$ 18,90" in neutra and "⭐ 4,9" in neutra
+    assert "OFF" not in neutra and "Menor preço" not in neutra
 
 
 def test_publish_happy_path():

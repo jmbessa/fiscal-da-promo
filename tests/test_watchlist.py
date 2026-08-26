@@ -54,16 +54,47 @@ def test_is_stale_past_window():
     assert wl.is_stale(date(2026, 8, 16)) is True
 
 
-def test_load_watchlist_price_refs(tmp_path):
+def test_load_watchlist_price_refs():
+    pass
+
+
+def test_load_watchlist_price_refs_com_p25(tmp_path):
+    # Formato da 5B: {"ref_cents", "p25_cents", "window_days"}.
+    path = write_watchlist(tmp_path / "watchlist.json", {
+        "generated_at": "2026-08-23",
+        "price_refs": {"9212570285": {"ref_cents": 2590, "p25_cents": 2428, "window_days": 90}},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.price_refs == {"9212570285": PriceRef(2590, 90, 2428)}
+    assert wl.price_ref("9212570285").p25_cents == 2428
+    assert wl.price_ref("nao-existe") is None
+
+
+def test_load_watchlist_price_refs_sem_p25_carrega_zero(tmp_path):
+    # Entrada antiga (sem p25) carrega p25_cents = 0 -> nunca modo A.
     path = write_watchlist(tmp_path / "watchlist.json", {
         "generated_at": "2026-08-23",
         "price_refs": {"9212570285": {"ref_cents": 2590, "window_days": 90}},
     })
     wl = load_watchlist(path)
-    assert wl is not None
-    assert wl.price_refs == {"9212570285": PriceRef(2590, 90)}
-    assert wl.price_ref("9212570285") == PriceRef(2590, 90)
-    assert wl.price_ref("nao-existe") is None
+    assert wl.price_refs == {"9212570285": PriceRef(2590, 90, 0)}
+    assert wl.price_ref("9212570285").p25_cents == 0
+
+
+def test_facts_only_mantem_refs_e_pisos_e_zera_boosts():
+    # C11: watchlist vencida perde só os boosts; referências e pisos são
+    # fatos datados e continuam na régua.
+    wl = Watchlist(generated_at=date(2026, 8, 1), valid_days=14,
+                   category_boosts={"100630": 1.3}, hot_items={"123456": 1.5},
+                   price_refs={"123456": PriceRef(2590, 90, 2428)},
+                   price_floors={"123456": PriceFloor(1699, 196)})
+    fatos = wl.facts_only()
+    assert fatos.category_boosts == {} and fatos.hot_items == {}
+    assert fatos.boost_for(make_offer(item_id="123456", category="100630")) == 1.0
+    assert fatos.price_refs == wl.price_refs and fatos.price_floors == wl.price_floors
+    assert fatos.generated_at == wl.generated_at and fatos.is_stale(date(2026, 8, 20))
+    assert wl.hot_items == {"123456": 1.5}                 # a original não muda
 
 
 def test_load_watchlist_price_refs_malformada_degrada(tmp_path):

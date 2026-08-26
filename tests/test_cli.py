@@ -626,33 +626,17 @@ def test_instagram_api_variant_from_config(monkeypatch, tmp_path):
     assert cli._instagram_api({}) == "instagram_login"
 
 
-def test_build_channels_passes_regua_from_config(monkeypatch):
-    # selection.min_real_discount_pct / seal_tolerance chegam aos canais que
-    # renderizam arte ou legenda — antes só o texto do Telegram (pipeline)
-    # respeitava o config; a arte e a legenda do IG usavam o padrão do módulo.
+def test_build_channels_nao_carrega_regua(monkeypatch):
+    # Fase 5B: a régua (modo + selo) é decidida uma vez no pipeline e viaja
+    # no `Post.verdict`; nenhum canal guarda min_real_discount_pct nem a
+    # antiga tolerância do selo — não há como arte e texto divergirem por config.
     for k, v in {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_OPS_CHAT_ID": "999",
                  "IG_USER_ID": "178", "IG_ACCESS_TOKEN": "igtok"}.items():
         monkeypatch.setenv(k, v)
     cfg = {"channels": {"story_dispatch": True, "instagram_feed": True},
-           "selection": {"min_real_discount_pct": 30, "seal_tolerance": 1.10}}
+           "selection": {"min_real_discount_pct": 30}}
     channels = {c.name: c for c in cli._build_channels(cfg)[0]}
     assert set(channels) == {"story_dispatch", "instagram_feed"}
     for canal in channels.values():
-        assert canal.min_real_discount_pct == 30
-        assert canal.seal_tolerance == 1.10
-
-
-def test_regua_honra_config_zero():
-    # `min_real_discount_pct: 0` e `seal_tolerance: 0` chegam como 0 aos
-    # canais — antes `or DEFAULT` os trocava por 10 e 1.05 em silêncio.
-    assert cli._regua({"selection": {"min_real_discount_pct": 0, "seal_tolerance": 0}}) == {
-        "min_real_discount_pct": 0, "seal_tolerance": 0.0}
-
-
-def test_build_channels_regua_defaults_match_pricing_and_message(monkeypatch):
-    from afiliado import message, pricing
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
-    (story,), _ = cli._build_channels({"channels": {"story_dispatch": True}})
-    assert story.min_real_discount_pct == pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT
-    assert story.seal_tolerance == message.DEFAULT_SEAL_TOLERANCE
+        assert not hasattr(canal, "min_real_discount_pct")
+    assert not hasattr(cli, "_regua")

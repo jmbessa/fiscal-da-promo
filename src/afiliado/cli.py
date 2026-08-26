@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from afiliado import config, llm, message, pipeline, pricing
+from afiliado import config, llm, pipeline
 from afiliado.channels.instagram_feed import GRAPH_HOSTS, InstagramFeedChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
@@ -96,20 +96,6 @@ def _instagram_api(cfg: dict) -> str:
     return api if api in GRAPH_HOSTS else "instagram_login"
 
 
-def _regua(cfg: dict) -> dict:
-    """`selection.min_real_discount_pct` e `selection.seal_tolerance` como
-    kwargs para os canais que renderizam arte ou legenda — a mesma leitura
-    (e os mesmos defaults de `pricing`/`message`) que o pipeline usa para o
-    texto do Telegram, para os três concordarem quando o config muda."""
-    sel = cfg.get("selection") or {}
-    return {
-        "min_real_discount_pct": int(pricing.setting(
-            sel, "min_real_discount_pct", pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT)),
-        "seal_tolerance": float(pricing.setting(
-            sel, "seal_tolerance", message.DEFAULT_SEAL_TOLERANCE)),
-    }
-
-
 def _build_channels(cfg: dict) -> tuple[list, list[str]]:
     """Monta os canais habilitados em config.yaml a partir das envs
     disponíveis e devolve também os avisos de montagem.
@@ -119,13 +105,12 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
     fase 1.7); quando `max_per_day` está presente, vira atributo de instância
     no canal construído (`ch.max_per_day`), lido pelo pipeline via getattr.
     Canal ligado sem env necessária: aviso (stdout + resumo de ops) e segue
-    sem ele — nunca derruba o run. Os canais que renderizam arte/legenda
-    recebem a régua (`_regua`) do config."""
+    sem ele — nunca derruba o run. Nenhum canal recebe a régua: o veredito
+    (modo + selo) já vem decidido no `Post` (fase 5B)."""
     ch_cfg = cfg.get("channels") or {"telegram": True}
     brand_cfg = cfg.get("brand") or {}
     brand_handle = brand_cfg.get("handle") or None
     brand_name = brand_cfg.get("name") or "Fiscal da Promo"
-    regua = _regua(cfg)
     channels: list = []
     avisos: list[str] = []
 
@@ -147,8 +132,7 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
         token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if token and ops:
-            ch = StoryDispatchChannel(token, ops, brand_handle=brand_handle, brand_name=brand_name,
-                                      **regua)
+            ch = StoryDispatchChannel(token, ops, brand_handle=brand_handle, brand_name=brand_name)
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
@@ -164,7 +148,7 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if ig_user and ig_token and bot_token and ops:
             ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
-                                      brand_name=brand_name, api=_instagram_api(cfg), **regua)
+                                      brand_name=brand_name, api=_instagram_api(cfg))
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)

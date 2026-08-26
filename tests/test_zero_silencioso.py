@@ -129,7 +129,8 @@ def test_oferta_sem_referencia_e_publicavel_e_o_texto_nao_alega_desconto(tmp_pat
     validate.check_price(offer, cfg)         # não levanta
 
     copy = CopyParts(headline="Achado do dia", description="d", cta="c")
-    texto = message.build_message(offer, copy, "https://shope.ee/x")
+    texto = message.build_message(offer, copy, "https://shope.ee/x",
+                                  pricing.verdict(offer, cfg["selection"]["min_real_discount_pct"]))
     assert "OFF" not in texto                # ...e o post não repete nada disso
     assert "<s>" not in texto
     assert "R$ 499,99" not in texto

@@ -168,8 +168,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     if watchlist is None:
         warn("ℹ️ Sem watchlist — ranking sem boosts")
     elif watchlist.is_stale():
+        # C11: vencida perde só os boosts. Referências e pisos são fatos
+        # datados e continuam na régua — antes a watchlist inteira sumia e o
+        # "De:" e o selo trocavam de número de um dia para o outro.
         warn(f"⚠️ Watchlist vencida há {watchlist.days_old()} dias — rode /watchlist-refresh")
-        watchlist = None
+        watchlist = watchlist.facts_only()
 
     offers = []
     erros_de_fonte: list[str] = []
@@ -198,10 +201,16 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         # com a causa no cabeçalho (os avisos podem já ter sido deduplicados).
         raise RunAborted(summary, "todas as fontes falharam — " + "; ".join(erros_de_fonte))
 
-    # A observação de hoje entra no histórico ANTES de a mediana ser lida.
-    # Dry-run não escreve no banco (A10).
+    # A observação de hoje entra no histórico ANTES de a mediana ser lida —
+    # para as fontes cujo preço de descoberta É uma observação (Shopee). O
+    # ML chega com a mediana do pool como preço "atual": não é observação;
+    # o que entra no price_log dele é o preço vivo, logo após o refresh
+    # (C7c). Dry-run não escreve no banco (A10).
+    by_name = {s.name: s for s in sources}
     if not dry_run:
-        pricing.record_observations(db, offers)
+        pricing.record_observations(db, [
+            o for o in offers
+            if getattr(by_name.get(o.source), "observes_price_on_discovery", True)])
 
     # -- Fase 5A (C2/C3): há canal aberto para publicar? -----------------------
     # Orçamento por canal = teto diário distribuído pela janela (ritmo).
@@ -259,15 +268,16 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     reserva = [o for o in selection.order_by_ev(candidates, cfg, watchlist) if o not in ranked]
     fila = ranked + reserva
 
-    by_name = {s.name: s for s in sources}
     target = sel["posts_per_run"]
     count = 0
     tetos_atingidos: set[str] = set()
+    minimo_pct = int(pricing.setting(
+        sel, "min_real_discount_pct", pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT))
 
     for offer in fila:
         if count >= target:
             break
-        # O rótulo definitivo só existe DEPOIS do refresh: antes dele o
+        # O veredito (e o rótulo) só existem DEPOIS do refresh: antes dele o
         # desconto seria o do preço velho.
         rotulo = offer.title[:40]
         try:
@@ -275,19 +285,20 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             refresh = getattr(src, "refresh_price", None)
             if refresh is not None:
                 offer = refresh(offer)
-            rotulo = (f"{offer.title[:40]} ({offer.real_discount_pct}% OFF)"
-                      if offer.real_discount_pct else offer.title[:40])
+                if not dry_run:
+                    # C7c: o preço VIVO é a observação do dia (o ML gravava
+                    # o do pool todo dia — o histórico dele era uma constante).
+                    db.record_price(offer.source, offer.item_id, offer.price_current_cents)
+            # Uma decisão, tomada uma vez: texto, copy, arte e legendas
+            # recebem este veredito e não recalculam nada (C9/C10).
+            veredito = pricing.verdict(offer, minimo_pct)
+            rotulo = (f"{offer.title[:40]} ({veredito.discount_pct}% OFF)"
+                      if veredito.mode == "A" else offer.title[:40])
             link = src.resolve_affiliate_link(offer)
-            copy = copywriter.write_copy(offer, cfg)
-            price_floor = watchlist.price_floor(offer.item_id) if watchlist is not None else None
-            text = message.build_message(
-                offer, copy, link, price_floor=price_floor,
-                min_real_discount_pct=int(pricing.setting(
-                    sel, "min_real_discount_pct", pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT)),
-                seal_tolerance=float(pricing.setting(
-                    sel, "seal_tolerance", message.DEFAULT_SEAL_TOLERANCE)))
+            copy = copywriter.write_copy(offer, cfg, veredito)
+            text = message.build_message(offer, copy, link, veredito)
             post = Post(offer=offer, copy=copy, affiliate_link=link, message_text=text,
-                        price_floor=price_floor)
+                        verdict=veredito)
             validator(post, cfg)
         except Exception as exc:
             summary.discarded.append((rotulo, str(exc)))

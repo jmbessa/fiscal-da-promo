@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from afiliado import state
-from afiliado.models import CopyParts, Post
+from afiliado.models import NO_CLAIM, CopyParts, Post, Verdict
 from afiliado.state import StateDB
 from tests.test_models import make_offer
 
@@ -13,12 +13,13 @@ def _congela(monkeypatch, instante_brt: datetime) -> None:
     monkeypatch.setattr(state, "_now", lambda: instante_brt.astimezone(timezone.utc))
 
 
-def make_post(**offer_kw) -> Post:
+def make_post(verdict: Verdict = NO_CLAIM, **offer_kw) -> Post:
     return Post(
         offer=make_offer(**offer_kw),
         copy=CopyParts(headline="h", description="d", cta="c"),
         affiliate_link="https://shope.ee/x",
         message_text="msg",
+        verdict=verdict,
     )
 
 

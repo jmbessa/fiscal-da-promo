@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from datetime import date
@@ -14,8 +15,12 @@ class PriceFloor:
 
 @dataclass(frozen=True)
 class PriceRef:
+    """Referência curada: mediana (`ref_cents`), topo do quartil mais barato
+    (`p25_cents`) e a janela real em dias. Entrada sem p25 carrega 0 — e
+    sem p25 o post nunca alega desconto (conservador por construção)."""
     ref_cents: int
     window_days: int
+    p25_cents: int = 0
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,14 @@ class Watchlist:
 
     def is_stale(self, today: date | None = None) -> bool:
         return self.days_old(today) > self.valid_days
+
+    def facts_only(self) -> "Watchlist":
+        """Cópia sem `category_boosts`/`hot_items`. Watchlist vencida perde só
+        os boosts (opinião da semana); referências e pisos são FATOS datados
+        e continuam alimentando a régua com a janela real (C11: antes a
+        watchlist inteira virava None e a régua trocava de número — e de
+        veredito — de um dia para o outro, sem trocar de aviso)."""
+        return dataclasses.replace(self, category_boosts={}, hot_items={})
 
     def boost_for(self, offer: Offer) -> float:
         return (self.category_boosts.get(offer.category, 1.0)
@@ -71,7 +84,8 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
             price_floors={str(k): PriceFloor(int(v["min_price_cents"]), int(v.get("window_days", 365)))
                           for k, v in raw_price_floors.items()
                           if isinstance(v, dict) and "min_price_cents" in v},
-            price_refs={str(k): PriceRef(int(v["ref_cents"]), int(v.get("window_days", 90)))
+            price_refs={str(k): PriceRef(int(v["ref_cents"]), int(v.get("window_days", 90)),
+                                         int(v.get("p25_cents") or 0))
                         for k, v in raw_price_refs.items()
                         if isinstance(v, dict) and "ref_cents" in v},
         )

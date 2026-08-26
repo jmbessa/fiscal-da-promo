@@ -2,12 +2,15 @@
 (Bricolage Grotesque + IBM Plex Mono, mascote, navy/dourado).
 
 Gera a arte de story (1080×1920) e de feed (1080×1350) a partir de um `Offer`
-seguindo o layout do design do usuário: fundo navy com brilho radial,
-cabeçalho com mascote (ver `afiliado.brand`), card branco com a foto do
-produto, título, pill de preço, meta (vendas/fonte) e — quando a watchlist
-confirma preço mínimo — o selo "menor preço verificado". `copy` faz parte da
-interface pública para uso futuro (o texto do post é montado à parte, em
-message.py) — esta fase não desenha os campos de `CopyParts` na arte.
+e do `Verdict` já decidido (`pricing.verdict`): fundo navy com brilho
+radial, cabeçalho com mascote (ver `afiliado.brand`), card branco com a foto
+do produto (badge "-N%" só em modo A), título, pill de preço (referência
+riscada só em modo A), meta (vendas/fonte) e — quando o veredito traz o
+selo — o selo "menor preço verificado" com a mesma janela do texto. A arte
+NÃO recalcula modo nem selo: é o que faz Telegram, story e feed concordarem
+(C9). `story_plan`/`feed_plan` expõem o que será desenhado, para teste.
+`copy` faz parte da interface pública para uso futuro (o texto do post é
+montado à parte, em message.py) — esta fase não desenha `CopyParts` na arte.
 """
 
 import functools
@@ -21,8 +24,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from afiliado import pricing
 from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
-from afiliado.models import CopyParts, Offer, format_brl
-from afiliado.watchlist import PriceFloor
+from afiliado.models import CopyParts, Offer, Verdict, format_brl
 
 # --- Paleta -----------------------------------------------------------------
 
@@ -317,22 +319,15 @@ def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: 
 
 # --- Pill de preço (align-self: flex-start) -----------------------------------
 
-def _modo_desconto_verificado(offer: Offer, min_real_discount_pct: int) -> bool:
-    """Mesma régua do texto (ver afiliado.pricing): só há o que alegar quando o
-    desconto é verificável contra a NOSSA referência."""
-    return (offer.real_discount_pct > 0
-            and offer.real_discount_pct >= min_real_discount_pct)
-
-
-def _pill_left(offer: Offer, min_real_discount_pct: int) -> tuple[str, bool]:
-    """(texto à esquerda do preço na pill, se ele é riscado).
+def _pill_left(offer: Offer, verdict: Verdict) -> tuple[str, bool]:
+    """(texto à esquerda do preço na pill, se ele é riscado) — pelo veredito.
 
     Modo A (desconto verificado): a NOSSA referência, riscada — nunca o "de"
     do vendedor. Modo B: NADA — a pill é só o preço, grande; nota, vendas e
     loja ficam na linha de meta logo abaixo (`_draw_meta`), exatamente como
     no modo A, sem duplicar a prova social.
     """
-    if _modo_desconto_verificado(offer, min_real_discount_pct):
+    if verdict.mode == "A":
         return format_brl(offer.price_ref_cents), True
     return "", False
 
@@ -488,13 +483,13 @@ def _draw_meta(draw: ImageDraw.ImageDraw, x: float, y: float, offer: Offer,
 
 # --- Selo "menor preço verificado" ---------------------------------------------
 
-def _selo_applicable(offer: Offer, price_floor: PriceFloor | None) -> bool:
-    return price_floor is not None and offer.price_current_cents <= price_floor.min_price_cents
-
-
-def _selo_text(price_floor: PriceFloor) -> str:
-    months = max(1, round(price_floor.window_days / 30))
-    return f"MENOR PREÇO VERIFICADO · {months} MESES"
+def selo_label(verdict: Verdict) -> str:
+    """Rótulo do selo na arte — "" quando o veredito não traz selo. A decisão
+    (SE há selo) é de `pricing.verdict`; aqui só a forma: "MENOR PREÇO
+    VERIFICADO · 6 MESES" / "· 45 DIAS", com a mesma janela do texto."""
+    if not verdict.seal:
+        return ""
+    return f"MENOR PREÇO VERIFICADO · {pricing.window_text(verdict.seal_window_days).upper()}"
 
 
 def _draw_check(draw: ImageDraw.ImageDraw, x: float, y: float, size: float,
@@ -507,9 +502,9 @@ def _draw_check(draw: ImageDraw.ImageDraw, x: float, y: float, size: float,
               fill=color, width=width)
 
 
-def _selo_dims(draw: ImageDraw.ImageDraw, price_floor: PriceFloor, mono_size: int,
+def _selo_dims(draw: ImageDraw.ImageDraw, verdict: Verdict, mono_size: int,
                pad_y: int, pad_x: int, gap: int) -> dict:
-    text = _selo_text(price_floor)
+    text = selo_label(verdict)
     font = _font("mono", mono_size, 500)
     bbox = draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
@@ -540,7 +535,7 @@ def _draw_selo(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, radius
 
 # --- Corpo (título + pill de preço + meta + selo) e guarda de overflow -------
 
-def _story_body_dims(draw, offer, price_floor, title_size, title_weight, title_lines_cap,
+def _story_body_dims(draw, offer, verdict, title_size, title_weight, title_lines_cap,
                       include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, STORY_TITLE_WIDTH, title_lines_cap, title_weight)
     price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, pill_left, STORY_TITLE_WIDTH)
@@ -550,13 +545,13 @@ def _story_body_dims(draw, offer, price_floor, title_size, title_weight, title_l
         meta = _meta_dims(draw, offer, 30)
         y += 18 + meta["height"]
     selo = None
-    if include_selo and _selo_applicable(offer, price_floor):
-        selo = _selo_dims(draw, price_floor, 25, 20, 24, 16)
+    if include_selo and verdict.seal:
+        selo = _selo_dims(draw, verdict, 25, 20, 24, 16)
         y += 28 + selo["height"]
     return y, title, price, meta, selo
 
 
-def _feed_body_dims(draw, offer, price_floor, title_size, title_weight, title_lines_cap,
+def _feed_body_dims(draw, offer, verdict, title_size, title_weight, title_lines_cap,
                      include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, FEED_TITLE_WIDTH, title_lines_cap, title_weight)
     price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, pill_left, FEED_TITLE_WIDTH)
@@ -566,13 +561,13 @@ def _feed_body_dims(draw, offer, price_floor, title_size, title_weight, title_li
         meta = _meta_dims(draw, offer, 27)
         y += 20 + meta["height"]
     selo = None
-    if include_selo and _selo_applicable(offer, price_floor):
-        selo = _selo_dims(draw, price_floor, 23, 20, 24, 16)
+    if include_selo and verdict.seal:
+        selo = _selo_dims(draw, verdict, 23, 20, 24, 16)
         y += 24 + selo["height"]
     return y, title, price, meta, selo
 
 
-def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_size, title_weight,
+def _run_guard_steps(draw, offer, verdict, allowed_bottom, dims_fn, title_size, title_weight,
                      pill_left=("", False)):
     """Guarda de overflow: se o corpo (título..selo) invadir o rodapé, reduz o
     título p/ 1 linha, depois descarta o meta, e só por último o selo — o selo
@@ -581,7 +576,7 @@ def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_si
     title_cap, meta_on, selo_on = TITLE_MAX_LINES, True, True
     while True:
         bottom, title, price, meta, selo = dims_fn(
-            draw, offer, price_floor, title_size, title_weight, title_cap, meta_on, selo_on,
+            draw, offer, verdict, title_size, title_weight, title_cap, meta_on, selo_on,
             pill_left)
         if bottom <= allowed_bottom:
             return title, price, meta, selo
@@ -595,21 +590,21 @@ def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_si
             return title, price, meta, selo  # não cabe mesmo assim — segue com o mínimo
 
 
-def _story_body_options(draw, offer, price_floor, allowed_bottom, pill_left=("", False)):
-    return _run_guard_steps(draw, offer, price_floor, allowed_bottom, _story_body_dims,
+def _story_body_options(draw, offer, verdict, allowed_bottom, pill_left=("", False)):
+    return _run_guard_steps(draw, offer, verdict, allowed_bottom, _story_body_dims,
                              STORY_TITLE_SIZE, 700, pill_left)
 
 
-def _feed_body_options(draw, offer, price_floor, allowed_bottom, pill_left=("", False)):
+def _feed_body_options(draw, offer, verdict, allowed_bottom, pill_left=("", False)):
     # Antes do passo "reduzir para 1 linha": tenta a variante "3b" do design
     # (título 48px/w600, ainda em 2 linhas) — se ela já couber com meta e
     # selo inteiros, evita truncar o título por causa de um rodapé apertado.
     for size, weight in ((FEED_TITLE_SIZE, 700), (FEED_TITLE_ALT_SIZE, FEED_TITLE_ALT_WEIGHT)):
         bottom, title, price, meta, selo = _feed_body_dims(
-            draw, offer, price_floor, size, weight, TITLE_MAX_LINES, True, True, pill_left)
+            draw, offer, verdict, size, weight, TITLE_MAX_LINES, True, True, pill_left)
         if bottom <= allowed_bottom:
             return title, price, meta, selo
-    return _run_guard_steps(draw, offer, price_floor, allowed_bottom, _feed_body_dims,
+    return _run_guard_steps(draw, offer, verdict, allowed_bottom, _feed_body_dims,
                              FEED_TITLE_SIZE, 700, pill_left)
 
 
@@ -717,56 +712,92 @@ def _draw_feed_footer(draw: ImageDraw.ImageDraw, width: int, pad: int, offer: Of
     draw.text((pad - tbbox[0], ty - tbbox[1]), text, font=text_font, fill=TEXT)
 
 
+# --- Plano do corpo: o que a arte vai desenhar (hook testável) ---------------
+
+def _story_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
+                handle: str | None) -> dict:
+    width, height = STORY_SIZE
+    footer = _story_footer_geometry(draw, width, height, handle, offer)
+    pill_left = _pill_left(offer, verdict)
+    title, price, meta, selo = _story_body_options(
+        draw, offer, verdict, footer["cta_box"][1] - 36, pill_left)
+    return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
+            "pill_left": pill_left, "badge_pct": verdict.discount_pct}
+
+
+def _feed_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
+               handle: str | None) -> dict:
+    width, height = FEED_SIZE
+    footer = _feed_footer_geometry(width, height, FEED_PAD)
+    pill_left = _pill_left(offer, verdict)
+    title, price, meta, selo = _feed_body_options(
+        draw, offer, verdict, footer["divider_y"] - 36, pill_left)
+    return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
+            "pill_left": pill_left, "badge_pct": verdict.discount_pct}
+
+
+def _resumo(plan: dict) -> dict:
+    return {
+        "selo": plan["selo"]["text"] if plan["selo"] is not None else "",
+        "badge_pct": plan["badge_pct"],
+        "riscado": plan["pill_left"][0],
+        "title_lines": list(plan["title"]["lines"]),
+        "meta": plan["meta"] is not None,
+    }
+
+
+def story_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict:
+    """O que `render_story` vai desenhar para este veredito — sem baixar a
+    imagem nem pintar: `selo` (rótulo, ou "" quando não há), `badge_pct`,
+    `riscado` (a referência riscada na pill, ou ""), `title_lines`, `meta`.
+    É o hook que prova, por teste e não por pixel, que arte, texto e
+    legendas concordam (mesmo `Verdict` -> selo em todos ou em nenhum)."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    return _resumo(_story_plan(draw, offer, verdict, handle))
+
+
+def feed_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict:
+    """Idem `story_plan`, para a arte de feed."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    return _resumo(_feed_plan(draw, offer, verdict, handle))
+
+
 # --- Render principal -----------------------------------------------------------
 
-def _render_story(offer: Offer, price_floor: PriceFloor | None, client: httpx.Client | None,
-                   handle: str | None, brand_name: str, min_real_discount_pct: int) -> bytes:
+def _render_story(offer: Offer, verdict: Verdict, client: httpx.Client | None,
+                   handle: str | None, brand_name: str) -> bytes:
     width, height = STORY_SIZE
     product = _open_product_image(_get_image_bytes(offer, client))
 
     canvas = _glow_background(width, height, 540, 154, 594, 528)
     draw = ImageDraw.Draw(canvas)
-    badge_pct = (offer.real_discount_pct
-                 if _modo_desconto_verificado(offer, min_real_discount_pct) else 0)
-    pill_left = _pill_left(offer, min_real_discount_pct)
+    plan = _story_plan(draw, offer, verdict, handle)
 
     _draw_header_story(draw, canvas, 72, 120, 68, brand_name)
     _draw_card(canvas, draw, product, 72, 224, 936, 790, 28, 24,
-               badge_pct, 44, 14, 22, 28)
-
-    footer_geo = _story_footer_geometry(draw, width, height, handle, offer)
-    allowed_bottom = footer_geo["cta_box"][1] - 36
-    title, price, meta, selo = _story_body_options(draw, offer, price_floor, allowed_bottom,
-                                                   pill_left)
-    _draw_story_body(draw, width, offer, title, price, meta, selo)
-    _draw_story_footer(draw, width, handle, footer_geo)
+               plan["badge_pct"], 44, 14, 22, 28)
+    _draw_story_body(draw, width, offer, plan["title"], plan["price"], plan["meta"], plan["selo"])
+    _draw_story_footer(draw, width, handle, plan["footer"])
 
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
     return buffer.getvalue()
 
 
-def _render_feed(offer: Offer, price_floor: PriceFloor | None, client: httpx.Client | None,
-                  handle: str | None, brand_name: str, min_real_discount_pct: int) -> bytes:
+def _render_feed(offer: Offer, verdict: Verdict, client: httpx.Client | None,
+                  handle: str | None, brand_name: str) -> bytes:
     width, height = FEED_SIZE
     product = _open_product_image(_get_image_bytes(offer, client))
 
     canvas = _glow_background(width, height, 540, 81, 594, 338)
     draw = ImageDraw.Draw(canvas)
-    badge_pct = (offer.real_discount_pct
-                 if _modo_desconto_verificado(offer, min_real_discount_pct) else 0)
-    pill_left = _pill_left(offer, min_real_discount_pct)
+    plan = _feed_plan(draw, offer, verdict, handle)
 
     _draw_header_feed(draw, canvas, 64, 64, 62, brand_name, handle)
     _draw_card(canvas, draw, product, 64, 158, 952, 600, 26, 20,
-               badge_pct, 42, 12, 20, 26)
-
-    footer_geo = _feed_footer_geometry(width, height, FEED_PAD)
-    allowed_bottom = footer_geo["divider_y"] - 36
-    title, price, meta, selo = _feed_body_options(draw, offer, price_floor, allowed_bottom,
-                                                  pill_left)
-    _draw_feed_body(draw, width, offer, title, price, meta, selo)
-    _draw_feed_footer(draw, width, FEED_PAD, offer, footer_geo)
+               plan["badge_pct"], 42, 12, 20, 26)
+    _draw_feed_body(draw, width, offer, plan["title"], plan["price"], plan["meta"], plan["selo"])
+    _draw_feed_footer(draw, width, FEED_PAD, offer, plan["footer"])
 
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
@@ -776,24 +807,22 @@ def _render_feed(offer: Offer, price_floor: PriceFloor | None, client: httpx.Cli
 def render_story(
     offer: Offer,
     copy: CopyParts,
-    price_floor: PriceFloor | None = None,
+    verdict: Verdict,
     client: httpx.Client | None = None,
     handle: str | None = None,
     brand_name: str = DEFAULT_BRAND_NAME,
-    min_real_discount_pct: int = pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT,
 ) -> bytes:
     del copy  # reservado para fases futuras; não usado no template atual
-    return _render_story(offer, price_floor, client, handle, brand_name, min_real_discount_pct)
+    return _render_story(offer, verdict, client, handle, brand_name)
 
 
 def render_feed(
     offer: Offer,
     copy: CopyParts,
-    price_floor: PriceFloor | None = None,
+    verdict: Verdict,
     client: httpx.Client | None = None,
     handle: str | None = None,
     brand_name: str = DEFAULT_BRAND_NAME,
-    min_real_discount_pct: int = pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT,
 ) -> bytes:
     del copy  # reservado para fases futuras; não usado no template atual
-    return _render_feed(offer, price_floor, client, handle, brand_name, min_real_discount_pct)
+    return _render_feed(offer, verdict, client, handle, brand_name)

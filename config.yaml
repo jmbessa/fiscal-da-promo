@@ -24,15 +24,19 @@ selection:
   price_min_brl: 20
   price_max_brl: 1000
   dedupe_days: 30
-  # Fase 4 — régua honesta de preço. O desconto do vendedor (o "de" inflado)
+  # Fase 4/5B — régua honesta de preço. O desconto do vendedor (o "de" inflado)
   # deixou de decidir SE publicamos e passa a decidir só O QUE o post alega:
   # o corte de preço aqui é apenas não anunciar item mais caro que o típico.
+  # Regra do quartil (5B): o post só alega desconto quando o preço de hoje
+  # está no quartil mais barato da janela (<= p25), a janela tem >= 14 dias
+  # distintos e o desconto contra a mediana atinge min_real_discount_pct. O
+  # selo de menor preço é ESTRITO (preço <= mínima) e diz a janela medida —
+  # a margem de 5% que existia aqui saiu.
   max_above_ref: 1.00          # não anuncia item mais caro que o preço típico
   require_price_ref: false     # true = só publica com referência conhecida
   min_real_discount_pct: 10    # abaixo disso o post não alega desconto: mostra preço + prova social
   ref_window_days: 90          # janela do histórico próprio de preços
-  ref_min_observations: 5      # dias distintos mínimos para a mediana valer
-  seal_tolerance: 1.05         # margem sobre a mínima histórica para o selo
+  ref_min_observations: 14     # dias distintos mínimos para mediana/p25 valerem (regra do quartil)
   # Fase 1.8: piso de valor esperado (comissão em R$ ponderada por popularidade,
   # via ev_score, SEM boost de watchlist) por post — com dedupe de 30 dias e
   # cadência de 5 min (192 checagens/dia, 08:00–23:55), evita postar sobras

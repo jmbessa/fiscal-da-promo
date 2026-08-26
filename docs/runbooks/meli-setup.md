@@ -173,7 +173,13 @@ do anúncio que vence o buy box. Formato:
 - `price_historic_min_cents` / `price_min_window_days` — mínima histórica do
   buy box e a janela dela. Viram `Offer.price_floor_cents` e
   `price_floor_window_days`; o selo é estrito ("Menor preço dos últimos 12
-  meses (verificado)" só quando preço vivo ≤ mínima).
+  meses (verificado)" só quando preço vivo ≤ mínima). A mínima é sempre um
+  preço DIÁRIO que existiu: quando a mínima histórica do cubo é de outro
+  anúncio (vencedor mudou) o skill gasta uma consulta na série diária
+  (`/meli-pool-refresh`, Passo 3b) — **média semanal nunca vira mínima**, ela
+  é ≥ a menor diária e o selo sairia para um preço acima de um que existiu.
+  E, no run, o piso curado ainda cede ao nosso próprio price_log quando ele
+  viu mais barato (a observação própria só baixa o piso).
 - `buy_box_item_id` — o anúncio cujo preço o pipeline publica.
 - `sales` é **estimativa** do JoomPulse (`catalogOrderCount1m`).
 

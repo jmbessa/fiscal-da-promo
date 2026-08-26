@@ -37,8 +37,11 @@ tinham retornado dados) e as tentativas seguintes, nas DUAS ferramentas
   `data/joompulse_raw/meli-pool-refresh/<AAAA-MM-DD>/<passo>_<lote>.json`
   (o JSON exato devolvido; o diretório está no `.gitignore`).
 - `data/joompulse_raw/meli-pool-refresh/cursor.json` guarda onde parou:
-  `{"data": "...", "consultas_feitas": N, "passo": 1|2|3, "proximo_lote": k,
+  `{"data": "...", "consultas_feitas": N, "passo": "1"|"2"|"3"|"3b",
+  "proximo_lote": k, "minimas_pendentes": ["<buyBoxId>", ...],
   "limite_observado": "<mensagem ou null>"}`. Atualize a cada consulta.
+  `minimas_pendentes` são os anúncios que precisam do Passo 3b e não couberam
+  no orçamento: suas entradas ficam FORA do pool até a próxima execução.
 - Ao atingir `max_consultas` OU receber "limit exceeded": **PARE**, grave o
   cursor, informe quantas consultas fez e onde parou. A próxima execução lê o
   cursor e os arquivos brutos e **retoma dali sem repetir consulta** — os
@@ -122,11 +125,43 @@ Para cada anúncio, com as médias semanais ordenadas (centavos, sempre
    (arredondamento normal de centavos), `price_min_window_days` = 365.
    **Se a mínima vier maior que o p25** (o vencedor do buy box mudou e a
    mínima histórica é de outro anúncio — caso real: MLB66637233, pool antigo
-   com mínima R$ 30,51 e vencedor de hoje com mínima R$ 104,90), use a menor
-   média semanal como mínima com `price_min_window_days = price_window_days`
-   e conte quantos caíram nessa regra para o resumo. O leitor rejeita
-   `mínima > p25`.
+   com mínima R$ 30,51 e vencedor de hoje com mínima R$ 104,90), gaste **1
+   consulta na série DIÁRIA daquele anúncio** (Passo 3b) e use a mínima
+   diária verdadeira. Conte quantos precisaram disso para o resumo.
 5. `buy_box_item_id` = `buyBoxId`.
+
+**Média semanal NUNCA vira mínima.** A média de uma semana é ≥ a menor
+diária daquela semana: usá-la como `price_historic_min_cents` faria o selo
+"menor preço dos últimos N dias (verificado)" sair para um preço ACIMA de um
+que existiu — a única alegação verificada do post viraria a mentira mais
+fácil de desmentir. Mediana e p25 podem vir das médias semanais (são o preço
+TÍPICO, e a suavização puxa para o meio); a mínima, não.
+
+## Passo 3b — mínima diária, só para quem precisa (1 consulta por anúncio)
+
+Mesmo cubo, sem agregação semanal: 13 semanas em dias são 91 linhas, dentro
+do `limit 100` — mas cabe **um anúncio por consulta**, por isso só para os
+anúncios em que `buyBoxPriceAmountHistoricMin > price_p25_cents`.
+
+```json
+{"dimensions":["MlbProductPricesDaily.id"],
+ "measures":["MlbProductPricesDaily.price"],
+ "timeDimensions":[{"dimension":"MlbProductPricesDaily.date","granularity":"day","dateRange":"last 13 weeks"}],
+ "filters":[{"member":"MlbProductPricesDaily.id","operator":"equals","values":["<1 buyBoxId>"]}],
+ "limit":100}
+```
+
+- `price_historic_min_cents` = **menor preço diário** da série (centavos, para
+  baixo), `price_min_window_days` = **dias observados** (linhas com preço, não
+  91 fixo): a janela do selo é o que foi medido.
+- A mínima diária das mesmas 13 semanas é sempre ≤ p25 (o p25 é uma média
+  semanal e nenhuma média é menor que a mínima do período), então a entrada
+  passa no leitor — que rejeita `mínima > p25`.
+- **Se não couber no orçamento do dia** (`max_consultas` ou "limit
+  exceeded"): a entrada fica **FORA do pool** desta execução, registrada no
+  cursor para a próxima. Nunca grave a mínima do outro anúncio nem uma média
+  semanal no lugar dela — sem mínima confiável, é melhor não ter a entrada
+  do que ter um selo falso.
 
 **Ressalva a registrar no resumo:** o histórico é do anúncio que vence o buy
 box HOJE; se o vencedor mudou dentro da janela, a série é a do vencedor atual
@@ -160,9 +195,10 @@ PYTHONPATH=src python -c "import httpx; from afiliado.config import load_config;
 3. Rode `/meli-links-refresh` para os `product_id` novos (sem link no pool de
    links a oferta é descartada no run).
 4. Resumo ao usuário: quantos entraram/saíram vs. o pool anterior,
-   distribuição `ref / mínima`, quantos caíram por regra, quantos usaram a
-   mínima semanal, consultas gastas e o que ficou para a próxima execução.
-   Vendas são **estimativas**.
+   distribuição `ref / mínima`, quantos caíram por regra, quantos precisaram
+   da série diária (Passo 3b) e quantos ficaram de fora por falta de
+   orçamento para ela, consultas gastas e o que ficou para a próxima
+   execução. Vendas são **estimativas**.
 5. Commit: `chore: regenera pool do ML (dados JoomPulse de <data>)` terminando
    com `Co-Authored-By:` do modelo em uso. `data/joompulse_raw/` NÃO entra
    (gitignored). Se o repo tiver remote, perguntar antes de push.
@@ -188,8 +224,9 @@ verificado há N dias"), e este passo existe para renovar a data.
    em 7 dias e o aviso diz por quê).
 3. Conte e informe no resumo quantos `buy_box_item_id` **mudaram**. Para
    esses, `price_ref/p25/mínima` são do anúncio ANTERIOR (a série do Passo 3
-   é por anúncio): se o orçamento do dia permitir, refaça o Passo 3 (e a
-   série diária da mínima) para eles; senão, registre que ficaram com a
+   é por anúncio): se o orçamento do dia permitir, refaça o Passo 3 (e o
+   Passo 3b, quando a mínima do vencedor novo passar do p25) para eles;
+   senão, registre que ficaram com a
    régua do vencedor antigo e o preço vivo do novo — a regra do quartil e o
    selo continuam honestos (o preço publicado é sempre o do anúncio gravado),
    mas a referência pode estar defasada até a próxima regeneração.
@@ -225,3 +262,12 @@ futuro; `product_id` repetido. O aviso vai ao `doctor` e ao resumo de ops:
   fica ESTRITAMENTE abaixo de `price_p25_cents` com janela ≥ 14 dias; o selo
   só quando ≤ `price_historic_min_cents`. Referência errada para cima vira
   desconto inventado — na dúvida, arredonde para baixo.
+- Mínima errada para cima vira SELO inventado: `price_historic_min_cents` sai
+  de `buyBoxPriceAmountHistoricMin` ou da série DIÁRIA (Passo 3b) — nunca de
+  uma média semanal, que é ≥ a menor diária. Sem uma das duas, a entrada fica
+  fora do pool.
+- No run, o piso do pool ainda pode ser BAIXADO pelo nosso price_log (se o
+  preço vivo que gravamos já foi menor, a mínima passa a ser a nossa) — nunca
+  subido. Mas isso só corrige o item que JÁ publicamos alguma vez: uma mínima
+  alta demais num item novo vira selo falso na primeira publicação, e o
+  leitor só pega o caso extremo (`mínima > p25`). A defesa é o Passo 3b.

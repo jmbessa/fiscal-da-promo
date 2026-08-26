@@ -140,6 +140,24 @@ representação no CONAR — é perder o programa que paga a comissão. O menor
 custo possível seria um "publi" pequeno no canto da arte e no início da
 legenda. Decisão do dono; fica registrada aqui.
 
+## Ramo escolhido (decisões do dono, 2026-08-26)
+
+- **Orçamento: R$ 300/mês.** O mês 1 inteiro vai para um único teste — Meta
+  Ads → Telegram, criativo "Flagrante do Fiscal", link de convite dedicado.
+  Continua só se o custo por membro ficar ≤ R$ 5. Expectativa honesta com esse
+  valor: 30–150 membros/mês vindos de anúncio; o motor é a Camada 1.
+- **Reels anônimos, com vídeo.** Sem rosto e sem a voz do dono. Formato: arte
+  animada (zoom na foto, revelação do preço, carimbo "verificado"), texto na
+  tela e o **mascote do Fiscal como personagem** — a "cara" da marca. Narração
+  sintética (voz gerada) como variante a testar contra a versão só-texto.
+  3–5 Reels/semana: os 2 melhores publicados à mão no app com áudio em alta;
+  o resto pela API. Todos republicados no Shopee Video.
+- **1 h/dia de ações manuais**, como rotina fixa: 15 min stories (as 6 artes
+  do chat de ops) · 15 min DMs de troca de divulgação e comentários · 10 min
+  subir os Reels no Shopee Video · 10 min cupom, diretórios e lista do ML
+  (primeiras semanas) · 10 min ler o resumo de ops e responder.
+- **Sem sinalização de publicidade** (decisão mantida; risco registrado acima).
+
 ## Métricas e ritmo
 
 Semanal: seguidores IG, membros TG, entradas por link, alcance de

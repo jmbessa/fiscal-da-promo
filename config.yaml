@@ -66,7 +66,11 @@ meli:
   # Só publica se o preço ao vivo estiver até 10% acima da mínima histórica do
   # pool (price_historic_min_cents) — acima disso não é mais "oferta real" e a
   # oferta é descartada (a próxima da fila assume).
-  max_above_historic_min: 1.10
+  # Calibrado com dados reais (2026-08-26, 38 produtos do pool): 1.10 deixaria
+  # passar apenas 2 e 1.05 nenhum. 1.25 libera ~11 — volume utilizavel sem
+  # chamar de oferta algo que nao esta na parte baixa da propria curva.
+  # O selo 'MENOR PRECO VERIFICADO' e mais estrito (ver creative/watchlist).
+  max_above_historic_min: 1.25
   tag: "jmbessa"             # etiqueta cadastrada no painel de afiliados (linkbuilder)
 
 validation:

@@ -1,6 +1,16 @@
+from datetime import datetime, timedelta, timezone
+
+from afiliado import state
 from afiliado.models import CopyParts, Post
 from afiliado.state import StateDB
 from tests.test_models import make_offer
+
+BRT = timezone(timedelta(hours=-3))
+
+
+def _congela(monkeypatch, instante_brt: datetime) -> None:
+    """Fixa o relógio do StateDB num instante dado em BRT (guardado em UTC)."""
+    monkeypatch.setattr(state, "_now", lambda: instante_brt.astimezone(timezone.utc))
 
 
 def make_post(**offer_kw) -> Post:
@@ -112,4 +122,88 @@ def test_count_posts_today(tmp_path):
     assert db.count_posts_today("a") == 2
     assert db.count_posts_today("b") == 1
     assert db.count_posts_today("c") == 0
+    db.close()
+
+
+# --- Fase 5A: dia LOCAL (C3) --------------------------------------------------
+
+def test_count_posts_today_conta_o_dia_local_nao_o_utc(tmp_path, monkeypatch):
+    # Post às 22:00 BRT de 25/08 é 01:00 UTC de 26/08. Conta no dia BRT 25/08
+    # — antes contava no "dia" seguinte e o canal calava das 13:20 às 21:00.
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    db.record_post(make_post(item_id="1"), channel="telegram", message_id="1")
+    assert db.count_posts_today("telegram") == 1
+    _congela(monkeypatch, datetime(2026, 8, 25, 23, 55, tzinfo=BRT))
+    assert db.count_posts_today("telegram") == 1
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
+    assert db.count_posts_today("telegram") == 0
+    db.close()
+
+
+def test_count_posts_today_aceita_um_instante_explicito(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    db.record_post(make_post(item_id="1"), channel="telegram", message_id="1")
+    assert db.count_posts_today("telegram", now=datetime(2026, 8, 26, 8, 0, tzinfo=BRT)) == 0
+    assert db.count_posts_today("telegram", now=datetime(2026, 8, 25, 23, 0, tzinfo=BRT)) == 1
+    db.close()
+
+
+def test_count_posts_today_em_utc_reproduz_o_bug_antigo(tmp_path, monkeypatch):
+    # Contraste: com o fuso em UTC o post das 22:00 BRT ainda "é de hoje" às
+    # 08:00 BRT do dia seguinte — exatamente o C3.
+    db = StateDB(tmp_path / "s.db", timezone="UTC")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    db.record_post(make_post(item_id="1"), channel="telegram", message_id="1")
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
+    assert db.count_posts_today("telegram") == 1
+    db.close()
+
+
+def test_state_db_fuso_padrao_e_sao_paulo(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    assert str(db.tz) == "America/Sao_Paulo"
+    db.close()
+
+
+def test_record_price_grava_o_dia_local(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))   # 01:00 UTC de 26/08
+    db.record_price("shopee", "1", 2600)
+    assert db.conn.execute("SELECT day FROM price_log").fetchone()[0] == "2026-08-25"
+    assert db.price_history("shopee", "1", days=0) == [2600]     # "hoje" local
+    db.close()
+
+
+# --- Fase 5A: avisos uma vez por dia (A3) ------------------------------------
+
+def test_warn_once_uma_vez_por_dia_local(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    assert db.warn_once("watchlist vencida") is True
+    assert db.warn_once("watchlist vencida") is False
+    # 23:59 BRT já é o dia seguinte em UTC, mas ainda o mesmo dia local.
+    _congela(monkeypatch, datetime(2026, 8, 25, 23, 59, tzinfo=BRT))
+    assert db.warn_once("watchlist vencida") is False
+    assert db.warn_once("outro aviso") is True
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
+    assert db.warn_once("watchlist vencida") is True
+    db.close()
+
+
+# --- Fase 5A: heartbeat (contagem de ontem) ----------------------------------
+
+def test_day_stats_de_ontem(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    db.record_post(make_post(item_id="a"), channel="telegram", message_id="1")
+    db.record_post(make_post(item_id="a"), channel="story_dispatch", message_id="2")  # mesma oferta
+    db.record_post(make_post(item_id="b"), channel="telegram", message_id="3")
+    db.record_run(published=2, discarded=3)
+    db.record_run(published=0, discarded=1)
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
+    ontem = db.day_stats(db.local_today() - timedelta(days=1))
+    assert (ontem.published, ontem.discarded, ontem.runs) == (2, 4, 2)
+    assert db.day_stats(db.local_today()) == state.DayStats(0, 0, 0)
     db.close()

@@ -52,7 +52,36 @@ pool curado (data/meli_offers.json) — gerado por /meli-pool-refresh (JoomPulse
     JoomPulse — confirmado presente na lista real: MLB7125449388 a
     R$ 104,90 entre 37 vendedores de MLB66637233 cujo menor preço era
     R$ 58,90). `original_price` quase sempre é `null` — não dá para
-    calcular desconto por aqui.
+    calcular desconto por aqui. **A ordem da lista NÃO é o buy box** (ver
+    "Buy box ao vivo" abaixo): `results[0]` não serve de vencedor.
+
+### Buy box ao vivo (2026-08-26, rodada de correção da 5B)
+
+Três produtos do pool, comparando a PÁGINA real (`/p/{id}` lida pelo Chrome
+com sessão logada — o `GET` por `httpx` com User-Agent de navegador é
+redirecionado para `gz/account-verification`, sem preço no HTML), o
+`results[0]` de `/products/{id}/items` (token de aplicação) e o anúncio do
+pool (`buyBoxId` do JoomPulse lido no MESMO dia):
+
+| produto | página real (buy box) | `results[0]` da API | anúncio do pool |
+|---|---|---|---|
+| MLB66637233 Creatina Growth 500g | MLB4555189589 — **R$ 78,90** (de 104,90) | MLB4555189589 @ 78,90 ✅ | MLB7125449388 @ 104,90 — na lista (38 vendedores, menor 58,90), mas **não é o da página** ❌ |
+| MLB26796581 Creatina Dark Lab 500g | MLB4812143184 — **R$ 49,90** | MLB4812143184 @ 49,90 ✅ | MLB4812143184 @ 49,90 ✅ (único vendedor) |
+| MLB68104527 Kit Body Splash | MLB4645102377 — **R$ 109,90** (R$ 93,41 no Pix; de 140) | MLB4991164827 @ 89,00 ❌ (a página mostra `results[1]`) | MLB4683756059 — **ausente** da lista (9 vendedores) ❌ |
+
+Conclusões que o código segue:
+
+- `results[0]` bateu em 2 de 3 — a lista não é "ordenada por buy box";
+  `refresh_price` continua lendo o anúncio do pool, nunca `results[0]`.
+- O anúncio do pool pode deixar de vencer (linha 1) ou sumir (linha 3) no
+  mesmo dia em que o JoomPulse o reportou. O que dá para garantir é a IDADE
+  da verificação: o leitor exige `buy_box_checked_at` (na falta, vale
+  `generated_at`) com **no máximo 7 dias**; vencido, a entrada é ignorada com
+  motivo "buy box não verificado há N dias". O skill `/meli-pool-refresh`
+  tem um "Passo semanal — checar buy box" (4 consultas) que renova a data.
+- O buy box que a página mostra pode depender de CEP/sessão; o pipeline
+  publica o preço do anúncio que nomeia, e o descarte "sem buy box" (anúncio
+  fora da lista) continua agrupado no resumo de ops.
 - **Bloqueados (403, não usar)**: `/sites/MLB/search`, `/items/{id}`.
 - **Geração de link de afiliado**: não há API pública — é o endpoint interno
   do painel (`/affiliate-program/api/v2/affiliates/createLink`), autenticado
@@ -124,11 +153,14 @@ do anúncio que vence o buy box. Formato:
  "offers": [{
    "product_id": "MLB18725310", "title": "...", "image_url": "...",
    "category": "MLB264586", "buy_box_item_id": "MLB3928374651",
+   "buy_box_checked_at": "2026-08-26",
    "price_ref_cents": 2590, "price_p25_cents": 2428, "price_window_days": 91,
    "price_historic_min_cents": 1699, "price_min_window_days": 365,
    "sales": 13337, "rating": 4.8}]}
 ```
 
+- `buy_box_checked_at` — data em que o `buyBoxId` foi lido. Vale **7 dias**
+  (ver "Buy box ao vivo"); ausente, vale `generated_at`.
 - `price_ref_cents` — **mediana** das médias semanais do anúncio do buy box
   (nunca a foto de um dia: no pool antigo a "referência" era o preço de UM
   vendedor num dia, e 9 de 38 itens tinham ref ≥ 2,5× a mínima — C7). Vira
@@ -155,7 +187,9 @@ o item a R$ 19,90 do pool antigo morria em silêncio em todo run);
 `price_p25_cents > price_ref_cents` (`p25 acima da referência`);
 `price_historic_min_cents > price_p25_cents` (`mínima acima do p25` — sinal
 de que o vencedor do buy box mudou e a mínima é de outro anúncio); sem
-`buy_box_item_id` (`sem buy box`); `product_id` repetido. O aviso sai assim,
+`buy_box_item_id` (`sem buy box`); `buy_box_checked_at` com mais de 7 dias
+(`buy box não verificado há N dias`) ou inválida/no futuro (`data do buy box
+inválida`); `product_id` repetido. O aviso sai assim,
 no `doctor` e no resumo de ops: `3 entrada(s) do pool ignorada(s) (2 fora da
 faixa de preço, 1 sem p25)`. Um pool no formato antigo é rejeitado inteiro
 (`38 entrada(s) do pool ignorada(s) (38 sem p25)`) — não é zero silencioso.

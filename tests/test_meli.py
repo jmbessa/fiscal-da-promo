@@ -233,9 +233,12 @@ def test_fetch_offers_pool_vencido_devolve_vazio(tmp_path):
 
 
 def test_fetch_offers_pool_dentro_da_validade(tmp_path):
+    # Pool de 29 dias (validade 30) com o buy box re-verificado esta semana:
+    # as duas validades são independentes (a do buy box é de 7 dias).
     pool_path = tmp_path / "meli_offers.json"
     write_pool(pool_path, [
-        {"product_id": "MLB1", "title": "X", "price_ref_cents": 1000},
+        {"product_id": "MLB1", "title": "X", "price_ref_cents": 1000,
+         "buy_box_checked_at": date.today().isoformat()},
     ], generated_at=date.today() - timedelta(days=29), valid_days=30)
     cfg = {"meli": {"offers_path": str(pool_path)}}
     src = source_with(_no_network_handler, tmp_path)
@@ -383,6 +386,66 @@ def test_pool_antigo_sem_p25_e_rejeitado_inteiro(tmp_path):
     ])
     assert ids == []
     assert aviso == "1 entrada(s) do pool ignorada(s) (1 sem p25)"
+
+
+# -- buy box que envelhece (rodada de correção da 5B, Fix 1 — caminho B) ----
+# Verificado ao vivo em 2026-08-26, 3 produtos: a ordem de /products/{id}/items
+# bateu com a página em 2 de 3 (no 3º a página mostrava results[1]) e o
+# anúncio do pool de um deles já tinha sumido da lista. Nem a API nem o pool
+# reproduzem a página com certeza; o que o loader garante é a IDADE da
+# verificação do buy box — 7 dias.
+
+def test_pool_buy_box_verificado_ha_mais_de_7_dias_e_ignorado_com_os_dias_no_motivo(tmp_path):
+    hoje = date.today()
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "FRESCO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (hoje - timedelta(days=7)).isoformat()},
+        {"product_id": "HOJE", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": hoje.isoformat()},
+        {"product_id": "VELHO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (hoje - timedelta(days=8)).isoformat()},
+        {"product_id": "MUITO-VELHO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (hoje - timedelta(days=30)).isoformat()},
+    ])
+    assert ids == ["FRESCO", "HOJE"]
+    assert aviso == ("2 entrada(s) do pool ignorada(s) (1 buy box não verificado há 30 dias, "
+                     "1 buy box não verificado há 8 dias)")
+
+
+def test_pool_sem_buy_box_checked_at_usa_a_data_de_geracao(tmp_path):
+    # Gerar o pool É uma verificação (o Passo 1 do skill devolve o buyBoxId):
+    # sem o campo, vale a data de geração — e envelhece junto com ela, mesmo
+    # com o pool dentro dos 30 dias de validade.
+    pool_path = tmp_path / "meli_offers.json"
+    cfg = {"meli": {"offers_path": str(pool_path)}, "selection": SEL}
+    write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
+               generated_at=date.today() - timedelta(days=8))
+    src = source_with(_no_network_handler, tmp_path)
+    assert src.fetch_offers(cfg) == []
+    assert src.pool_warning == "1 entrada(s) do pool ignorada(s) (1 buy box não verificado há 8 dias)"
+
+    write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
+               generated_at=date.today() - timedelta(days=7))
+    src = source_with(_no_network_handler, tmp_path)
+    assert len(src.fetch_offers(cfg)) == 1
+    assert src.pool_warning is None
+
+
+def test_pool_buy_box_checked_at_invalido_ou_no_futuro_e_ignorado(tmp_path):
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "A", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": "ontem"},
+        {"product_id": "B", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": 20260826},
+        {"product_id": "C", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": ""},
+        {"product_id": "D", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (date.today() + timedelta(days=1)).isoformat()},
+    ])
+    assert ids == []
+    assert aviso == "4 entrada(s) do pool ignorada(s) (4 data do buy box inválida)"
+
+
+def test_pool_validade_do_buy_box_e_de_7_dias():
+    from afiliado.sources.meli import BUY_BOX_MAX_AGE_DAYS
+    assert BUY_BOX_MAX_AGE_DAYS == 7
 
 
 # -- refresh_price: preço vivo = buy box (C7b) ------------------------------

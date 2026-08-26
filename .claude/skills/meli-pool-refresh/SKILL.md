@@ -142,10 +142,14 @@ e a janela pode ser curta.
  "offers": [{
    "product_id": "MLB18725310", "title": "...", "image_url": "...",
    "category": "MLB264586", "buy_box_item_id": "MLB3928374651",
+   "buy_box_checked_at": "<hoje AAAA-MM-DD>",
    "price_ref_cents": 2590, "price_p25_cents": 2428, "price_window_days": 91,
    "price_historic_min_cents": 1699, "price_min_window_days": 365,
    "sales": 13337, "rating": 4.8}]}
 ```
+   `buy_box_checked_at` é a data em que o `buyBoxId` foi lido (hoje, na
+   geração). O leitor só aceita a entrada por **7 dias** a partir dela — ver
+   "Passo semanal" abaixo.
 2. Validar com o MESMO leitor do pipeline (é o que o `doctor` roda):
 ```
 PYTHONPATH=src python -c "import httpx; from afiliado.config import load_config; from afiliado.sources.meli import MeliSource; s=MeliSource('x','y',client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))); o=s.fetch_offers(load_config('config.yaml')); print(len(o),'ofertas validas;', s.pool_warning or 'nenhuma ignorada')"
@@ -163,16 +167,49 @@ PYTHONPATH=src python -c "import httpx; from afiliado.config import load_config;
    com `Co-Authored-By:` do modelo em uso. `data/joompulse_raw/` NÃO entra
    (gitignored). Se o repo tiver remote, perguntar antes de push.
 
+## Passo semanal — checar buy box (4 consultas)
+
+O vencedor do buy box muda, e o anúncio do pool pode **sumir** da lista de
+vendedores (visto ao vivo em 2026-08-26: MLB68104527 — o `buyBoxId` lido no
+mesmo dia já não estava em `/products/{id}/items`; ver a tabela em
+`docs/runbooks/meli-setup.md`). O pipeline então descarta a oferta ("sem buy
+box") — e, pior, quando o anúncio continua na lista mas já não vence, o post
+sairia com um preço que não é o da página. Por isso o leitor só aceita cada
+entrada por **7 dias** a partir de `buy_box_checked_at` (motivo: "buy box não
+verificado há N dias"), e este passo existe para renovar a data.
+
+**Toda semana** (ou quando o doctor/ops avisar "buy box não verificado"):
+
+1. Refaça **só o Passo 1** (4 consultas, uma por categoria) — salve os brutos
+   e o cursor como em qualquer execução (seção Orçamento).
+2. Para cada entrada do pool cujo `product_id` veio na resposta: grave
+   `buy_box_item_id = buyBoxId` e `buy_box_checked_at = hoje`. Produto que
+   não veio no top da categoria: deixe a entrada como está (ela vence sozinha
+   em 7 dias e o aviso diz por quê).
+3. Conte e informe no resumo quantos `buy_box_item_id` **mudaram**. Para
+   esses, `price_ref/p25/mínima` são do anúncio ANTERIOR (a série do Passo 3
+   é por anúncio): se o orçamento do dia permitir, refaça o Passo 3 (e a
+   série diária da mínima) para eles; senão, registre que ficaram com a
+   régua do vencedor antigo e o preço vivo do novo — a regra do quartil e o
+   selo continuam honestos (o preço publicado é sempre o do anúncio gravado),
+   mas a referência pode estar defasada até a próxima regeneração.
+4. Valide com o leitor (Passo 4.2) e commite: `chore: renova buy box do pool
+   do ML (JoomPulse de <data>)`.
+
+Este passo NÃO regenera título/imagem/histórico — 4 consultas, não 40.
+
 ## Validação na carga (o que o leitor rejeita)
 
 `MeliSource.fetch_offers` pula, contando no aviso por motivo: campo de preço
-ausente/não inteiro/≤ 0 (`price_ref_cents`, `price_p25_cents`,
-`price_window_days`, `price_historic_min_cents`, `price_min_window_days`);
-`price_ref_cents/100` fora de `selection.price_min_brl..price_max_brl`;
-`price_p25_cents > price_ref_cents`; `price_historic_min_cents >
-price_p25_cents`; sem `buy_box_item_id`; `product_id` repetido. O aviso vai
-ao `doctor` e ao resumo de ops: "3 entrada(s) do pool ignorada(s) (2 fora da
-faixa de preço, 1 sem p25)".
+ausente/≤ 0 (`price_ref_cents`, `price_p25_cents`,
+`price_window_days`, `price_historic_min_cents`, `price_min_window_days`) ou
+não inteiro; `price_ref_cents/100` fora de
+`selection.price_min_brl..price_max_brl`; `price_p25_cents >
+price_ref_cents`; `price_historic_min_cents > price_p25_cents`; sem
+`buy_box_item_id`; `buy_box_checked_at` (ou, na falta dele, `generated_at`)
+com mais de 7 dias ("buy box não verificado há N dias") ou inválida/no
+futuro; `product_id` repetido. O aviso vai ao `doctor` e ao resumo de ops:
+"3 entrada(s) do pool ignorada(s) (2 fora da faixa de preço, 1 sem p25)".
 
 ## Notas
 
@@ -181,6 +218,8 @@ faixa de preço, 1 sem p25)".
 - O preço vivo publicado é o do `buy_box_item_id` (`refresh_price`), lido em
   `/products/{id}/items`; se esse anúncio sumir da lista, a oferta é
   descartada no run ("sem buy box") — não cai para o vendedor mais barato.
+  A ORDEM dessa lista não é o buy box (`results[0]` bateu com a página em 2
+  de 3 produtos ao vivo) — nunca use `results[0]` como vencedor.
 - A regra do quartil (`pricing.verdict`) só alega desconto quando o preço vivo
   fica ESTRITAMENTE abaixo de `price_p25_cents` com janela ≥ 14 dias; o selo
   só quando ≤ `price_historic_min_cents`. Referência errada para cima vira

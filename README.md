@@ -124,7 +124,9 @@ legendas e copy só obedecem:
   preço ≤ mínima conhecida, com a janela real; sem tolerância.
 - Mercado Livre: o pool (`/meli-pool-refresh`) traz mediana/p25/janela/mínima
   do anúncio que vence o buy box, e o preço publicado é o desse anúncio
-  (`refresh_price`), nunca o vendedor mais barato.
+  (`refresh_price`), nunca o vendedor mais barato. O vencedor muda: a
+  verificação do buy box vale 7 dias (`buy_box_checked_at`; o skill tem um
+  passo semanal que a renova) — vencida, a entrada é ignorada com motivo.
 
 ## Agendamento
 

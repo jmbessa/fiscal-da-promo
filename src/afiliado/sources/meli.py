@@ -24,8 +24,16 @@ TOKEN_EXPIRY_MARGIN_S = 60
 DEFAULT_OFFERS_PATH = "data/meli_offers.json"
 DEFAULT_VALID_DAYS = 30
 # Páginas de /products/{id}/items percorridas atrás do anúncio do buy box
-# (100 anúncios por página; o maior produto visto tinha 37).
+# (100 anúncios por página; o maior produto visto tinha 38).
 MAX_ITEMS_PAGES = 5
+# Validade da verificação do buy box (rodada de correção da 5B, Fix 1). Ao
+# vivo em 2026-08-26, 3 produtos: `results[0]` de /products/{id}/items bateu
+# com a página em 2 de 3 (no 3º a página mostrava `results[1]`), e o anúncio
+# do pool de um deles já tinha SUMIDO da lista. Nem a ordem da API nem o
+# `buy_box_item_id` do pool reproduzem a página com certeza — o que o loader
+# consegue garantir é a IDADE da verificação: `buy_box_checked_at` (ou, na
+# falta, `generated_at`) com mais de 7 dias → entrada ignorada com motivo.
+BUY_BOX_MAX_AGE_DAYS = 7
 
 # Campos inteiros > 0 obrigatórios em cada entrada do pool (fase 5B, C7d) e
 # o motivo, por grupo, que vai ao aviso quando faltam.
@@ -178,14 +186,18 @@ class MeliSource:
         no aviso, por motivo — quando falta qualquer campo de preço inteiro
         > 0 (`CAMPOS_DE_PRECO`), quando `price_ref_cents / 100` sai de
         `selection.price_min_brl..price_max_brl`, quando o p25 passa da
-        referência, quando a mínima histórica passa do p25, ou quando não há
+        referência, quando a mínima histórica passa do p25, quando não há
         `buy_box_item_id` (sem ele `refresh_price` nunca teria preço: entrada
-        morta por construção). Um pool que era foto de um dia (C7) não passa."""
+        morta por construção), ou quando a verificação do buy box
+        (`buy_box_checked_at`; na falta, `generated_at`) tem mais de
+        `BUY_BOX_MAX_AGE_DAYS` dias — o vencedor muda e o anúncio do pool some
+        da lista (visto ao vivo). Um pool que era foto de um dia (C7) não passa."""
         me = cfg.get("meli") or {}
         sel = cfg.get("selection") or {}
         offers_path = Path(me.get("offers_path") or DEFAULT_OFFERS_PATH)
         commission_pct = float(me.get("commission_pct") or 0.0)
         self.pool_warning = None
+        hoje = date.today()
 
         try:
             raw = json.loads(offers_path.read_text(encoding="utf-8"))
@@ -195,7 +207,7 @@ class MeliSource:
             self.pool_warning = f"pool ausente ou inválido ({offers_path})"
             return []
 
-        if (date.today() - generated_at).days > valid_days:
+        if (hoje - generated_at).days > valid_days:
             self.pool_warning = (
                 f"pool vencido: gerado em {generated_at.isoformat()}, "
                 f"validade {valid_days}d")
@@ -208,7 +220,7 @@ class MeliSource:
             if not isinstance(item, dict):
                 motivos["entrada não é objeto"] += 1
                 continue
-            offer, motivo = _parse_pool_offer(item, commission_pct, sel)
+            offer, motivo = _parse_pool_offer(item, commission_pct, sel, generated_at, hoje)
             if offer is None:
                 motivos[motivo] += 1
                 continue
@@ -241,6 +253,13 @@ class MeliSource:
         37 vendedores cujo menor preço era R$ 58,90). Anúncio ausente da
         lista, sem preço, ou produto sem `buy_box_item_id` → `SourceError`
         ("sem buy box"): a oferta é descartada — nunca cai para o mínimo.
+
+        Rodada de correção (Fix 1): a ORDEM de `/items` também foi conferida
+        contra a página real — `results[0]` bateu em 2 de 3 produtos (no 3º
+        a página mostrava `results[1]`), logo a lista não é "ordenada por buy
+        box" e `results[0]` não substitui o anúncio do pool. O que envelhece
+        é tratado na carga: `buy_box_checked_at` com validade de
+        `BUY_BOX_MAX_AGE_DAYS` (o skill tem um passo semanal que a renova).
 
         Devolve um `Offer` novo (dataclass frozen) com `price_current_cents`.
         Publicabilidade continua sendo de `selection.max_above_ref` +
@@ -312,8 +331,8 @@ def _int_positivo(valor) -> int | None:
     return valor
 
 
-def _parse_pool_offer(item: dict, commission_pct: float,
-                      sel: dict) -> tuple[Offer | None, str]:
+def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
+                      generated_at: date, hoje: date) -> tuple[Offer | None, str]:
     """(Offer, "") quando a entrada é válida; (None, motivo) quando é pulada."""
     product_id = str(item.get("product_id") or "").strip()
     title = str(item.get("title") or "").strip()
@@ -327,6 +346,11 @@ def _parse_pool_offer(item: dict, commission_pct: float,
         valores[campo] = valor
     if not str(item.get("buy_box_item_id") or "").strip():
         return None, "sem buy box"
+    idade_buy_box = _dias_desde_a_checagem(item.get("buy_box_checked_at"), generated_at, hoje)
+    if idade_buy_box is None:
+        return None, "data do buy box inválida"
+    if idade_buy_box > BUY_BOX_MAX_AGE_DAYS:
+        return None, f"buy box não verificado há {idade_buy_box} dias"
     ref, p25 = valores["price_ref_cents"], valores["price_p25_cents"]
     minima = valores["price_historic_min_cents"]
     preco_min = sel.get("price_min_brl")
@@ -356,6 +380,21 @@ def _parse_pool_offer(item: dict, commission_pct: float,
         price_floor_cents=minima,
         price_floor_window_days=valores["price_min_window_days"],
     ), ""
+
+
+def _dias_desde_a_checagem(checado, generated_at: date, hoje: date) -> int | None:
+    """Idade (dias) da verificação do buy box. Campo ausente/nulo → a data de
+    geração do pool (gerar o pool É verificar: o Passo 1 do skill devolve o
+    `buyBoxId`). Não-string, data inválida ou no futuro → None."""
+    if checado is None:
+        return (hoje - generated_at).days
+    if not isinstance(checado, str):
+        return None
+    try:
+        idade = (hoje - date.fromisoformat(checado)).days
+    except ValueError:
+        return None
+    return idade if idade >= 0 else None
 
 
 def _item_by_id(results: list, item_id: str) -> dict | None:

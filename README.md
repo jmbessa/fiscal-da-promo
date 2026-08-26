@@ -100,12 +100,31 @@ ao vivo → link) em `docs/runbooks/meli-setup.md`.
 
 ## Watchlist semanal
 
-`data/watchlist.json` alimenta o boost de ranking e o selo "menor preço
-verificado". Atualize **1x por semana** abrindo o Claude Code no projeto e
-digitando `/watchlist-refresh` (requer o conector JoomPulse na sessão) — o
-skill em `.claude/skills/watchlist-refresh/` faz consultas, arquivo e commit.
+`data/watchlist.json` alimenta o boost de ranking, a referência de preço da
+Shopee (mediana + p25 + janela) e o selo "menor preço verificado". Atualize
+**1x por semana** abrindo o Claude Code no projeto e digitando
+`/watchlist-refresh` (requer o conector JoomPulse na sessão) — o skill em
+`.claude/skills/watchlist-refresh/` faz consultas, arquivo e commit.
 Validade: 14 dias; vencida, o pipeline roda sem boosts e avisa no chat de
-operações.
+operações — as referências e mínimas (fatos datados) continuam valendo.
+
+## A régua diz a verdade (fase 5B)
+
+O que um post alega é decidido UMA vez, em `pricing.verdict`, e texto, arte,
+legendas e copy só obedecem:
+
+- **Modo A ("De/Por, N% OFF")** só quando há referência com p25 e janela de
+  ≥ 14 dias distintos, o preço de hoje está ESTRITAMENTE abaixo do p25 (no
+  quartil mais barato da janela) e o desconto contra a mediana — arredondado
+  para baixo — atinge `selection.min_real_discount_pct`. Preço alternado,
+  rampa e "promoção recorrente" caem; promoção rara passa.
+- **Modo B** (preço + prova social) em todo o resto — inclusive quando o
+  vendedor anuncia "de R$ 350", que nunca aparece.
+- **Selo** "Menor preço dos últimos N dias/M meses (verificado)" só quando o
+  preço ≤ mínima conhecida, com a janela real; sem tolerância.
+- Mercado Livre: o pool (`/meli-pool-refresh`) traz mediana/p25/janela/mínima
+  do anúncio que vence o buy box, e o preço publicado é o desse anúncio
+  (`refresh_price`), nunca o vendedor mais barato.
 
 ## Agendamento
 

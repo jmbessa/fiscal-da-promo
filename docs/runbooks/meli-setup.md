@@ -1,4 +1,4 @@
-# Runbook — Setup Mercado Livre (fase 3B — pool curado + preço ao vivo + links em lote)
+# Runbook — Setup Mercado Livre (fase 3B/5B — pool curado com régua + preço do buy box + links em lote)
 
 Checklist para habilitar a fonte de ofertas do Mercado Livre (`sources.meli`
 em `config.yaml`, desligada por padrão).
@@ -14,15 +14,23 @@ A descoberta de itens **não** usa mais a busca pública do ML — ela devolve
 403 na API real. O fluxo é:
 
 ```
-pool curado (data/meli_offers.json)
-        │  fetch_offers: leitura local, sem rede
+pool curado (data/meli_offers.json) — gerado por /meli-pool-refresh (JoomPulse)
+        │  fetch_offers: leitura local, sem rede; VALIDA cada entrada
+        │  (régua completa: mediana, p25, janela, mínima, buy box) e conta
+        │  no aviso, por motivo, o que pulou
         ▼
    seleção/ranking (igual às outras fontes)
         │
         ▼
-   refresh_price: GET /products/{id}/items — preço ao vivo, imediatamente
-        │         antes de publicar. Descarta se o preço subiu além da
-        │         mínima histórica (não é mais "oferta real").
+   refresh_price: GET /products/{id}/items — preço vivo do anúncio que
+        │         vence o BUY BOX (buy_box_item_id do pool), imediatamente
+        │         antes de publicar. Anúncio ausente da lista → oferta
+        │         descartada ("sem buy box"); NUNCA o menor preço entre os
+        │         vendedores. O preço vivo entra no price_log (o histórico
+        │         próprio do ML é só de preços vivos).
+        ▼
+   pricing.verdict: regra do quartil (modo A/B) + selo estrito, uma vez;
+        │           texto, arte, legendas e copy recebem o veredito pronto
         ▼
    resolve_affiliate_link: lê data/meli_links.json (pool de links)
 ```
@@ -34,9 +42,17 @@ pool curado (data/meli_offers.json)
     pool (fora do escopo deste runbook; ver "Alimentando o pool" abaixo).
   - `GET /products/{productId}` — `permalink` vem **vazio**; a URL do
     produto é sempre montada como `https://www.mercadolivre.com.br/p/{id}`.
+    A chave `buy_box_winner` existe na resposta mas veio **`null`** em todas
+    as verificações ao vivo (2026-08-26: token de aplicação E de usuário,
+    com e sem `?attributes=buy_box_winner`, 3 produtos do pool) — este app
+    não recebe o vencedor por aqui.
   - `GET /products/{productId}/items` — usado por `refresh_price`; traz o
-    preço ao vivo por variação/vendedor. `original_price` quase sempre é
-    `null` — não dá para calcular desconto por aqui, só o preço atual.
+    preço por vendedor (até 100 por página, `paging.total`). O pipeline lê
+    SÓ o item cujo `item_id` é o `buy_box_item_id` do pool (o `buyBoxId` do
+    JoomPulse — confirmado presente na lista real: MLB7125449388 a
+    R$ 104,90 entre 37 vendedores de MLB66637233 cujo menor preço era
+    R$ 58,90). `original_price` quase sempre é `null` — não dá para
+    calcular desconto por aqui.
 - **Bloqueados (403, não usar)**: `/sites/MLB/search`, `/items/{id}`.
 - **Geração de link de afiliado**: não há API pública — é o endpoint interno
   do painel (`/affiliate-program/api/v2/affiliates/createLink`), autenticado
@@ -95,41 +111,75 @@ curl -X POST https://api.mercadolibre.com/oauth/token \
       `MELI_REFRESH_TOKEN` só se o arquivo ainda não existir (primeiro run).
       Não edite `data/meli_token.json` manualmente.
 
-## 3. Pool curado (`data/meli_offers.json`)
+## 3. Pool curado (`data/meli_offers.json`) — formato da fase 5B
 
-`fetch_offers` só **lê** este arquivo — a curadoria (escolher quais produtos
-entram, com que preço de referência e mínima histórica) é um processo
-externo que grava o arquivo neste formato:
+`fetch_offers` só **lê** este arquivo. Quem o gera é o skill
+**`/meli-pool-refresh`** (`.claude/skills/meli-pool-refresh/`), com o
+JoomPulse: top produtos por categoria, título/imagem e o histórico semanal
+do anúncio que vence o buy box. Formato:
 
 ```json
-{
-  "generated_at": "2026-08-25",
-  "valid_days": 30,
-  "offers": [
-    {"product_id": "MLB18725310", "title": "Creatina 1kg ...",
-     "image_url": "https://http2.mlstatic.com/....jpg", "category": "MLB264586",
-     "price_ref_cents": 6890, "price_historic_min_cents": 4792,
-     "sales": 13337, "rating": 4.8}
-  ]
-}
+{"generated_at": "2026-08-26", "valid_days": 30,
+ "source": "JoomPulse (vendas = estimativa) — ...",
+ "offers": [{
+   "product_id": "MLB18725310", "title": "...", "image_url": "...",
+   "category": "MLB264586", "buy_box_item_id": "MLB3928374651",
+   "price_ref_cents": 2590, "price_p25_cents": 2428, "price_window_days": 91,
+   "price_historic_min_cents": 1699, "price_min_window_days": 365,
+   "sales": 13337, "rating": 4.8}]}
 ```
 
-- `price_ref_cents` — preço no momento da curadoria (vira `price_current_cents`
-  inicial da oferta; é substituído pelo preço ao vivo em `refresh_price`
-  logo antes de publicar).
-- `price_historic_min_cents` — mínima histórica. **Obrigatório**: entrada sem
-  ele (ou com valor não inteiro / <= 0) é pulada por `fetch_offers`, e a
-  contagem das puladas entra no aviso do resumo do run. Vira
-  `Offer.price_floor_cents` e alimenta o selo de menor preço.
+- `price_ref_cents` — **mediana** das médias semanais do anúncio do buy box
+  (nunca a foto de um dia: no pool antigo a "referência" era o preço de UM
+  vendedor num dia, e 9 de 38 itens tinham ref ≥ 2,5× a mínima — C7). Vira
+  `Offer.price_ref_cents` e `price_current_cents` inicial (substituído pelo
+  preço vivo em `refresh_price`).
+- `price_p25_cents` — 25º percentil da mesma janela (para baixo). O post só
+  alega desconto quando o preço vivo fica ESTRITAMENTE abaixo dele.
+- `price_window_days` — dias distintos que sustentam ref/p25 (7 × semanas
+  observadas). Menos de 14 → nunca modo A.
+- `price_historic_min_cents` / `price_min_window_days` — mínima histórica do
+  buy box e a janela dela. Viram `Offer.price_floor_cents` e
+  `price_floor_window_days`; o selo é estrito ("Menor preço dos últimos 12
+  meses (verificado)" só quando preço vivo ≤ mínima).
+- `buy_box_item_id` — o anúncio cujo preço o pipeline publica.
+- `sales` é **estimativa** do JoomPulse (`catalogOrderCount1m`).
+
+### Validação na carga (o que o leitor rejeita, e diz por quê)
+
+Entrada **pulada e contada no aviso, por motivo**: campo de preço ausente,
+não inteiro ou ≤ 0 (`sem referência` / `sem p25` / `sem janela da referência`
+/ `sem mínima histórica` / `sem janela da mínima`); `price_ref_cents / 100`
+fora de `selection.price_min_brl..price_max_brl` (`fora da faixa de preço` —
+o item a R$ 19,90 do pool antigo morria em silêncio em todo run);
+`price_p25_cents > price_ref_cents` (`p25 acima da referência`);
+`price_historic_min_cents > price_p25_cents` (`mínima acima do p25` — sinal
+de que o vencedor do buy box mudou e a mínima é de outro anúncio); sem
+`buy_box_item_id` (`sem buy box`); `product_id` repetido. O aviso sai assim,
+no `doctor` e no resumo de ops: `3 entrada(s) do pool ignorada(s) (2 fora da
+faixa de preço, 1 sem p25)`. Um pool no formato antigo é rejeitado inteiro
+(`38 entrada(s) do pool ignorada(s) (38 sem p25)`) — não é zero silencioso.
+
 - Desde a fase 4 o ML não tem teto de preço próprio: quem decide
   publicabilidade é `selection.max_above_ref` (não anunciar item mais caro que
-  o típico) + `validate.check_price`, igual para as duas lojas. `price_ref_cents`
-  vira `Offer.price_ref_cents`, a referência contra a qual o desconto é
-  verificado (ver `afiliado.pricing`).
+  o típico) + `validate.check_price`, igual para as duas lojas.
 - Arquivo ausente, JSON inválido, ou vencido (`generated_at` + `valid_days`
   no passado) → `fetch_offers` devolve lista vazia **sem levantar exceção**;
   o pipeline segue normalmente só com as demais fontes, e acrescenta o aviso
-  `ℹ️ meli: pool vazio ou vencido — rode /meli-links-refresh` no resumo do run.
+  `⚠️ meli: 0 ofertas buscadas — pool vencido: …` no resumo do run. Rode
+  `/meli-pool-refresh` e depois `/meli-links-refresh`.
+
+### Cota do JoomPulse (fato, para os dois skills)
+
+O plano tem limite de consultas por dia, compartilhado entre
+`query_cubejs_meli` e `query_cubejs_shopee`. **Teto real observado em
+2026-08-26: a 7ª consulta da sessão devolveu `MCP subscription request limit
+exceeded`** (6 haviam retornado dados) e as tentativas seguintes ficaram
+rejeitadas por ~15 min. Por isso `/meli-pool-refresh` e `/watchlist-refresh`
+têm a seção "Orçamento": `max_consultas` (padrão 35), resultado bruto salvo em
+`data/joompulse_raw/<skill>/<data>/` ANTES da próxima consulta, cursor em
+`data/joompulse_raw/<skill>/cursor.json`, e retomada sem repetir consulta.
+Registre aqui o próximo "limit exceeded" com data e número da consulta.
 
 ## 4. Pool de links de afiliado (`data/meli_links.json`)
 
@@ -167,8 +217,10 @@ autentica por **sessão via cookies do navegador**, não por OAuth.
       e, se aplicável (passo 2b), `MELI_REFRESH_TOKEN`.
 - [ ] `config.yaml` → `sources.meli: true`.
 - [ ] `afiliado doctor` → deve mostrar `✅ Mercado Livre: token ok; N
-      ofertas no pool`. Sem credenciais, mostra uma linha informativa (não
-      falha o doctor). Pool vazio/vencido mostra `⚠️` com o motivo.
+      oferta(s) válida(s) no pool`. Sem credenciais, mostra uma linha
+      informativa (não falha o doctor). Entradas puladas, pool vazio ou
+      vencido mostram `⚠️` com a contagem e o motivo por grupo — é a mesma
+      validação que o run faz.
 
 ## Notas
 
@@ -181,9 +233,17 @@ autentica por **sessão via cookies do navegador**, não por OAuth.
   perder posição para a Shopee — ou, com `selection.min_ev_brl` ativo, ser
   descartado direto pelo piso.
 - `rating`/`sales` das ofertas do Mercado Livre vêm do pool curado
-  (`price_ref_cents`/`sales`/`rating`), não de uma chamada ao vivo — refletem
+  (`sales` é estimativa do JoomPulse), não de uma chamada ao vivo — refletem
   o momento da curadoria, não o instante da publicação (só o preço é
-  atualizado ao vivo, via `refresh_price`).
+  atualizado ao vivo, via `refresh_price`, e só o do anúncio do buy box).
+- O `price_log` do ML guarda apenas preços VIVOS (gravados logo após
+  `refresh_price`); o preço com que a oferta sai do pool é a mediana e não é
+  registrado como observação. O histórico próprio, portanto, só cresce para
+  itens que chegam ao topo da fila.
+- O histórico do JoomPulse é do anúncio que vence o buy box HOJE: se o
+  vencedor mudou dentro da janela, a série é a do vencedor atual (e a mínima
+  histórica do produto pode ser de outro anúncio — o leitor rejeita `mínima >
+  p25`; o skill usa a mínima semanal nesse caso e conta quantos foram).
 - **Actions (`publish.yml`) é efêmero — cuidado com `refresh_token`:** cada
   execução do workflow começa do zero, sem `data/meli_token.json`
   persistido entre runs. Se a autenticação cair no fluxo `refresh_token`

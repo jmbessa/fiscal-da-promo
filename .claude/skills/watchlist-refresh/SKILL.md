@@ -15,8 +15,29 @@ quando vencer.
 - Conector **JoomPulse** disponível (ferramentas `mcp__claude_ai_JoomPulse__*`;
   carregue via ToolSearch se estiverem deferidas). Sem ele, avise o usuário e pare.
 - Executar da raiz do repo. Leia `data/watchlist.json` atual para comparar depois.
-- Regras de consulta: leia `pulse://rules` se for a primeira vez na sessão.
-  Divulgue sempre que vendas/GMV são **estimativas** do JoomPulse (caveat #21).
+- Regras de consulta: leia `pulse://rules` (`read_resource`, não conta na cota)
+  se for a primeira vez na sessão. Divulgue sempre que vendas/GMV são
+  **estimativas** do JoomPulse (caveat #21).
+
+## Orçamento (obrigatório)
+
+O plano do JoomPulse tem **limite de consultas por dia**, compartilhado entre
+`query_cubejs_shopee` e `query_cubejs_meli` (fato: em 2026-08-26 a 7ª consulta
+da sessão devolveu `MCP subscription request limit exceeded` e as seguintes
+continuaram rejeitadas por ~15 min). `read_resource` não conta.
+
+- Parâmetro `max_consultas` por execução: **padrão 35**. Nunca ultrapasse.
+- **Cada resultado bruto é salvo ANTES da próxima consulta** em
+  `data/joompulse_raw/watchlist-refresh/<AAAA-MM-DD>/<passo>_<lote>_p<pagina>.json`
+  (JSON exato devolvido; diretório no `.gitignore`).
+- `data/joompulse_raw/watchlist-refresh/cursor.json` guarda onde parou:
+  `{"data": "...", "consultas_feitas": N, "passo": 1|2|3, "proximo_lote": k,
+  "proximo_offset": o, "limite_observado": "<mensagem ou null>"}`.
+- Ao atingir `max_consultas` OU receber "limit exceeded": **PARE**, grave o
+  cursor, informe quantas consultas fez e onde parou. A próxima execução lê o
+  cursor e os brutos e **retoma dali sem repetir consulta**.
+- O primeiro "limit exceeded" observado deve ser anotado em
+  `docs/runbooks/meli-setup.md` (seção "Cota do JoomPulse") como o teto real.
 
 ## Mapeamento de categorias (allowlist do config.yaml)
 
@@ -69,11 +90,14 @@ Grave o campo `reason` curto (ex.: `"creatina: 30k vendas/30d, trend +1929%"`).
 
 ## Passo 3 — Referência honesta de preço (`price_refs`) e mínimas (`price_floors`)
 
-Estes dois campos são a **régua** do pipeline: `price_refs` é o "de" que o post
-pode alegar (`pricing.price_line`, modo A) e o teto de publicação
-(`selection.max_above_ref`); `price_floors` sustenta o selo de menor preço.
-Errar a referência para cima vira desconto inventado — na dúvida, arredonde a
-mediana para BAIXO.
+Estes dois campos são a **régua** do pipeline: `price_refs` traz a mediana (o
+"de" que o post pode alegar, `pricing.verdict` modo A) e o **p25** (o topo do
+quartil mais barato: o post só alega desconto quando o preço de hoje fica
+ESTRITAMENTE abaixo dele, com janela ≥ 14 dias — regra do quartil, fase 5B);
+a mediana também é o teto de publicação (`selection.max_above_ref`).
+`price_floors` sustenta o selo de menor preço (estrito: preço ≤ mínima, com a
+janela real no texto). Errar a referência para cima vira desconto inventado —
+na dúvida, arredonde mediana e p25 para BAIXO.
 
 Cubo `ShbModelsPricesDaily`. Fatos já verificados (não gaste consulta
 redescobrindo):
@@ -104,13 +128,21 @@ Para cada item, restrito aos **últimos 90 dias**:
    `(priceEnd - priceStart + 1)` dias naquele `modelPrice`. Recorte o intervalo
    na borda da janela de 90 dias ANTES de contar os dias.
 2. **`price_refs[<itemId>].ref_cents` = mediana PONDERADA POR DIAS** dessa
-   expansão × 100 (inteiro). Sem a ponderação, um preço que durou 1 dia pesa
-   igual a um que durou 60 — é exatamente esse o buraco que deixa o "de"
+   expansão × 100 (inteiro, para baixo — com número par de dias, o MENOR dos
+   dois centrais, nunca a média). Sem a ponderação, um preço que durou 1 dia
+   pesa igual a um que durou 60 — é exatamente esse o buraco que deixa o "de"
    inflado do vendedor passar (item 9212570285: típico ~R$ 26 em 90 dias, e
    R$ 68,90 por UM dia em 22/08).
-3. `price_refs[<itemId>].window_days` = 90, ou o tamanho real da janela coberta
-   quando o item tem menos histórico.
-4. **`price_floors[<itemId>].min_price_cents` = menor `modelPrice` da janela**
+3. **`price_refs[<itemId>].p25_cents` = 25º percentil PONDERADO POR DIAS** da
+   mesma expansão × 100 (inteiro, para baixo): ordene os dias por preço e
+   pegue o preço do dia na posição `(n_dias − 1) // 4`. Um preço que ocupa
+   ≥ 25% dos dias É o p25 — e hoje só entra no modo A se ficar abaixo dele.
+4. `price_refs[<itemId>].window_days` = número de dias distintos cobertos
+   (90, ou o tamanho real quando o item tem menos histórico). Item com
+   **menos de 14 dias** cobertos fica fora de `price_refs` (nunca teria modo
+   A) — e entrada gravada sem `p25_cents` carrega 0 no pipeline, com o mesmo
+   efeito.
+5. **`price_floors[<itemId>].min_price_cents` = menor `modelPrice` da janela**
    × 100 (inteiro); `window_days` = dias entre o `priceStart` mais antigo do
    item e hoje.
 
@@ -124,12 +156,12 @@ pipeline ainda publica, só não alega desconto (modo B do post).
 {"generated_at": "<hoje AAAA-MM-DD>", "valid_days": 14,
  "category_boosts": {"<id>": 1.3},
  "hot_items": {"<itemId>": {"boost": 1.5, "reason": "..."}},
- "price_refs": {"<itemId>": {"ref_cents": 2590, "window_days": 90}},
+ "price_refs": {"<itemId>": {"ref_cents": 2590, "p25_cents": 2428, "window_days": 90}},
  "price_floors": {"<itemId>": {"min_price_cents": 1699, "window_days": 196}}}
 ```
 2. Validar:
 ```
-python -c "from afiliado.watchlist import load_watchlist; wl=load_watchlist('data/watchlist.json'); assert wl and not wl.is_stale(); print(len(wl.hot_items),'itens,',len(wl.price_refs),'referencias,',len(wl.price_floors),'pisos')"
+python -c "from afiliado.watchlist import load_watchlist; wl=load_watchlist('data/watchlist.json'); assert wl and not wl.is_stale(); sem_p25=[k for k,v in wl.price_refs.items() if v.p25_cents<=0]; print(len(wl.hot_items),'itens,',len(wl.price_refs),'referencias (',len(sem_p25),'sem p25 ),',len(wl.price_floors),'pisos')"
 ```
 Seção malformada degrada para vazio SEM quebrar o resto do arquivo — por isso
 confira os números impressos, e não só a ausência de erro.
@@ -138,7 +170,8 @@ confira os números impressos, e não só a ausência de erro.
    mudaram. Ao citar vendas/GMV no resumo, diga que são **estimativas** do
    JoomPulse — é regra do próprio conector divulgar isso.
 4. Commit: `chore: atualiza watchlist (dados JoomPulse de <data>)` terminando com
-   `Co-Authored-By:` do modelo em uso. Se o repo tiver remote, perguntar antes de push.
+   `Co-Authored-By:` do modelo em uso. `data/joompulse_raw/` NÃO entra
+   (gitignored). Se o repo tiver remote, perguntar antes de push.
 
 ## Notas
 
@@ -150,5 +183,9 @@ confira os números impressos, e não só a ausência de erro.
 - A referência (`price_refs`) tem precedência sobre o histórico próprio do
   `StateDB` (ver `pricing.enrich_offers`): uma referência errada aqui não é
   corrigida pelo pipeline, ela substitui o que ele mediria sozinho.
-- Itens com histórico de preço < 30 dias ainda entram, mas o selo dirá "1 mês" —
-  correto e honesto por construção (`window_days`).
+- Watchlist vencida perde só `category_boosts`/`hot_items`; `price_refs` e
+  `price_floors` são fatos datados e continuam valendo (com a janela real no
+  texto) até serem substituídos — o vencimento não troca a régua de número.
+- Itens com histórico de preço < 60 dias ainda entram, e o selo dirá "últimos
+  N dias" (a partir de 60, "M meses") — correto e honesto por construção
+  (`window_days`).

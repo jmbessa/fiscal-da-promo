@@ -10,17 +10,24 @@ def client_with(handler) -> httpx.Client:
 
 
 def _success_response(product_ids, tag):
-    urls = []
-    for pid in product_ids:
-        urls.append({
-            "origin_url": f"https://www.mercadolivre.com.br/p/{pid}",
-            "short_url": f"https://meli.la/{pid[-6:]}",
-            "created": True,
-            "tag": tag,
-            "type_url": "SOCIAL_PROFILE_ENCRYPTED",
-        })
+    """Resposta de sucesso total do createLink para `product_ids`: origin_url
+    e short_url são derivados do ID de forma óbvia (`.../p/MLB1` ->
+    `https://meli.la/MLB1`), nunca por fatiamento."""
+    urls = [{
+        "origin_url": f"https://www.mercadolivre.com.br/p/{pid}",
+        "short_url": f"https://meli.la/{pid}",
+        "created": True,
+        "tag": tag,
+        "type_url": "SOCIAL_PROFILE_ENCRYPTED",
+    } for pid in product_ids]
     return {"status": 200, "total_items": len(urls), "total_success": len(urls),
             "total_error": 0, "urls": urls}
+
+
+def _ids_do_corpo(body: dict) -> list[str]:
+    """IDs de produto que a requisição carrega — o createLink recebe URLs
+    completas (`.../p/MLB123`), e o helper de resposta trabalha com IDs."""
+    return [url.rsplit("/", 1)[-1] for url in body["urls"]]
 
 
 def test_gerar_links_lote_unico_sucesso_total():
@@ -31,7 +38,7 @@ def test_gerar_links_lote_unico_sucesso_total():
         body = json.loads(request.content)
         captured["body"] = body
         captured["headers"] = request.headers
-        return httpx.Response(200, json=_success_response(body["urls"], body["tag"]))
+        return httpx.Response(200, json=_success_response(_ids_do_corpo(body), body["tag"]))
 
     links, erro = gerar_links(
         ["MLB18725310", "MLB111", "MLB222", "MLB333"], tag="jmbessa",
@@ -39,7 +46,7 @@ def test_gerar_links_lote_unico_sucesso_total():
 
     assert erro is None
     assert links == {
-        "MLB18725310": "https://meli.la/725310",
+        "MLB18725310": "https://meli.la/MLB18725310",
         "MLB111": "https://meli.la/MLB111",
         "MLB222": "https://meli.la/MLB222",
         "MLB333": "https://meli.la/MLB333",
@@ -64,7 +71,7 @@ def test_gerar_links_divide_em_lotes():
     def handler(request: httpx.Request):
         body = json.loads(request.content)
         chamadas.append(body["urls"])
-        return httpx.Response(200, json=_success_response(body["urls"], body["tag"]))
+        return httpx.Response(200, json=_success_response(_ids_do_corpo(body), body["tag"]))
 
     product_ids = [f"MLB{i}" for i in range(5)]
     links, erro = gerar_links(product_ids, tag="jmbessa", cookies="c", csrf="t",
@@ -72,7 +79,7 @@ def test_gerar_links_divide_em_lotes():
 
     assert erro is None
     assert len(chamadas) == 3  # 2 + 2 + 1
-    assert len(links) == 5
+    assert links == {pid: f"https://meli.la/{pid}" for pid in product_ids}
 
 
 def test_gerar_links_ignora_entradas_sem_created_ou_sem_short_url():
@@ -135,19 +142,6 @@ def test_gerar_links_lote_inteiro_sem_sucesso_para_e_nao_chama_os_seguintes():
     assert len(chamadas) == 1  # para no primeiro lote sem sucesso; o 2º nem é chamado
 
 
-def _resposta_por_url(urls, tag):
-    """Fixture própria deste teste: `_success_response` espera IDs de produto,
-    mas o corpo da requisição traz URLs completas — passar uma coisa pela
-    outra só funcionava por coincidência de fatiamento (`pid[-6:]` de uma URL).
-    Aqui o short_url é derivado do ID de verdade."""
-    itens = [{"origin_url": url,
-              "short_url": f"https://meli.la/{url.rsplit('/', 1)[-1]}",
-              "created": True, "tag": tag}
-             for url in urls]
-    return {"status": 200, "total_items": len(itens), "total_success": len(itens),
-            "total_error": 0, "urls": itens}
-
-
 def test_gerar_links_sessao_expirada_no_meio_preserva_lotes_ja_coletados():
     """Regressão: sessão cair no meio do lote 2/3 não pode jogar fora os
     links do lote 1 já coletados com sucesso — só o processamento dos lotes
@@ -159,7 +153,7 @@ def test_gerar_links_sessao_expirada_no_meio_preserva_lotes_ja_coletados():
         chamadas.append(body["urls"])
         if len(chamadas) == 2:
             return httpx.Response(401, text="unauthorized")
-        return httpx.Response(200, json=_resposta_por_url(body["urls"], body["tag"]))
+        return httpx.Response(200, json=_success_response(_ids_do_corpo(body), body["tag"]))
 
     links, erro = gerar_links(["MLB1", "MLB2", "MLB3"], tag="jmbessa", cookies="c", csrf="t",
                               client=client_with(handler), lote=1)
@@ -202,13 +196,13 @@ def test_gerar_links_dedupe_ids_repetidos():
     def handler(request: httpx.Request):
         body = json.loads(request.content)
         chamadas.append(body["urls"])
-        return httpx.Response(200, json=_success_response(body["urls"], body["tag"]))
+        return httpx.Response(200, json=_success_response(_ids_do_corpo(body), body["tag"]))
 
     links, erro = gerar_links(["MLB1", "MLB1", "MLB2"], tag="jmbessa", cookies="c", csrf="t",
                               client=client_with(handler))
     assert erro is None
     assert len(chamadas[0]) == 2  # MLB1 duplicado colapsa para uma URL
-    assert set(links) == {"MLB1", "MLB2"}
+    assert links == {"MLB1": "https://meli.la/MLB1", "MLB2": "https://meli.la/MLB2"}
 
 
 def test_gerar_links_json_valido_nao_dict_nao_levanta():

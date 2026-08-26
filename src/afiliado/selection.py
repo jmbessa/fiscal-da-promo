@@ -29,7 +29,13 @@ def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
         allowed_cats = cats_by_source.setdefault(o.source, _allowed_categories(cfg, o.source))
         if allowed_cats and o.category not in allowed_cats:
             continue
-        if o.discount_pct < sel["min_discount_pct"]:
+        # Régua honesta: o desconto não decide SE publicamos (isso mataria o
+        # volume e o ML inteiro) — decide só o que o post ALEGA. O único corte
+        # de preço é não anunciar algo mais caro que o típico.
+        if o.price_ref_cents > 0 and (
+                o.price_current_cents > o.price_ref_cents * float(sel["max_above_ref"])):
+            continue
+        if sel.get("require_price_ref") and o.price_ref_cents <= 0:
             continue
         preco_brl = o.price_current_cents / 100
         if not sel["price_min_brl"] <= preco_brl <= sel["price_max_brl"]:
@@ -50,6 +56,10 @@ def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> flo
     commission_brl = offer.commission_brl or (
         (offer.price_current_cents / 100) * (offer.commission_pct / 100))
     score = commission_brl * (1 + wp * math.log10(offer.sales + 1))
+    # Bônus só por desconto VERIFICADO contra a nossa referência — o "de"
+    # inflado do vendedor não vale nada aqui.
+    wd = float(w.get("discount", 0.5))
+    score *= (1 + wd * offer.real_discount_pct / 100)
     if watchlist is not None:
         score *= watchlist.boost_for(offer)
     return score
@@ -63,7 +73,7 @@ def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,
                  watchlist: Watchlist | None = None) -> str:
     linhas = "\n".join(
         f"- id={o.item_id} | {o.title} | categoria={o.category} | "
-        f"desconto={o.discount_pct}% | vendas={o.sales} | "
+        f"desconto verificado={o.real_discount_pct}% | vendas={o.sales} | "
         f"comissão=R${(o.price_current_cents / 100) * (o.commission_pct / 100):.2f} "
         f"({o.commission_pct:.1f}%)"
         + (" | em alta: sim" if watchlist is not None and o.item_id in watchlist.hot_items else "")
@@ -74,6 +84,8 @@ def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,
         f"Escolha as {n} melhores ofertas da lista, priorizando maior retorno esperado "
         "(comissão × chance de venda), apelo popular e variedade de categorias entre si "
         "e vs. posts recentes.\n"
+        "Desconto 0% não é defeito — significa apenas que não há desconto "
+        "verificado; o post desse item destaca prova social em vez de preço.\n"
         f"Candidatas:\n{linhas}\n\nPosts recentes:\n{recentes}\n\n"
         'Responda APENAS com JSON no formato {"chosen": ["id1", "id2", ...]}'
     )

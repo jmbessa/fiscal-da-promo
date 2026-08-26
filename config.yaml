@@ -9,10 +9,18 @@ llm:
 # há nada aqui que controle o intervalo entre runs.
 selection:
   posts_per_run: 1
-  min_discount_pct: 20
   price_min_brl: 20
   price_max_brl: 1000
   dedupe_days: 30
+  # Fase 4 — régua honesta de preço. O desconto do vendedor (o "de" inflado)
+  # deixou de decidir SE publicamos e passa a decidir só O QUE o post alega:
+  # o corte de preço aqui é apenas não anunciar item mais caro que o típico.
+  max_above_ref: 1.00          # não anuncia item mais caro que o preço típico
+  require_price_ref: false     # true = só publica com referência conhecida
+  min_real_discount_pct: 10    # abaixo disso o post não alega desconto: mostra preço + prova social
+  ref_window_days: 90          # janela do histórico próprio de preços
+  ref_min_observations: 5      # dias distintos mínimos para a mediana valer
+  seal_tolerance: 1.05         # margem sobre a mínima histórica para o selo
   # Fase 1.8: piso de valor esperado (comissão em R$ ponderada por popularidade,
   # via ev_score, SEM boost de watchlist) por post — com dedupe de 30 dias e
   # cadência de 5 min (288 checagens/dia), evita postar sobras quando o estoque
@@ -33,6 +41,7 @@ selection:
   # Pesos do score de valor esperado (fase 1.5): EV = comissão em R$ × (1 + popularity × log10(vendas+1))
   ev_weights:
     popularity: 0.3
+    discount: 0.5     # bônus só por desconto VERIFICADO (real_discount_pct)
 
 # Fase 3 (parte 1): fontes de ofertas habilitadas. Seção opcional — ausente,
 # equivale a só shopee (comportamento de antes desta fase). O Mercado Livre
@@ -63,14 +72,10 @@ meli:
   # valor esperado enquanto a API não expõe a taxa por item.
   # Ajuste com as taxas reais do seu painel de afiliados por categoria.
   commission_pct: 4.0
-  # Só publica se o preço ao vivo estiver até 10% acima da mínima histórica do
-  # pool (price_historic_min_cents) — acima disso não é mais "oferta real" e a
-  # oferta é descartada (a próxima da fila assume).
-  # Calibrado com dados reais (2026-08-26, 38 produtos do pool): 1.10 deixaria
-  # passar apenas 2 e 1.05 nenhum. 1.25 libera ~11 — volume utilizavel sem
-  # chamar de oferta algo que nao esta na parte baixa da propria curva.
-  # O selo 'MENOR PRECO VERIFICADO' e mais estrito (ver creative/watchlist).
-  max_above_historic_min: 1.25
+  # Fase 4: o ML não tem mais teto de preço próprio. Quem
+  # decide publicabilidade é selection.max_above_ref + validate.check_price,
+  # igual para as duas lojas; a mínima histórica do pool vira
+  # Offer.price_floor_cents e só alimenta o selo de menor preço.
   tag: "jmbessa"             # etiqueta cadastrada no painel de afiliados (linkbuilder)
 
 validation:

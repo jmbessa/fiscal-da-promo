@@ -1,7 +1,7 @@
 import httpx
 
 from afiliado.errors import ValidationError
-from afiliado.models import CopyParts, Offer, Post
+from afiliado.models import CopyParts, Offer, Post, format_brl
 
 MAX_HEADLINE = 60
 MAX_DESCRIPTION = 120
@@ -28,11 +28,17 @@ def check_link(url: str, cfg: dict, client: httpx.Client | None = None) -> None:
 
 
 def check_price(offer: Offer, cfg: dict) -> None:
+    """Rede de segurança que roda DEPOIS do refresh_price: pega a oferta que
+    encareceu entre a busca e a publicação. Não há mais portão de desconto —
+    o desconto do vendedor é rótulo, não critério (ver afiliado.pricing)."""
     sel = cfg["selection"]
-    if offer.price_current_cents >= offer.price_original_cents:
-        raise ValidationError("sem desconto real (atual >= original)")
-    if offer.discount_pct < sel["min_discount_pct"]:
-        raise ValidationError(f"desconto {offer.discount_pct}% abaixo do mínimo")
+    if offer.price_ref_cents > 0 and (
+            offer.price_current_cents > offer.price_ref_cents * float(sel["max_above_ref"])):
+        raise ValidationError(
+            f"preço {format_brl(offer.price_current_cents)} acima da referência "
+            f"{format_brl(offer.price_ref_cents)}")
+    if sel.get("require_price_ref") and offer.price_ref_cents <= 0:
+        raise ValidationError("sem referência de preço conhecida")
     preco_brl = offer.price_current_cents / 100
     if not sel["price_min_brl"] <= preco_brl <= sel["price_max_brl"]:
         raise ValidationError(f"preço R${preco_brl:.2f} fora da faixa")

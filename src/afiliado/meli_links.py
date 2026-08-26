@@ -92,6 +92,12 @@ def gerar_links(product_ids: list[str], tag: str, cookies: str, csrf: str,
             except ValueError:
                 lotes_sem_resposta_valida += 1
                 continue
+            if not isinstance(data, dict):
+                # JSON válido mas não-dict (uma lista, uma string): sem esta
+                # guarda o data.get() abaixo levantaria AttributeError e
+                # furaria o contrato "gerar_links nunca levanta".
+                lotes_sem_resposta_valida += 1
+                continue
 
             for item in data.get("urls") or []:
                 if not item.get("created") or not item.get("short_url"):

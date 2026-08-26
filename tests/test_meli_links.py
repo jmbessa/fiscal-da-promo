@@ -135,6 +135,19 @@ def test_gerar_links_lote_inteiro_sem_sucesso_para_e_nao_chama_os_seguintes():
     assert len(chamadas) == 1  # para no primeiro lote sem sucesso; o 2º nem é chamado
 
 
+def _resposta_por_url(urls, tag):
+    """Fixture própria deste teste: `_success_response` espera IDs de produto,
+    mas o corpo da requisição traz URLs completas — passar uma coisa pela
+    outra só funcionava por coincidência de fatiamento (`pid[-6:]` de uma URL).
+    Aqui o short_url é derivado do ID de verdade."""
+    itens = [{"origin_url": url,
+              "short_url": f"https://meli.la/{url.rsplit('/', 1)[-1]}",
+              "created": True, "tag": tag}
+             for url in urls]
+    return {"status": 200, "total_items": len(itens), "total_success": len(itens),
+            "total_error": 0, "urls": itens}
+
+
 def test_gerar_links_sessao_expirada_no_meio_preserva_lotes_ja_coletados():
     """Regressão: sessão cair no meio do lote 2/3 não pode jogar fora os
     links do lote 1 já coletados com sucesso — só o processamento dos lotes
@@ -146,13 +159,13 @@ def test_gerar_links_sessao_expirada_no_meio_preserva_lotes_ja_coletados():
         chamadas.append(body["urls"])
         if len(chamadas) == 2:
             return httpx.Response(401, text="unauthorized")
-        return httpx.Response(200, json=_success_response(body["urls"], body["tag"]))
+        return httpx.Response(200, json=_resposta_por_url(body["urls"], body["tag"]))
 
     links, erro = gerar_links(["MLB1", "MLB2", "MLB3"], tag="jmbessa", cookies="c", csrf="t",
                               client=client_with(handler), lote=1)
 
     assert len(chamadas) == 2               # o 3º lote não é chamado
-    assert links == {"MLB1": "https://meli.la/p/MLB1"}  # lote 1 preservado
+    assert links == {"MLB1": "https://meli.la/MLB1"}  # lote 1 preservado
     assert erro is not None
 
 
@@ -196,3 +209,16 @@ def test_gerar_links_dedupe_ids_repetidos():
     assert erro is None
     assert len(chamadas[0]) == 2  # MLB1 duplicado colapsa para uma URL
     assert set(links) == {"MLB1", "MLB2"}
+
+
+def test_gerar_links_json_valido_nao_dict_nao_levanta():
+    """Contrato: gerar_links nunca levanta. Um JSON válido mas não-dict (uma
+    lista, uma string) chegava direto no data.get() e virava AttributeError."""
+    for corpo in ([], ["MLB1"], "erro", 42):
+        def handler(request: httpx.Request, corpo=corpo):
+            return httpx.Response(200, json=corpo)
+
+        links, erro = gerar_links(["MLB1"], tag="jmbessa", cookies="c", csrf="t",
+                                  client=client_with(handler))
+        assert links == {}
+        assert erro is not None            # o lote inteiro ficou sem resposta válida

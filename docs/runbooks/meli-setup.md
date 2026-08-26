@@ -117,10 +117,15 @@ externo que grava o arquivo neste formato:
 - `price_ref_cents` — preço no momento da curadoria (vira `price_current_cents`
   inicial da oferta; é substituído pelo preço ao vivo em `refresh_price`
   logo antes de publicar).
-- `price_historic_min_cents` — mínima histórica; sustenta o filtro de
-  "oferta real": se o preço ao vivo, na hora de publicar, estiver acima de
-  `price_historic_min_cents × meli.max_above_historic_min` (padrão 1.10 = até
-  10% acima), a oferta é descartada e a próxima da fila assume.
+- `price_historic_min_cents` — mínima histórica. **Obrigatório**: entrada sem
+  ele (ou com valor não inteiro / <= 0) é pulada por `fetch_offers`, e a
+  contagem das puladas entra no aviso do resumo do run. Vira
+  `Offer.price_floor_cents` e alimenta o selo de menor preço.
+- Desde a fase 4 o ML não tem teto de preço próprio: quem decide
+  publicabilidade é `selection.max_above_ref` (não anunciar item mais caro que
+  o típico) + `validate.check_price`, igual para as duas lojas. `price_ref_cents`
+  vira `Offer.price_ref_cents`, a referência contra a qual o desconto é
+  verificado (ver `afiliado.pricing`).
 - Arquivo ausente, JSON inválido, ou vencido (`generated_at` + `valid_days`
   no passado) → `fetch_offers` devolve lista vazia **sem levantar exceção**;
   o pipeline segue normalmente só com as demais fontes, e acrescenta o aviso

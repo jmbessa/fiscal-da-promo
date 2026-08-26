@@ -1,6 +1,7 @@
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -29,29 +30,54 @@ mutation generateShortLink($url: String!) {
 """
 
 
+# Fase 5A (A4): repetições com backoff em 429, 5xx e erro de conexão/timeout
+# — 1 tentativa + uma repetição por atraso. `HTTPTransport(retries=3)` só
+# repetia erro de CONEXÃO, sem espera, nunca 5xx/429.
+RETRY_DELAYS_S = (0.5, 1.5, 4.0)
+
+
 class ShopeeSource:
     name = "shopee"
 
-    def __init__(self, app_id: str, app_secret: str, client: httpx.Client | None = None):
+    def __init__(self, app_id: str, app_secret: str, client: httpx.Client | None = None,
+                 sleep: Callable[[float], None] = time.sleep):
         self.app_id = app_id
         self.app_secret = app_secret
-        self.client = client or httpx.Client(
-            timeout=30, transport=httpx.HTTPTransport(retries=3))
+        self.client = client or httpx.Client(timeout=30)
+        self.sleep = sleep
 
-    def _post(self, payload: dict) -> dict:
-        body = json.dumps(payload, separators=(",", ":"))
+    def _headers(self, body: str) -> dict:
+        # A assinatura carrega o timestamp: recalculada a cada tentativa.
         ts = str(int(time.time()))
         sig = hashlib.sha256(
             f"{self.app_id}{ts}{body}{self.app_secret}".encode()).hexdigest()
-        headers = {
+        return {
             "Authorization": f"SHA256 Credential={self.app_id}, Timestamp={ts}, Signature={sig}",
             "Content-Type": "application/json",
         }
-        try:
-            r = self.client.post(GRAPHQL_URL, content=body, headers=headers)
-            r.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise SourceError(f"shopee API: {exc}") from exc
+
+    def _post(self, payload: dict) -> dict:
+        body = json.dumps(payload, separators=(",", ":"))
+        ultimo: SourceError | None = None
+        for tentativa in range(1 + len(RETRY_DELAYS_S)):
+            if tentativa:
+                self.sleep(RETRY_DELAYS_S[tentativa - 1])
+            try:
+                r = self.client.post(GRAPHQL_URL, content=body, headers=self._headers(body))
+            except httpx.TransportError as exc:      # conexão, timeout: transitório
+                ultimo = SourceError(f"shopee API: {exc}")
+                continue
+            except httpx.HTTPError as exc:
+                raise SourceError(f"shopee API: {exc}") from exc
+            if r.status_code == 429 or r.status_code >= 500:
+                ultimo = SourceError(f"shopee API: HTTP {r.status_code} {r.reason_phrase}".rstrip())
+                continue
+            if r.status_code >= 400:
+                raise SourceError(f"shopee API: HTTP {r.status_code} {r.reason_phrase}".rstrip())
+            break
+        else:
+            assert ultimo is not None
+            raise ultimo
         try:
             data = r.json()
         except ValueError as exc:

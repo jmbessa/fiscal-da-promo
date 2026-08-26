@@ -15,9 +15,84 @@ FIXTURE = json.loads(
 CFG = {"shopee": {"sort_types": [5], "list_type": 0, "pages": 1, "page_size": 50}}
 
 
-def source_with(handler) -> ShopeeSource:
+def source_with(handler, sleep=None) -> ShopeeSource:
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    return ShopeeSource("APPID", "SECRET", client=client)
+    if sleep is None:
+        return ShopeeSource("APPID", "SECRET", client=client)
+    return ShopeeSource("APPID", "SECRET", client=client, sleep=sleep)
+
+
+# -- Fase 5A (A4): retry com backoff em 429, 5xx e erro de conexão --------------
+
+def test_post_repete_em_429_e_5xx_com_backoff():
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, json={"message": "rate limited"})
+        if len(calls) == 2:
+            return httpx.Response(503, text="Service Unavailable")
+        return httpx.Response(200, json=FIXTURE)
+
+    offers = source_with(handler, sleep=sleeps.append).fetch_offers(CFG)
+    assert len(offers) == 1
+    assert len(calls) == 3
+    assert sleeps == [0.5, 1.5]
+
+
+def test_post_repete_em_erro_de_conexao_com_backoff():
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) < 3:
+            raise httpx.ConnectError("down")
+        return httpx.Response(200, json=FIXTURE)
+
+    offers = source_with(handler, sleep=sleeps.append).fetch_offers(CFG)
+    assert len(offers) == 1 and len(calls) == 3
+    assert sleeps == [0.5, 1.5]
+
+
+def test_post_esgota_as_tentativas_e_levanta_source_error():
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(502, text="Bad Gateway")
+
+    with pytest.raises(SourceError, match="502"):
+        source_with(handler, sleep=sleeps.append).fetch_offers(CFG)
+    assert len(calls) == 4                    # 1 tentativa + 3 repetições
+    assert sleeps == [0.5, 1.5, 4.0]
+
+
+def test_post_nao_repete_em_4xx_que_nao_e_429():
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(401, text="Unauthorized")
+
+    with pytest.raises(SourceError, match="401"):
+        source_with(handler, sleep=sleeps.append).fetch_offers(CFG)
+    assert len(calls) == 1 and sleeps == []
+
+
+def test_post_assina_cada_tentativa_de_novo():
+    # A assinatura carrega o timestamp: uma repetição com a assinatura velha
+    # poderia ser recusada. Cada tentativa recalcula o header.
+    auths, sleeps = [], []
+
+    def handler(request):
+        auths.append(request.headers["authorization"])
+        if len(auths) == 1:
+            return httpx.Response(503, text="down")
+        return httpx.Response(200, json=FIXTURE)
+
+    source_with(handler, sleep=sleeps.append).fetch_offers(CFG)
+    assert len(auths) == 2 and all(a.startswith("SHA256 Credential=APPID") for a in auths)
 
 
 def test_signature_header_matches_formula():

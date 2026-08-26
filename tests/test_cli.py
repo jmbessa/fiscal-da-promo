@@ -320,6 +320,37 @@ def test_ops_summary_forced_by_config(monkeypatch, tmp_path):
     assert len(enviados) == 1
 
 
+def test_run_abortado_manda_o_resumo_com_os_avisos_e_sai_com_erro(monkeypatch, tmp_path):
+    # M8: todas as fontes falharam → o run aborta, mas o ops recebe o resumo
+    # com os avisos (qual fonte, qual erro), não só "❌ Run abortado".
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        (open("config.yaml", encoding="utf-8").read()
+         .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+         .replace("data/watchlist.json",
+                  str(tmp_path / "sem-watchlist.json").replace("\\", "/"))),
+        encoding="utf-8")
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda token, chat, text, *a, **k: enviados.append(text))
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        raise pipeline.RunAborted(
+            pipeline.RunSummary(warnings=["⚠️ fonte shopee falhou: HTTP 503"]),
+            "todas as fontes falharam")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    with pytest.raises(pipeline.RunAborted):
+        cli.main(["run", "--config", str(cfg_file)])
+    assert len(enviados) == 1
+    assert enviados[0].startswith("❌ Run abortado: todas as fontes falharam")
+    assert "fonte shopee falhou: HTTP 503" in enviados[0]
+
+
 def test_build_sources_defaults_to_shopee_only_when_key_absent(monkeypatch):
     monkeypatch.setenv("SHOPEE_APP_ID", "id")
     monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")

@@ -296,6 +296,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
                                warnings_iniciais=avisos)
+    except pipeline.RunAborted as exc:
+        # Todas as fontes falharam: o resumo (com qual fonte e qual erro)
+        # vai ao ops mesmo assim, e o run sai com erro.
+        if not args.dry_run and token and ops:
+            send_text(token, ops, exc.summary.text(header=f"❌ Run abortado: {exc}"))
+        raise
     except Exception as exc:
         if not args.dry_run and token and ops:
             send_text(token, ops, f"❌ Run abortado: {exc}")

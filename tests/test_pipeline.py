@@ -1,5 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from afiliado import llm, pipeline, state, validate
 from afiliado.channels.base import PublishResult
 from afiliado.errors import SourceError, ValidationError
@@ -643,6 +645,84 @@ def test_dry_run_nao_escreve_no_banco_nem_baixa_imagem(tmp_path, monkeypatch):
     assert summary.discarded == []
     assert contagens() == antes
     db.close()
+
+
+# --- Fase 5A (M8): isolamento de fontes ---------------------------------------
+
+class FonteQuebrada:
+    def __init__(self, name, exc):
+        self.name, self.exc = name, exc
+
+    def fetch_offers(self, cfg):
+        raise self.exc
+
+    def resolve_affiliate_link(self, offer):
+        return "x"
+
+
+class FakeMeli(FakeSource):
+    name = "meli"
+
+    def resolve_affiliate_link(self, offer):
+        return "https://mercadolivre.com/sec/x"
+
+
+def test_run_fonte_que_falha_vira_aviso_e_as_outras_publicam(tmp_path, monkeypatch):
+    # Teste obrigatório 10: Shopee em 5xx abortava o run inteiro, inclusive o ML.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    summary = pipeline.run(
+        CFG, [FonteQuebrada("shopee", SourceError("shopee API: HTTP 503 Service Unavailable")),
+              FakeMeli([make_offer(item_id="m", source="meli")])],
+        [ch], db, validator=no_network_validator)
+    assert len(summary.published) == 1 and len(ch.sent) == 1
+    assert any(w.startswith("⚠️ fonte shopee falhou: ") and "503" in w for w in summary.warnings)
+    db.close()
+
+
+def test_run_erro_httpx_na_fonte_tambem_e_isolado(tmp_path, monkeypatch):
+    import httpx
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    summary = pipeline.run(
+        CFG, [FonteQuebrada("shopee", httpx.ConnectError("down")),
+              FakeMeli([make_offer(item_id="m", source="meli")])],
+        [FakeChannel()], db, validator=no_network_validator)
+    assert len(summary.published) == 1
+    assert any("fonte shopee falhou" in w for w in summary.warnings)
+    db.close()
+
+
+def test_run_aborta_so_quando_todas_as_fontes_falham_e_carrega_o_resumo(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    with pytest.raises(pipeline.RunAborted, match="todas as fontes") as info:
+        pipeline.run(CFG, [FonteQuebrada("shopee", SourceError("503")),
+                           FonteQuebrada("meli", SourceError("token"))],
+                     [FakeChannel()], db, validator=no_network_validator)
+    avisos = info.value.summary.warnings
+    assert any("fonte shopee falhou" in w for w in avisos)
+    assert any("fonte meli falhou" in w for w in avisos)
+    db.close()
+
+
+def test_run_fonte_vazia_mais_fonte_quebrada_nao_aborta(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    summary = pipeline.run(CFG, [FakeSource([]), FonteQuebrada("meli", SourceError("token"))],
+                           [FakeChannel()], db, validator=no_network_validator)
+    assert summary.published == []
+    assert any("shopee: 0 ofertas buscadas" in w for w in summary.warnings)
+    assert any("fonte meli falhou" in w for w in summary.warnings)
+    db.close()
+
+
+def test_summary_text_aceita_cabecalho_proprio():
+    s = pipeline.RunSummary(warnings=["⚠️ fonte shopee falhou: 503"])
+    text = s.text(header="❌ Run abortado: todas as fontes falharam")
+    assert text.startswith("❌ Run abortado: todas as fontes falharam")
+    assert "✅" not in text and "fonte shopee falhou" in text
 
 
 # --- Fase 5A (M3): zero silencioso vira relatório ---------------------------

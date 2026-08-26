@@ -3,8 +3,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 
+import httpx
+
 from afiliado import copywriter, llm, message, pricing, selection, state, validate
 from afiliado.channels.base import Channel
+from afiliado.errors import SourceError
 from afiliado.models import Post
 from afiliado.sources.base import Source
 from afiliado.state import StateDB
@@ -49,8 +52,8 @@ class RunSummary:
                 linhas += [f"• {d}" for d in itens]
         return linhas
 
-    def text(self) -> str:
-        linhas = [f"✅ Run concluído — Publicados ({len(self.published)}):"]
+    def text(self, header: str | None = None) -> str:
+        linhas = [f"{header or '✅ Run concluído'} — Publicados ({len(self.published)}):"]
         linhas += [f"• {p}" for p in self.published] or ["• (nenhum)"]
         linhas.append(f"Descartados ({len(self.discarded)}):")
         linhas += self._linhas_de_descarte() or ["• (nenhum)"]
@@ -58,6 +61,16 @@ class RunSummary:
             linhas.append("Avisos:")
             linhas += [f"• {w}" for w in self.warnings]
         return "\n".join(linhas)
+
+
+class RunAborted(RuntimeError):
+    """Nenhuma fonte devolveu nada E todas falharam (fase 5A, A4). Carrega o
+    resumo — com os avisos de qual fonte falhou e por quê — para o cli
+    mandar ao ops antes de sair com erro."""
+
+    def __init__(self, summary: RunSummary, motivo: str):
+        super().__init__(motivo)
+        self.summary = summary
 
 
 def schedule_settings(cfg: dict) -> dict:
@@ -145,8 +158,15 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         watchlist = None
 
     offers = []
+    fontes_com_falha = 0
     for src in sources:
-        src_offers = src.fetch_offers(cfg)  # SourceError propaga: aborta o run
+        # Cada fonte isolada (A4): a Shopee em 5xx não derruba mais o ML.
+        try:
+            src_offers = src.fetch_offers(cfg)
+        except (SourceError, httpx.HTTPError) as exc:
+            fontes_com_falha += 1
+            warn(f"⚠️ fonte {src.name} falhou: {exc}")
+            continue
         pool_warning = getattr(src, "pool_warning", None) if src.name == "meli" else None
         if not src_offers:
             # Fonte HABILITADA devolvendo zero é evento, não silêncio (C4).
@@ -158,6 +178,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         elif pool_warning:
             warn(f"ℹ️ meli: {pool_warning}")
         offers.extend(src_offers)
+
+    if sources and fontes_com_falha == len(sources):
+        # Só aqui o run aborta — e mesmo assim o resumo (com os avisos) vai
+        # ao ops, via cli.
+        raise RunAborted(summary, "todas as fontes falharam")
 
     # A observação de hoje entra no histórico ANTES de a mediana ser lida.
     # Dry-run não escreve no banco (A10).

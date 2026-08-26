@@ -124,6 +124,29 @@ def test_summary_text():
     assert "Publicados (1)" in s.text() and "Descartados (1)" in s.text()
 
 
+def test_summary_text_agrupa_descartes_com_o_mesmo_motivo():
+    # C5: 60 linhas de descarte estouravam os 4096 chars do Telegram e o
+    # resumo era descartado em silêncio — justamente no run de falha em massa.
+    descartes = [f"Produto {i}: preço R$ {30 + i},00 acima da referência R$ 26,00"
+                 for i in range(31)]
+    descartes += ["Kit A: publicação falhou em telegram: Bad Request: chat not found",
+                  "Kit B: publicação falhou em telegram: Bad Request: chat not found",
+                  "Kit C: publicação falhou em telegram: Bad Request: chat not found"]
+    text = pipeline.RunSummary(discarded=descartes).text()
+    assert "Descartados (34)" in text
+    assert "• 31× preço acima da referência (ex.: Produto 0)" in text
+    assert text.count("acima da referência") == 1
+    assert text.count("chat not found") == 3          # até 3 iguais: listados um a um
+    assert len(text) < 1000
+
+
+def test_summary_text_agrupa_a_partir_de_quatro():
+    descartes = ["Item %d: sem link de afiliado no pool para MLB%d" % (i, i) for i in range(4)]
+    text = pipeline.RunSummary(discarded=descartes).text()
+    assert "• 4× sem link de afiliado no pool para MLB (ex.: Item 0)" in text
+    assert "MLB0" not in text
+
+
 def test_summary_text_includes_warnings():
     s = pipeline.RunSummary(published=["a"], discarded=[], warnings=["⚠️ aviso 1", "⚠️ aviso 2"])
     text = s.text()

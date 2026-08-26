@@ -1,12 +1,138 @@
+import json
+
 import httpx
 
-from afiliado.channels.telegram import TelegramChannel, get_file_url, send_photo_bytes, send_text
+from afiliado.channels.telegram import (TelegramChannel, get_file_url, send_photo_bytes,
+                                        send_text, split_message)
 from tests.test_state import make_post
 
 
-def channel_with(handler) -> TelegramChannel:
+def channel_with(handler, sleep=None) -> TelegramChannel:
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    return TelegramChannel("TOKEN", "@canal", client=client)
+    if sleep is None:
+        return TelegramChannel("TOKEN", "@canal", client=client)
+    return TelegramChannel("TOKEN", "@canal", client=client, sleep=sleep)
+
+
+def _429(retry_after: int) -> httpx.Response:
+    return httpx.Response(429, json={
+        "ok": False, "error_code": 429,
+        "description": f"Too Many Requests: retry after {retry_after}",
+        "parameters": {"retry_after": retry_after}})
+
+
+# -- send_text: resumo de ops nunca some em silêncio (C5) ----------------------
+
+def test_send_text_divide_em_mensagens_de_ate_4000_e_devolve_true():
+    enviados = []
+
+    def handler(request):
+        enviados.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    texto = "\n".join(f"• linha {i} " + "x" * 100 for i in range(90))   # ~9.8k chars
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert send_text("TOKEN", "123", texto, client=client) is True
+    assert len(enviados) >= 3
+    assert all(len(t) <= 4000 for t in enviados)
+    assert "\n".join(enviados) == texto        # cortes só em quebras de linha, nada perdido
+
+
+def test_send_text_curto_vai_numa_mensagem_so():
+    enviados = []
+
+    def handler(request):
+        enviados.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert send_text("TOKEN", "123", "oi\ntudo bem", client=client) is True
+    assert enviados == ["oi\ntudo bem"]
+
+
+def test_send_text_ok_false_devolve_false_e_imprime(capsys):
+    def handler(request):
+        return httpx.Response(400, json={"ok": False, "error_code": 400,
+                                         "description": "Bad Request: message is too long"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert send_text("TOKEN", "123", "x" * 10, client=client) is False
+    assert "message is too long" in capsys.readouterr().out
+
+
+def test_send_text_erro_de_rede_devolve_false_e_imprime(capsys):
+    def handler(request):
+        raise httpx.ConnectError("down")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert send_text("TOKEN", "123", "oi", client=client) is False
+    assert "down" in capsys.readouterr().out
+
+
+def test_split_message_corta_linha_gigante():
+    partes = split_message("a" * 9000 + "\nfim", limit=4000)
+    assert all(len(p) <= 4000 for p in partes)
+    assert "".join(partes).replace("\n", "") == "a" * 9000 + "fim"
+
+
+# -- 429 com retry_after (A4) ----------------------------------------------------
+
+def test_publish_429_com_retry_after_curto_dorme_e_tenta_uma_vez():
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(request.url.path.rsplit("/", 1)[-1])
+        if len(calls) == 1:
+            return _429(5)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
+
+    res = channel_with(handler, sleep=sleeps.append).publish(make_post())
+    assert res.ok and res.message_id == "9"
+    assert calls == ["sendPhoto", "sendPhoto"]
+    assert sleeps == [5]
+
+
+def test_publish_429_com_retry_after_longo_falha_sem_dormir_e_sem_fallback():
+    # Acima de 30 s não vale esperar; e sendMessage não ajuda num rate limit —
+    # antes o canal fazia 2 chamadas imediatas e o pipeline seguia para a
+    # PRÓXIMA oferta dentro da mesma janela de limite.
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(request.url.path.rsplit("/", 1)[-1])
+        return _429(35)
+
+    res = channel_with(handler, sleep=sleeps.append).publish(make_post())
+    assert not res.ok and "retry after 35" in res.error
+    assert calls == ["sendPhoto"]
+    assert sleeps == []
+
+
+def test_publish_429_persistente_falha_depois_de_uma_repeticao():
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(request.url.path.rsplit("/", 1)[-1])
+        return _429(3)
+
+    res = channel_with(handler, sleep=sleeps.append).publish(make_post())
+    assert not res.ok
+    assert calls == ["sendPhoto", "sendPhoto"]
+    assert sleeps == [3]
+
+
+def test_send_text_honra_retry_after():
+    calls, sleeps = [], []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            return _429(2)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert send_text("TOKEN", "123", "oi", client=client, sleep=sleeps.append) is True
+    assert sleeps == [2] and len(calls) == 2
 
 
 def test_publish_send_photo_ok():

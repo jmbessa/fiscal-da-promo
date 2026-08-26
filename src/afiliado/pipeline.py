@@ -17,17 +17,43 @@ DEFAULT_SCHEDULE = {"timezone": state.DEFAULT_TIMEZONE,
                     "window_start": "08:00", "window_end": "23:55"}
 
 
+# Valores que variam entre descartes com o MESMO motivo ("R$ 33,90", "MLB123").
+_VALOR = re.compile(r"R\$\s?[\d.,]+|\d+")
+# Acima disto, descartes iguais viram uma linha só (C5: 37 linhas já
+# estouravam os 4096 chars do Telegram e o resumo sumia em silêncio).
+AGRUPA_DESCARTES_A_PARTIR_DE = 4
+
+
+def _motivo(descarte: str) -> str:
+    """`"<rótulo>: <motivo>"` → motivo sem os valores que variam por item."""
+    _, sep, resto = descarte.partition(": ")
+    return " ".join(_VALOR.sub("", resto if sep else descarte).split())
+
+
 @dataclass
 class RunSummary:
     published: list[str] = field(default_factory=list)
     discarded: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
+    def _linhas_de_descarte(self) -> list[str]:
+        grupos: dict[str, list[str]] = {}
+        for d in self.discarded:
+            grupos.setdefault(_motivo(d), []).append(d)
+        linhas: list[str] = []
+        for motivo, itens in grupos.items():
+            if len(itens) >= AGRUPA_DESCARTES_A_PARTIR_DE:
+                exemplo = itens[0].partition(": ")[0]
+                linhas.append(f"• {len(itens)}× {motivo} (ex.: {exemplo})")
+            else:
+                linhas += [f"• {d}" for d in itens]
+        return linhas
+
     def text(self) -> str:
         linhas = [f"✅ Run concluído — Publicados ({len(self.published)}):"]
         linhas += [f"• {p}" for p in self.published] or ["• (nenhum)"]
         linhas.append(f"Descartados ({len(self.discarded)}):")
-        linhas += [f"• {d}" for d in self.discarded] or ["• (nenhum)"]
+        linhas += self._linhas_de_descarte() or ["• (nenhum)"]
         if self.warnings:
             linhas.append("Avisos:")
             linhas += [f"• {w}" for w in self.warnings]

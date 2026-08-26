@@ -1,11 +1,20 @@
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
+from functools import partial
 
-from afiliado import copywriter, message, pricing, selection, validate
+from afiliado import copywriter, message, pricing, selection, state, validate
 from afiliado.channels.base import Channel
 from afiliado.models import Post
 from afiliado.sources.base import Source
 from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
+
+# Fase 5A (C3): janela diária de operação, no fuso local. O teto de cada
+# canal é distribuído ao longo dela (ver `pacing_budget`); fora dela o
+# orçamento é 0 — um run de madrugada não publica.
+DEFAULT_SCHEDULE = {"timezone": state.DEFAULT_TIMEZONE,
+                    "window_start": "08:00", "window_end": "23:55"}
 
 
 @dataclass
@@ -25,16 +34,77 @@ class RunSummary:
         return "\n".join(linhas)
 
 
+def schedule_settings(cfg: dict) -> dict:
+    """Seção `schedule:` do config com os defaults de `DEFAULT_SCHEDULE`."""
+    raw = cfg.get("schedule") or {}
+    return {k: (raw.get(k) or v) for k, v in DEFAULT_SCHEDULE.items()}
+
+
+def _minutos(hhmm: str) -> int:
+    horas, minutos = str(hhmm).split(":")
+    return int(horas) * 60 + int(minutos)
+
+
+def pacing_budget(max_per_day: int, now_local: datetime,
+                  window_start: str = DEFAULT_SCHEDULE["window_start"],
+                  window_end: str = DEFAULT_SCHEDULE["window_end"]) -> int:
+    """Quantos posts o canal PODE ter acumulado até `now_local` (hora local):
+
+        min(max_per_day, floor(max_per_day × fração_decorrida) + 1)
+
+    com fração_decorrida = (agora − início) / (fim − início) recortada em
+    [0, 1]. Fora da janela → 0. Exemplos (60/dia, 08:00–23:55): 08:00 → 1,
+    12:00 → 16, 23:55 → 60. Sem isso o teto era consumido pelos primeiros N
+    slots do dia (feed do IG sempre no mesmo horário, 6 stories em bloco).
+    A comparação é por minuto: um disparo às 23:55:20 ainda está na janela."""
+    inicio, fim = _minutos(window_start), _minutos(window_end)
+    agora = now_local.hour * 60 + now_local.minute
+    if agora < inicio or agora > fim:
+        return 0
+    fracao = (agora - inicio) / (fim - inicio) if fim > inicio else 1.0
+    return min(int(max_per_day), int(max_per_day * fracao) + 1)
+
+
+class _Warner:
+    """Todo aviso do run passa aqui (fase 5A, A3): entra em
+    `summary.warnings` só na PRIMEIRA vez no dia local. A chave é o texto sem
+    dígitos ("LLM indisponível em 3 de 4" e "N buscadas, 0 candidatas"
+    colapsam), salvo chave explícita. Em dry-run não grava — e não esconde."""
+
+    def __init__(self, db: StateDB, summary: RunSummary, dry_run: bool):
+        self.db, self.summary, self.dry_run = db, summary, dry_run
+
+    def __call__(self, texto: str, key: str | None = None) -> bool:
+        chave = key if key is not None else re.sub(r"\d+", "", texto)
+        if not self.dry_run and not self.db.warn_once(chave):
+            return False
+        self.summary.warnings.append(texto)
+        return True
+
+
+def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict) -> RunSummary:
+    if not dry_run:
+        db.record_run(len(summary.published), len(summary.discarded),
+                      ref_window_days=int(pricing.setting(
+                          sel, "ref_window_days", pricing.DEFAULT_REF_WINDOW_DAYS)))
+    return summary
+
+
 def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         dry_run: bool = False, validator=None, watchlist: Watchlist | None = None) -> RunSummary:
-    validator = validator or validate.validate_post
+    if validator is None:
+        # Dry-run (A10): nada de rede além de fetch_offers/refresh_price —
+        # a imagem não é baixada (o link já é checado offline, C6).
+        validator = (partial(validate.validate_post, skip_image=True) if dry_run
+                     else validate.validate_post)
     summary = RunSummary()
+    warn = _Warner(db, summary, dry_run)
+    sel = cfg["selection"]
 
     if watchlist is None:
-        summary.warnings.append("ℹ️ Sem watchlist — ranking sem boosts")
+        warn("ℹ️ Sem watchlist — ranking sem boosts")
     elif watchlist.is_stale():
-        summary.warnings.append(
-            f"⚠️ Watchlist vencida há {watchlist.days_old()} dias — rode /watchlist-refresh")
+        warn(f"⚠️ Watchlist vencida há {watchlist.days_old()} dias — rode /watchlist-refresh")
         watchlist = None
 
     offers = []
@@ -48,27 +118,60 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         offers.extend(src_offers)
 
     if meli_offer_count == 0:
-        summary.warnings.append(
-            "ℹ️ meli: pool vazio ou vencido — rode /meli-links-refresh")
+        warn("ℹ️ meli: pool vazio ou vencido — rode /meli-links-refresh")
     elif meli_pool_warning:
-        summary.warnings.append(f"ℹ️ meli: {meli_pool_warning}")
+        warn(f"ℹ️ meli: {meli_pool_warning}")
 
     # A observação de hoje entra no histórico ANTES de a mediana ser lida.
-    pricing.record_observations(db, offers)
-    offers = pricing.enrich_offers(offers, db, watchlist, cfg)
+    # Dry-run não escreve no banco (A10).
+    if not dry_run:
+        pricing.record_observations(db, offers)
 
+    # -- Fase 5A (C2/C3): há canal aberto para publicar? -----------------------
+    # Orçamento por canal = teto diário distribuído pela janela (ritmo).
+    # Canal sem max_per_day não tem ritmo nem teto. Sem canal aberto o run
+    # termina AQUI: nenhuma oferta paga refresh_price, link, copy (LLM) ou
+    # validação sem ter onde ser publicada — antes, com todos no teto, cada
+    # run varria a fila inteira (195 chamadas LLM, 97 links, 0 posts).
+    horario = schedule_settings(cfg)
+    agora = db.local_now()
+    orcamento: dict[str, int | None] = {}
+    for ch in channels:
+        cap = getattr(ch, "max_per_day", None)
+        orcamento[ch.name] = None if cap is None else pacing_budget(
+            int(cap), agora, horario["window_start"], horario["window_end"])
+    usados: dict[str, int] = {}
+    usados_dia = {ch.name: db.count_posts_today(ch.name)
+                  for ch in channels if orcamento[ch.name] is not None}
+
+    def aberto(ch) -> bool:
+        orc = orcamento[ch.name]
+        if orc is not None and usados_dia.get(ch.name, 0) >= orc:
+            return False
+        limit = getattr(ch, "max_per_run", None)
+        return limit is None or usados.get(ch.name, 0) < limit
+
+    def no_teto(ch) -> bool:
+        cap = getattr(ch, "max_per_day", None)
+        return cap is not None and usados_dia.get(ch.name, 0) >= int(cap)
+
+    if not dry_run:
+        if not channels:
+            warn("⚠️ nenhum canal disponível — nada a publicar")
+            return _finish(summary, db, dry_run, sel)
+        if not any(aberto(ch) for ch in channels):
+            warn("ℹ️ teto diário atingido em todos os canais")
+            return _finish(summary, db, dry_run, sel)
+
+    offers = pricing.enrich_offers(offers, db, watchlist, cfg)
     candidates = selection.filter_offers(offers, db, cfg)
     ranked = selection.rank_offers(candidates, db.recent_titles(), cfg, watchlist)
     reserva = [o for o in selection.order_by_ev(candidates, cfg, watchlist) if o not in ranked]
     fila = ranked + reserva
 
     by_name = {s.name: s for s in sources}
-    sel = cfg["selection"]
     target = sel["posts_per_run"]
     count = 0
-    usados: dict[str, int] = {}
-    usados_dia = {ch.name: db.count_posts_today(ch.name)
-                 for ch in channels if getattr(ch, "max_per_day", None) is not None}
     tetos_atingidos: set[str] = set()
 
     for offer in fila:
@@ -94,7 +197,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                 seal_tolerance=float(pricing.setting(
                     sel, "seal_tolerance", message.DEFAULT_SEAL_TOLERANCE)))
             post = Post(offer=offer, copy=copy, affiliate_link=link, message_text=text,
-                       price_floor=price_floor)
+                        price_floor=price_floor)
             validator(post, cfg)
         except Exception as exc:
             summary.discarded.append(f"{rotulo}: {exc}")
@@ -108,17 +211,14 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
 
         published_any = False
         for ch in channels:
-            cap_dia = getattr(ch, "max_per_day", None)
-            if cap_dia is not None and usados_dia.get(ch.name, 0) >= cap_dia:
-                tetos_atingidos.add(ch.name)
-                continue   # teto diário atingido: pula em silêncio, não é falha
-            limit = getattr(ch, "max_per_run", None)
-            if limit is not None and usados.get(ch.name, 0) >= limit:
-                continue
+            if not aberto(ch):
+                if no_teto(ch):
+                    tetos_atingidos.add(ch.name)   # teto de verdade: vira aviso
+                continue                            # ritmo/max_per_run: silêncio
             res = ch.publish(post)
             if res.ok:
                 usados[ch.name] = usados.get(ch.name, 0) + 1
-                if cap_dia is not None:
+                if orcamento[ch.name] is not None:
                     usados_dia[ch.name] = usados_dia.get(ch.name, 0) + 1
                 db.record_post(post, ch.name, res.message_id)
                 published_any = True
@@ -127,14 +227,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if published_any:
             summary.published.append(rotulo)
             count += 1
+            if not any(aberto(ch) for ch in channels):
+                break   # ninguém mais pode publicar: a próxima oferta não paga nada
 
     for ch in channels:
         if ch.name in tetos_atingidos:
-            cap = getattr(ch, "max_per_day", None)
-            summary.warnings.append(f"ℹ️ {ch.name}: teto diário ({cap}) atingido")
+            warn(f"ℹ️ {ch.name}: teto diário ({getattr(ch, 'max_per_day', None)}) atingido")
 
-    if not dry_run:
-        db.record_run(len(summary.published), len(summary.discarded),
-                      ref_window_days=int(pricing.setting(
-                          sel, "ref_window_days", pricing.DEFAULT_REF_WINDOW_DAYS)))
-    return summary
+    return _finish(summary, db, dry_run, sel)

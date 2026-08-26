@@ -1,12 +1,26 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
-from afiliado import llm, pipeline
+from afiliado import llm, pipeline, state, validate
 from afiliado.channels.base import PublishResult
 from afiliado.errors import SourceError, ValidationError
 from afiliado.models import CopyParts, Post
 from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
 from tests.test_models import make_offer
+
+BRT = timezone(timedelta(hours=-3))
+
+
+def _congela(monkeypatch, hh: int, mm: int, dia: int = 26) -> None:
+    """Fixa o relógio do pipeline/StateDB num horário BRT de 2026-08-<dia>."""
+    instante = datetime(2026, 8, dia, hh, mm, tzinfo=BRT).astimezone(timezone.utc)
+    monkeypatch.setattr(state, "_now", lambda: instante)
+
+
+def _ja_postados(db: StateDB, canal: str, n: int) -> None:
+    for k in range(n):
+        db.record_post(Post(offer=make_offer(item_id=f"{canal}-{k}"),
+                            copy=CopyParts("h", "d", "c"), affiliate_link="l"), canal, "x")
 
 CFG = {
     "selection": {"posts_per_run": 2, "price_min_brl": 20,
@@ -196,6 +210,7 @@ def test_run_respects_channel_max_per_run(tmp_path, monkeypatch):
 
 def test_run_respects_channel_max_per_day(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    _congela(monkeypatch, 23, 55)   # fim da janela: orçamento de ritmo = teto
     db = StateDB(tmp_path / "s.db")
     offers = [make_offer(item_id=str(i)) for i in range(3)]
     ch_s = NamedFakeChannel("s")
@@ -378,6 +393,232 @@ def test_run_usa_o_historico_como_referencia(tmp_path, monkeypatch):
                            validator=no_network_validator)
     assert [p.offer.item_id for p in ch.sent] == ["normal"]
     assert len(summary.published) == 1
+    db.close()
+
+
+# --- Fase 5A: o sistema não pode se matar --------------------------------------
+
+class ContadorSource(FakeSource):
+    """Conta o que cada oferta 'paga' antes de existir canal para ela."""
+
+    def __init__(self, offers):
+        super().__init__(offers)
+        self.links = 0
+        self.refreshes = 0
+
+    def resolve_affiliate_link(self, offer):
+        self.links += 1
+        return "https://shope.ee/ok"
+
+    def refresh_price(self, offer):
+        self.refreshes += 1
+        return offer
+
+
+def _canal(name, cap):
+    ch = NamedFakeChannel(name)
+    ch.max_per_day = cap
+    return ch
+
+
+def test_run_todos_no_teto_nao_varre_a_fila(tmp_path, monkeypatch):
+    # C2: com os 3 canais no teto, cada run varria a fila inteira pagando
+    # refresh_price + generateShortLink + copy (LLM) + validação por oferta —
+    # 195 chamadas LLM e 97 links por run, 0 publicados, até o SIGTERM.
+    _congela(monkeypatch, 23, 55)
+    chamadas_llm = []
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: chamadas_llm.append(1) or None)
+    db = StateDB(tmp_path / "s.db")
+    src = ContadorSource([make_offer(item_id=str(i)) for i in range(60)])
+    canais = [_canal("telegram", 60), _canal("story_dispatch", 6), _canal("instagram_feed", 2)]
+    for ch in canais:
+        _ja_postados(db, ch.name, ch.max_per_day)
+
+    summary = pipeline.run(CFG, [src], canais, db, validator=no_network_validator)
+
+    assert chamadas_llm == []
+    assert src.links == 0 and src.refreshes == 0
+    assert all(ch.sent == [] for ch in canais)
+    assert summary.published == [] and summary.discarded == []
+    assert [w for w in summary.warnings if "teto" in w] == [
+        "ℹ️ teto diário atingido em todos os canais"]
+    db.close()
+
+
+def test_run_sem_canais_nao_gasta_a_fila(tmp_path, monkeypatch):
+    # Caso degenerado do mesmo defeito: nenhum canal construído (todas as envs
+    # ausentes) e o laço pagava LLM/link para cada oferta sem ter onde publicar.
+    _congela(monkeypatch, 12, 0)
+    chamadas_llm = []
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: chamadas_llm.append(1) or None)
+    db = StateDB(tmp_path / "s.db")
+    src = ContadorSource([make_offer(item_id=str(i)) for i in range(5)])
+    summary = pipeline.run(CFG, [src], [], db, validator=no_network_validator)
+    assert chamadas_llm == [] and src.links == 0
+    assert any("nenhum canal" in w for w in summary.warnings)
+    db.close()
+
+
+def test_pacing_budget_exemplos_do_brief():
+    def em(hh, mm):
+        return datetime(2026, 8, 26, hh, mm, tzinfo=BRT)
+    # Telegram 60/dia, janela 08:00–23:55 (955 min)
+    assert pipeline.pacing_budget(60, em(8, 0)) == 1
+    assert pipeline.pacing_budget(60, em(12, 0)) == 16     # ≈25% da janela
+    assert pipeline.pacing_budget(60, em(23, 55)) == 60
+    assert pipeline.pacing_budget(60, em(7, 59)) == 0      # fora da janela
+    assert pipeline.pacing_budget(60, em(23, 56)) == 0
+    assert pipeline.pacing_budget(60, em(3, 0)) == 0       # run de madrugada
+    # Story 6/dia: um a cada ~2h40
+    assert pipeline.pacing_budget(6, em(8, 0)) == 1
+    assert pipeline.pacing_budget(6, em(10, 39)) == 1
+    assert pipeline.pacing_budget(6, em(10, 40)) == 2
+    assert pipeline.pacing_budget(6, em(23, 55)) == 6
+    # Feed 2/dia: 1 às 08:00, o 2º só a partir da metade da janela
+    assert pipeline.pacing_budget(2, em(8, 0)) == 1
+    assert pipeline.pacing_budget(2, em(15, 56)) == 1
+    assert pipeline.pacing_budget(2, em(15, 58)) == 2
+    # Janela configurável
+    assert pipeline.pacing_budget(10, em(9, 0), "09:00", "10:00") == 1
+    assert pipeline.pacing_budget(10, em(9, 30), "09:00", "10:00") == 6
+    assert pipeline.pacing_budget(10, em(8, 59), "09:00", "10:00") == 0
+
+
+def test_run_fora_da_janela_publica_zero(tmp_path, monkeypatch):
+    # Persistent=true disparava um run às 03:00 ao religar a VPS — e ele
+    # publicava. Fora da janela o orçamento é 0 e o LLM nem é chamado.
+    _congela(monkeypatch, 3, 0)
+    chamadas_llm = []
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: chamadas_llm.append(1) or None)
+    db = StateDB(tmp_path / "s.db")
+    ch = _canal("telegram", 60)
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id=str(i)) for i in range(3)])],
+                           [ch], db, validator=no_network_validator)
+    assert ch.sent == [] and summary.published == []
+    assert chamadas_llm == []
+    db.close()
+
+
+def test_run_ritmo_as_8h_publica_um_so(tmp_path, monkeypatch):
+    # 60/dia às 08:00 → orçamento 1, mesmo com posts_per_run 3 e 3 candidatas;
+    # depois da publicação nenhum canal segue aberto e o laço para.
+    _congela(monkeypatch, 8, 0)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = _canal("telegram", 60)
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 3}}
+    src = ContadorSource([make_offer(item_id=str(i)) for i in range(3)])
+    summary = pipeline.run(cfg, [src], [ch], db, validator=no_network_validator)
+    assert len(ch.sent) == 1 and len(summary.published) == 1
+    assert src.links == 1            # a 2ª oferta não pagou link/copy
+    assert not any("teto" in w for w in summary.warnings)   # ritmo não é teto
+    db.close()
+
+
+def test_run_ritmo_ao_meio_dia_respeita_o_orcamento(tmp_path, monkeypatch):
+    _congela(monkeypatch, 12, 0)     # orçamento 16 para 60/dia
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = _canal("telegram", 60)
+    _ja_postados(db, "telegram", 16)
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="x")])], [ch], db,
+                           validator=no_network_validator)
+    assert ch.sent == [] and summary.published == []
+
+    db2 = StateDB(tmp_path / "s2.db")
+    _ja_postados(db2, "telegram", 15)
+    ch2 = _canal("telegram", 60)
+    summary2 = pipeline.run(CFG, [FakeSource([make_offer(item_id="x")])], [ch2], db2,
+                            validator=no_network_validator)
+    assert len(ch2.sent) == 1 and len(summary2.published) == 1
+    db.close()
+    db2.close()
+
+
+def test_run_canal_sem_max_per_day_nao_tem_ritmo(tmp_path, monkeypatch):
+    _congela(monkeypatch, 3, 0)      # fora da janela
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()               # sem max_per_day
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id=str(i)) for i in range(3)])],
+                           [ch], db, validator=no_network_validator)
+    assert len(ch.sent) == 2 and len(summary.published) == 2
+    db.close()
+
+
+def test_run_post_as_22h_brt_conta_no_dia_brt(tmp_path, monkeypatch):
+    # Teste obrigatório 3: publicado às 22:00 BRT; às 23:00 BRT ainda conta
+    # (o canal com teto 1 fica fechado); às 08:00 BRT do dia seguinte não.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 22, 0, dia=25)
+    ch = _canal("telegram", 1)
+    pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
+                 validator=no_network_validator)
+    assert len(ch.sent) == 1
+    _congela(monkeypatch, 23, 0, dia=25)
+    pipeline.run(CFG, [FakeSource([make_offer(item_id="b")])], [ch], db,
+                 validator=no_network_validator)
+    assert len(ch.sent) == 1                       # mesmo dia BRT: teto 1 atingido
+    _congela(monkeypatch, 8, 0, dia=26)
+    pipeline.run(CFG, [FakeSource([make_offer(item_id="c")])], [ch], db,
+                 validator=no_network_validator)
+    assert len(ch.sent) == 2                       # dia BRT seguinte: reabre
+    db.close()
+
+
+def test_run_aviso_persistente_uma_vez_por_dia(tmp_path, monkeypatch):
+    # A3: watchlist vencida gerava a mesma linha em todos os 192 runs do dia.
+    _congela(monkeypatch, 12, 0)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    vencida = Watchlist(generated_at=date.today() - timedelta(days=30), valid_days=14)
+    avisos = []
+    for _ in range(3):
+        s = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db,
+                         validator=no_network_validator, watchlist=vencida)
+        avisos += [w for w in s.warnings if "vencida" in w]
+    assert len(avisos) == 1
+    db.close()
+
+
+def test_run_aviso_volta_no_dia_local_seguinte(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    vencida = Watchlist(generated_at=date.today() - timedelta(days=30), valid_days=14)
+    _congela(monkeypatch, 23, 50, dia=25)
+    s1 = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db,
+                      validator=no_network_validator, watchlist=vencida)
+    _congela(monkeypatch, 8, 0, dia=26)
+    s2 = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db,
+                      validator=no_network_validator, watchlist=vencida)
+    assert any("vencida" in w for w in s1.warnings)
+    assert any("vencida" in w for w in s2.warnings)
+    db.close()
+
+
+def test_dry_run_nao_escreve_no_banco_nem_baixa_imagem(tmp_path, monkeypatch):
+    # A10: --dry-run gravava price_log (e, com C6, clicava no link). Agora:
+    # nenhuma tabela muda e a imagem não é baixada — validador PADRÃO.
+    _congela(monkeypatch, 12, 0)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+
+    def imagem_proibida(*a, **k):
+        raise AssertionError("dry-run baixou a imagem")
+
+    monkeypatch.setattr(validate, "check_image", imagem_proibida)
+    db = StateDB(tmp_path / "s.db")
+    tabelas = ("posted", "runs", "price_log", "warned")
+
+    def contagens():
+        return {t: db.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabelas}
+
+    antes = contagens()
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id=str(i)) for i in range(3)])],
+                           [], db, dry_run=True)
+    assert len(summary.published) == 2
+    assert summary.discarded == []
+    assert contagens() == antes
     db.close()
 
 

@@ -261,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "doctor":
         return doctor(cfg)
 
-    db = StateDB(cfg["state"]["path"])
+    db = StateDB(cfg["state"]["path"], timezone=pipeline.schedule_settings(cfg)["timezone"])
     sources = _build_sources(cfg)
     channels = []
     if not args.dry_run:

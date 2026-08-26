@@ -1,6 +1,18 @@
 state:
   path: data/state.db
 
+# Fase 5A: dia LOCAL e ritmo. O teto diário de cada canal, o price_log e a
+# deduplicação de avisos são contados no dia deste fuso (antes era UTC: a
+# fronteira caía às 21:00 BRT e o canal calava das 13:20 às 21:00). O teto é
+# distribuído ao longo da janela: um canal só publica enquanto
+# count_hoje < min(max_per_day, floor(max_per_day × fração_da_janela) + 1);
+# fora da janela o orçamento é 0 (um run de madrugada não publica). A janela
+# deve bater com deploy/afiliado.timer.
+schedule:
+  timezone: America/Sao_Paulo
+  window_start: "08:00"
+  window_end: "23:55"
+
 llm:
   model: haiku
 

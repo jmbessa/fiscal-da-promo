@@ -5,22 +5,24 @@ from tests.test_models import make_offer
 
 TITULO = 'Tênis Nike SB Chron 2 "Black White"'
 
-# Modo A: desconto verificado contra a NOSSA referência (499,98 -> 249,99).
+# Modo A: desconto verificado contra a NOSSA referência (499,98 -> 249,99),
+# com a marcação HTML do Telegram: referência riscada, preço em negrito.
 ESPERADO_MODO_A = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-De: R$ 499,98 | Por: R$ 249,99 (50% OFF)
+De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> (50% OFF)
 
 Corre que acaba rápido 👇
 👉 https://shope.ee/abc123"""
 
-# Modo B: sem referência conhecida — preço + prova social, sem alegar desconto.
+# Modo B: sem referência conhecida — o preço é o herói (negrito), prova
+# social em texto puro logo abaixo, sem alegar desconto.
 ESPERADO_MODO_B = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-R$ 249,99
+<b>R$ 249,99</b>
 ⭐ 4,8 · 12 mil vendidos
 
 Corre que acaba rápido 👇
@@ -30,7 +32,7 @@ ESPERADO_COM_SELO = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-De: R$ 499,98 | Por: R$ 249,99 (50% OFF)
+De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> (50% OFF)
 🏷️ Menor preço dos últimos 12 meses (verificado)
 
 Corre que acaba rápido 👇
@@ -77,7 +79,7 @@ def test_build_message_usa_a_nossa_referencia_nunca_o_de_do_vendedor():
     offer = make_offer(title=TITULO, price_original_cents=35000,
                        price_ref_cents=2600, price_current_cents=1890)
     texto = build_message(offer, _copy(), "https://shope.ee/abc123")
-    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)" in texto
+    assert "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)" in texto
     assert "R$ 350,00" not in texto
 
 
@@ -137,6 +139,18 @@ def test_build_message_watchlist_tem_precedencia_sobre_o_piso_proprio():
     texto = build_message(offer, _copy(), "https://shope.ee/abc123", price_floor=floor)
     assert "🏷️ Menor preço dos últimos 12 meses (verificado)" in texto
     assert "Menor preço já registrado" not in texto
+
+
+def test_build_message_veredito_da_watchlist_e_final_sem_cair_no_degrau_tolerante():
+    # Oferta 3% ACIMA do piso da watchlist, com price_floor_cents igual ao
+    # piso: falha o selo estrito e NÃO pode ganhar o tolerante por tabela
+    # (24720 <= 24000 * 1.05 passaria). Quando a watchlist existe, ela decide.
+    offer = make_offer(title=TITULO, price_ref_cents=49998,
+                       price_current_cents=24720, price_floor_cents=24000)
+    floor = PriceFloor(min_price_cents=24000, window_days=365)
+    texto = build_message(offer, _copy(), "https://shope.ee/abc123", price_floor=floor)
+    assert "Menor preço" not in texto
+    assert "🏷️" not in texto
 
 
 def test_build_message_escapa_titulo_e_copy():

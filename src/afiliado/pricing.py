@@ -57,6 +57,16 @@ def _social_proof(offer: Offer) -> str:
     return " · ".join(partes)
 
 
+def _desconto_alegavel(offer: Offer, min_real_discount_pct: int) -> int:
+    """O desconto verificado que o post PODE alegar; 0 quando não há o que
+    alegar (sem referência, preço acima dela, ou abaixo do mínimo).
+
+    `desconto > 0` também cobre min_real_discount_pct=0: sem referência o
+    desconto verificado é 0 e o post NUNCA pode alegar "0% OFF"."""
+    desconto = offer.real_discount_pct
+    return desconto if desconto > 0 and desconto >= min_real_discount_pct else 0
+
+
 def price_line(offer: Offer, min_real_discount_pct: int) -> tuple[str, str]:
     """Devolve (linha_de_preco, linha_de_prova_social) já formatadas em texto puro.
 
@@ -66,13 +76,25 @@ def price_line(offer: Offer, min_real_discount_pct: int) -> tuple[str, str]:
         ("R$ 33,90", "⭐ 4,9 · 30 mil vendidos")
     Nunca inventa desconto. A prova social só inclui o que é conhecido
     (rating > 0, sales > 0); se nada for conhecido, devolve string vazia."""
-    desconto = offer.real_discount_pct
-    # `desconto > 0` também cobre min_real_discount_pct=0: sem referência o
-    # desconto verificado é 0 e o post NUNCA pode alegar "0% OFF".
-    if desconto > 0 and desconto >= min_real_discount_pct:
+    desconto = _desconto_alegavel(offer, min_real_discount_pct)
+    if desconto:
         return (f"De: {format_brl(offer.price_ref_cents)} | "
                 f"Por: {format_brl(offer.price_current_cents)} ({desconto}% OFF)", "")
     return format_brl(offer.price_current_cents), _social_proof(offer)
+
+
+def price_line_html(offer: Offer, min_real_discount_pct: int) -> tuple[str, str]:
+    """`price_line` com a marcação HTML do Telegram — mesma decisão de modo.
+
+    Modo A: ("De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)", "")
+    Modo B: ("<b>R$ 33,90</b>", "⭐ 4,9 · 30 mil vendidos") — o preço é o herói.
+    A prova social continua texto puro. `format_brl` não produz caractere
+    especial de HTML, então nada aqui precisa de escape."""
+    desconto = _desconto_alegavel(offer, min_real_discount_pct)
+    if desconto:
+        return (f"De: <s>{format_brl(offer.price_ref_cents)}</s> | "
+                f"Por: <b>{format_brl(offer.price_current_cents)}</b> ({desconto}% OFF)", "")
+    return f"<b>{format_brl(offer.price_current_cents)}</b>", _social_proof(offer)
 
 
 def record_observations(db: StateDB, offers: list[Offer]) -> None:

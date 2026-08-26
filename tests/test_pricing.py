@@ -100,6 +100,41 @@ def test_price_line_nunca_inventa_desconto_com_preco_acima_da_referencia():
     assert "OFF" not in preco
 
 
+# -- price_line_html (Telegram) ------------------------------------------------
+
+def test_price_line_html_modo_a_risca_a_referencia_e_destaca_o_preco():
+    offer = make_offer(price_ref_cents=2600, price_current_cents=1890)
+    assert pricing.price_line_html(offer, 10) == (
+        "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)", "")
+
+
+def test_price_line_html_modo_b_o_preco_e_o_heroi_e_a_prova_social_e_texto_puro():
+    offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)
+    assert pricing.price_line_html(offer, 10) == (
+        "<b>R$ 33,90</b>", "⭐ 4,9 · 30 mil vendidos")
+
+
+def test_price_line_html_toma_a_mesma_decisao_de_modo_que_price_line():
+    # Mesma régua: tirando as tags, a linha HTML é a linha de texto puro —
+    # para qualquer combinação de referência/limite.
+    casos = [
+        (make_offer(price_ref_cents=2600, price_current_cents=1890), 10),   # 27% >= 10: A
+        (make_offer(price_ref_cents=2600, price_current_cents=2500), 10),   # 4% < 10: B
+        (make_offer(price_ref_cents=2600, price_current_cents=2500), 4),    # 4% >= 4: A
+        (make_offer(price_ref_cents=2600, price_current_cents=3390), 0),    # acima da ref: B
+        (make_offer(price_current_cents=3390, rating=4.9, sales=850), 0),   # sem ref: B
+    ]
+    for offer, minimo in casos:
+        preco_html, prova_html = pricing.price_line_html(offer, minimo)
+        preco, prova = pricing.price_line(offer, minimo)
+        sem_tags = preco_html
+        for tag in ("<s>", "</s>", "<b>", "</b>"):
+            sem_tags = sem_tags.replace(tag, "")
+        assert sem_tags == preco
+        assert prova_html == prova
+        assert ("<s>" in preco_html) == ("OFF" in preco)
+
+
 # -- record_observations -----------------------------------------------------
 
 def test_record_observations_grava_o_preco_atual(tmp_path):

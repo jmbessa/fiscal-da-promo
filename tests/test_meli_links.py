@@ -117,8 +117,11 @@ def test_gerar_links_sessao_expirada_403_devolve_vazio_com_mensagem():
     assert erro is not None
 
 
-def test_gerar_links_todos_lotes_zero_sucesso_devolve_vazio_com_mensagem():
+def test_gerar_links_lote_inteiro_sem_sucesso_para_e_nao_chama_os_seguintes():
+    chamadas = []
+
     def handler(request: httpx.Request):
+        chamadas.append(request)
         return httpx.Response(200, json={
             "status": 200, "total_items": 1, "total_success": 0, "total_error": 1,
             "urls": [{"origin_url": "https://www.mercadolivre.com.br/p/MLB1",
@@ -128,6 +131,28 @@ def test_gerar_links_todos_lotes_zero_sucesso_devolve_vazio_com_mensagem():
     links, erro = gerar_links(["MLB1", "MLB2"], tag="tag-inexistente", cookies="c", csrf="t",
                               client=client_with(handler), lote=1)
     assert links == {}
+    assert erro is not None
+    assert len(chamadas) == 1  # para no primeiro lote sem sucesso; o 2º nem é chamado
+
+
+def test_gerar_links_sessao_expirada_no_meio_preserva_lotes_ja_coletados():
+    """Regressão: sessão cair no meio do lote 2/3 não pode jogar fora os
+    links do lote 1 já coletados com sucesso — só o processamento dos lotes
+    restantes é interrompido."""
+    chamadas = []
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        chamadas.append(body["urls"])
+        if len(chamadas) == 2:
+            return httpx.Response(401, text="unauthorized")
+        return httpx.Response(200, json=_success_response(body["urls"], body["tag"]))
+
+    links, erro = gerar_links(["MLB1", "MLB2", "MLB3"], tag="jmbessa", cookies="c", csrf="t",
+                              client=client_with(handler), lote=1)
+
+    assert len(chamadas) == 2               # o 3º lote não é chamado
+    assert links == {"MLB1": "https://meli.la/p/MLB1"}  # lote 1 preservado
     assert erro is not None
 
 

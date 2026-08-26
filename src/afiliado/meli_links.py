@@ -31,12 +31,20 @@ def gerar_links(product_ids: list[str], tag: str, cookies: str, csrf: str,
                  lote: int = 50) -> tuple[dict[str, str], str | None]:
     """Gera links de afiliado em lote pelo painel do Mercado Livre.
 
-    Devolve `(links, erro)`: `links` mapeia `product_id -> short_url`
-    apenas dos itens que deram certo (ignora entradas com `created` falso
-    ou sem `short_url`); `erro` é `None` em caso de sucesso (mesmo que
-    parcial) e uma mensagem legível quando a sessão parece expirada/inválida
-    — nesse caso `links` vem vazio. Nunca levanta: qualquer erro de
-    rede/sessão vira `({}, mensagem)`, quem chama decide como avisar.
+    Devolve `(links, erro)`: `links` mapeia `product_id -> short_url` de
+    TODOS os lotes processados com sucesso até o momento (ignora, dentro de
+    cada lote, entradas com `created` falso ou sem `short_url`) — nunca é
+    descartado por causa de uma falha posterior, mesmo parcial. `erro` é
+    `None` quando todos os lotes foram processados sem sinal de sessão
+    inválida; caso contrário traz uma mensagem legível.
+
+    Ao detectar sessão expirada/inválida — HTTP 401/403, erro de rede, ou um
+    lote inteiro sem sucesso (`total_success == 0 and total_error > 0`, ex.:
+    CSRF/cookie ruim) — PARA de processar os lotes restantes (eles teriam a
+    mesma sessão e falhariam do mesmo jeito) e devolve `links` com tudo que
+    já foi coletado dos lotes anteriores, junto com `erro`: o chamador grava
+    o parcial no pool e avisa o usuário, em vez de perder trabalho já feito.
+    Nunca levanta.
 
     Divide `product_ids` em lotes de `lote` itens (uma chamada HTTP por
     lote) e casa a resposta pelo `origin_url` (extraindo o `MLB...` final)
@@ -59,7 +67,8 @@ def gerar_links(product_ids: list[str], tag: str, cookies: str, csrf: str,
     lotes = [ids[i:i + lote] for i in range(0, len(ids), lote)]
 
     links: dict[str, str] = {}
-    lotes_falhos = 0
+    erro: str | None = None
+    lotes_sem_resposta_valida = 0
     try:
         for lote_ids in lotes:
             urls = [PRODUCT_URL_TMPL.format(product_id=pid) for pid in lote_ids]
@@ -67,25 +76,22 @@ def gerar_links(product_ids: list[str], tag: str, cookies: str, csrf: str,
             try:
                 r = client.post(CREATE_LINK_URL, content=body, headers=headers)
             except httpx.HTTPError as exc:
-                return {}, f"meli: erro de rede ao gerar links: {exc}"
+                erro = f"meli: erro de rede ao gerar links: {exc}"
+                break
 
             if r.status_code in (401, 403):
-                return {}, (
+                erro = (
                     f"meli: sessão do painel de afiliados expirada ou inválida "
                     f"(HTTP {r.status_code}) — recolete cookie/x-csrf-token")
+                break
             if r.status_code != 200:
-                lotes_falhos += 1
+                lotes_sem_resposta_valida += 1
                 continue
             try:
                 data = r.json()
             except ValueError:
-                lotes_falhos += 1
+                lotes_sem_resposta_valida += 1
                 continue
-
-            total_success = data.get("total_success") or 0
-            total_error = data.get("total_error") or 0
-            if total_success == 0 and total_error > 0:
-                lotes_falhos += 1
 
             for item in data.get("urls") or []:
                 if not item.get("created") or not item.get("short_url"):
@@ -94,12 +100,19 @@ def gerar_links(product_ids: list[str], tag: str, cookies: str, csrf: str,
                 if not matches:
                     continue
                 links[matches[-1]] = item["short_url"]
+
+            total_success = data.get("total_success") or 0
+            total_error = data.get("total_error") or 0
+            if total_success == 0 and total_error > 0:
+                erro = (
+                    "meli: sessão do painel de afiliados expirada ou inválida "
+                    "— um lote inteiro falhou (confira cookie/x-csrf-token e a tag)")
+                break
     finally:
         if own_client:
             client.close()
 
-    if not links and lotes_falhos == len(lotes):
-        return {}, (
-            "meli: sessão do painel de afiliados expirada ou inválida — "
-            "nenhum lote teve sucesso")
-    return links, None
+    if erro is None and not links and lotes and lotes_sem_resposta_valida == len(lotes):
+        erro = ("meli: nenhum lote teve resposta válida — verifique conectividade "
+                "ou tente novamente")
+    return links, erro

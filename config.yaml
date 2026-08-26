@@ -79,6 +79,11 @@ meli:
   tag: "jmbessa"             # etiqueta cadastrada no painel de afiliados (linkbuilder)
 
 validation:
+  # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio
+  # link de afiliado (igual a um destes domínios ou subdomínio dele) + ausência
+  # de espaço/caractere de controle. Nenhuma requisição ao link: um GET do
+  # pipeline no link curto seria um clique de afiliado artificial (IP da VPS,
+  # segundos após a geração) e contaminaria a atribuição.
   # mercadolivre.com.br e mercadolivre.com precisam estar os dois: a checagem
   # casa host == d ou host.endswith("." + d), e um não cobre o outro.
   allowed_domains: ["shopee.com.br", "shope.ee",

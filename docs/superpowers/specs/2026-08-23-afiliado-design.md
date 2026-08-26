@@ -173,11 +173,21 @@ Cada fase é um ciclo próprio de plano → implementação → validação.
 
 ## 8. Portões de validação (pré-publicação)
 
-- **Link:** HTTP 200 e redireciona para o domínio esperado
-  (shopee.com.br / mercadolivre.com.br). Morto → descarta a oferta.
-- **Preço:** `atual < original`; desconto anunciado ≈ calculado (tolerância
-  1%); dentro da faixa do config. Pega preço zerado/trocado da API.
-- **Imagem:** URL responde, content-type de imagem, tamanho mínimo.
+- **Link (offline, fase 5A):** `https`, host igual a um dos
+  `validation.allowed_domains` ou subdomínio dele, sem espaço nem caractere
+  de controle. **Nenhuma requisição HTTP ao link de afiliado** — um GET do
+  próprio pipeline no link curto (IP da VPS, User-Agent falso, segundos após
+  a geração, em todo post e no dry-run) é um clique de afiliado artificial:
+  assinatura de tráfego inválido para os programas e contaminação do teste de
+  atribuição. A vitalidade da oferta já foi provada na descoberta (minutos
+  antes) e no `refresh_price` (segundos antes); o link vem do gerador
+  oficial/painel. Inválido → descarta a oferta.
+- **Preço:** dentro da faixa do config e não acima da referência própria
+  (`selection.max_above_ref`, ver fase 4); roda DEPOIS do `refresh_price`.
+  O desconto do vendedor não é mais critério — é rótulo, decidido por
+  `pricing.price_line`.
+- **Imagem:** URL responde, content-type de imagem, tamanho mínimo. É a única
+  checagem que vai à rede; o `--dry-run` a pula.
 - **Copy:** JSON validado contra schema (campos obrigatórios, comprimentos
   máximos, sem URL dentro do texto). Inválido → 1 retry; falhou → copy de
   template padrão sem LLM. Nunca publica post malformado.

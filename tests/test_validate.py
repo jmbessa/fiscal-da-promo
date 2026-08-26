@@ -17,20 +17,66 @@ def client_for(handler):
     return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
-def test_check_link_accepts_redirect_to_allowed_domain():
-    def handler(request):
-        if request.url.host == "shope.ee":
-            return httpx.Response(302, headers={"location": "https://shopee.com.br/p/1"})
-        return httpx.Response(200, text="ok")
-    validate.check_link("https://shope.ee/x", CFG, client=client_for(handler))
+def _sem_rede(request):
+    raise AssertionError(f"nenhuma requisição é esperada aqui: {request.url}")
 
 
-def test_check_link_rejects_wrong_domain():
-    def handler(request):
-        return httpx.Response(200, text="ok")
+@pytest.fixture
+def rede_proibida(monkeypatch):
+    """Qualquer requisição httpx (cliente novo ou injetado) explode: prova que
+    o portão de link não toca a rede — nem no link de afiliado (C6)."""
+    monkeypatch.setattr(httpx.Client, "send", lambda self, request, **kw: _sem_rede(request))
+
+
+# -- check_link: portão OFFLINE (C6) ------------------------------------------
+
+def test_check_link_aceita_dominio_permitido_e_subdominio(rede_proibida):
+    validate.check_link("https://shope.ee/x", CFG)
+    validate.check_link("https://s.shopee.com.br/xyz", CFG)
+    validate.check_link("https://shopee.com.br/product/1/123", CFG)
+
+
+def test_check_link_nao_faz_rede(rede_proibida):
+    # Um clique do próprio pipeline no link de afiliado (IP de datacenter, UA
+    # falso, segundos após a geração) é a assinatura de tráfego inválido — e
+    # contaminava o teste de atribuição do ML em cada --dry-run.
+    validate.check_link("https://shope.ee/x", CFG)
+
+
+def test_check_link_rejects_wrong_domain(rede_proibida):
     with pytest.raises(ValidationError):
-        validate.check_link("https://evil.com/x", CFG, client=client_for(handler))
+        validate.check_link("https://evil.com/x", CFG)
 
+
+def test_check_link_rejects_confusable_domain(rede_proibida):
+    with pytest.raises(ValidationError):
+        validate.check_link("https://evilshopee.com.br/x", CFG)
+    with pytest.raises(ValidationError):
+        validate.check_link("https://shopee.com.br.evil.com/x", CFG)
+
+
+def test_check_link_exige_https(rede_proibida):
+    with pytest.raises(ValidationError, match="https"):
+        validate.check_link("http://shope.ee/x", CFG)
+    with pytest.raises(ValidationError):
+        validate.check_link("shope.ee/x", CFG)
+
+
+def test_check_link_rejeita_espaco_e_caractere_de_controle(rede_proibida):
+    for url in ("https://shope.ee/x y", "https://shope.ee/x\n", "https://shope.ee/\tx",
+                "https://shope.ee/x\x00", ""):
+        with pytest.raises(ValidationError):
+            validate.check_link(url, CFG)
+
+
+def test_check_link_nao_aceita_mais_client():
+    # O parâmetro saiu de propósito: sem cliente HTTP não há como alguém
+    # reintroduzir o GET no link por engano.
+    with pytest.raises(TypeError):
+        validate.check_link("https://shope.ee/x", CFG, client=httpx.Client())
+
+
+# -- check_price ----------------------------------------------------------------
 
 def test_check_price_rules():
     validate.check_price(make_offer(), CFG)
@@ -75,6 +121,8 @@ def test_check_price_require_price_ref():
     validate.check_price(make_offer(price_ref_cents=2600, price_current_cents=2500), cfg)
 
 
+# -- check_image (a única checagem que ainda vai à rede) -------------------------
+
 def test_check_image():
     def handler(request):
         return httpx.Response(200, headers={"content-type": "image/jpeg"},
@@ -87,6 +135,8 @@ def test_check_image():
         validate.check_image("https://cf.shopee.com.br/file/a.jpg", client=client_for(bad))
 
 
+# -- check_copy -------------------------------------------------------------------
+
 def test_check_copy():
     validate.check_copy(CopyParts("🔥 50% OFF", "Bom e barato.", "Corre 👇"))
     with pytest.raises(ValidationError):  # vazio
@@ -97,35 +147,34 @@ def test_check_copy():
         validate.check_copy(CopyParts("a" * 61, "d", "c"))
 
 
-def test_check_link_rejects_confusable_domain():
-    def handler(request):
-        if request.url.host == "shope.ee":
-            return httpx.Response(302, headers={"location": "https://evilshopee.com.br/x"})
-        return httpx.Response(200, text="ok")
-    with pytest.raises(ValidationError):
-        validate.check_link("https://shope.ee/x", CFG, client=client_for(handler))
-
-
-def test_check_link_accepts_403_on_allowed_domain():
-    def handler(request):
-        return httpx.Response(403, text="Anti-bot")
-    validate.check_link("https://shopee.com.br/p/1", CFG, client=client_for(handler))
-
-
-def test_check_link_rejects_404_on_allowed_domain():
-    def handler(request):
-        return httpx.Response(404, text="Not Found")
-    with pytest.raises(ValidationError):
-        validate.check_link("https://shopee.com.br/p/1", CFG, client=client_for(handler))
-
+# -- validate_post ------------------------------------------------------------------
 
 def test_validate_post_checks_copy_before_network():
-    def handler(request):
-        raise AssertionError("Network request made when copy should have failed first")
     post = Post(
         offer=make_offer(),
         copy=CopyParts("", "valid description", "valid cta"),  # empty headline
         affiliate_link="https://shopee.com.br/p/1",
     )
     with pytest.raises(ValidationError):
-        validate.validate_post(post, CFG, client=client_for(handler))
+        validate.validate_post(post, CFG, client=client_for(_sem_rede))
+
+
+def test_validate_post_so_a_imagem_usa_o_client():
+    chamadas = []
+
+    def handler(request):
+        chamadas.append(request.url.host)
+        return httpx.Response(200, headers={"content-type": "image/jpeg"},
+                              content=b"x" * 6000)
+
+    post = Post(offer=make_offer(), copy=CopyParts("h", "d", "c"),
+                affiliate_link="https://shope.ee/x")
+    validate.validate_post(post, CFG, client=client_for(handler))
+    assert chamadas == ["cf.shopee.com.br"]   # imagem sim, link de afiliado nunca
+
+
+def test_validate_post_skip_image_nao_toca_a_rede():
+    # Dry-run (A10): nada de rede além de fetch_offers/refresh_price.
+    post = Post(offer=make_offer(), copy=CopyParts("h", "d", "c"),
+                affiliate_link="https://shope.ee/x")
+    validate.validate_post(post, CFG, client=client_for(_sem_rede), skip_image=True)

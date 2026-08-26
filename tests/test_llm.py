@@ -44,3 +44,24 @@ def test_ask_json_cli_failure_returns_none(monkeypatch):
 def test_ask_json_cli_missing_returns_none(monkeypatch):
     monkeypatch.setattr(llm.shutil, "which", lambda _: None)
     assert llm.ask_json("x") is None
+
+
+def test_ask_json_conta_chamadas_e_falhas(monkeypatch):
+    # C4c: toda falha virava None em silêncio; o pipeline precisa saber quantas
+    # vezes caiu no fallback para avisar o ops.
+    llm.stats.reset()
+    monkeypatch.setattr(llm.shutil, "which", lambda _: "claude")
+    monkeypatch.setattr(llm.subprocess, "run", _fake_run('{"a": 1}'))
+    assert llm.ask_json("x") == {"a": 1}
+    assert (llm.stats.chamadas, llm.stats.falhas) == (1, 0)
+    monkeypatch.setattr(llm.subprocess, "run", _fake_run("erro", returncode=1))
+    assert llm.ask_json("x") is None
+    assert (llm.stats.chamadas, llm.stats.falhas) == (2, 1)
+    monkeypatch.setattr(llm.subprocess, "run", _fake_run("sem json nenhum"))
+    assert llm.ask_json("x") is None
+    assert (llm.stats.chamadas, llm.stats.falhas) == (3, 2)
+    monkeypatch.setattr(llm.shutil, "which", lambda _: None)
+    assert llm.ask_json("x") is None
+    assert (llm.stats.chamadas, llm.stats.falhas) == (4, 3)
+    llm.stats.reset()
+    assert (llm.stats.chamadas, llm.stats.falhas) == (0, 0)

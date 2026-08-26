@@ -1,8 +1,26 @@
 import json
 import shutil
 import subprocess
+from dataclasses import dataclass
 
 _JSON_DECODER = json.JSONDecoder()
+
+
+@dataclass
+class LlmStats:
+    """Contador de módulo (fase 5A, C4c): quantas chamadas o run fez e
+    quantas voltaram None (fallback de ranking/copy). O pipeline zera no
+    início e, se houve falha, avisa o ops — antes, LLM fora significava 100
+    posts com a MESMA headline e um resumo idêntico ao de um run saudável."""
+    chamadas: int = 0
+    falhas: int = 0
+
+    def reset(self) -> None:
+        self.chamadas = 0
+        self.falhas = 0
+
+
+stats = LlmStats()
 
 
 def parse_json_block(text: str):
@@ -17,7 +35,7 @@ def parse_json_block(text: str):
     return None
 
 
-def ask_json(prompt: str, model: str = "haiku", timeout: int = 120):
+def _ask(prompt: str, model: str, timeout: int):
     exe = shutil.which("claude")
     if not exe:
         return None
@@ -31,3 +49,14 @@ def ask_json(prompt: str, model: str = "haiku", timeout: int = 120):
     if proc.returncode != 0:
         return None
     return parse_json_block(proc.stdout or "")
+
+
+def ask_json(prompt: str, model: str = "haiku", timeout: int = 120):
+    """JSON da resposta do `claude -p`, ou None em qualquer falha (CLI
+    ausente, timeout, exit != 0, saída sem JSON). Cada chamada conta em
+    `stats`; cada None conta como falha."""
+    stats.chamadas += 1
+    result = _ask(prompt, model, timeout)
+    if result is None:
+        stats.falhas += 1
+    return result

@@ -21,7 +21,8 @@ def test_run_dry_invokes_pipeline(monkeypatch, tmp_path):
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado.update(dry_run=dry_run, n_sources=len(sources), n_channels=len(channels),
                        watchlist=watchlist)
         return pipeline.RunSummary()
@@ -45,7 +46,8 @@ def test_run_loads_watchlist_from_config_path(monkeypatch, tmp_path):
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["watchlist"] = watchlist
         return pipeline.RunSummary()
 
@@ -77,7 +79,8 @@ def test_run_builds_channels_from_config(monkeypatch, tmp_path, capsys):
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -118,7 +121,8 @@ def test_run_builds_channels_from_dict_config(monkeypatch, tmp_path, capsys):
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -150,7 +154,8 @@ def test_run_survives_load_watchlist_raising(monkeypatch, tmp_path):
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["watchlist"] = watchlist
         return pipeline.RunSummary()
 
@@ -176,7 +181,8 @@ def test_run_passes_brand_handle_to_channels(monkeypatch, tmp_path):
     cfg_file.write_text(cfg_text, encoding="utf-8")
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -201,7 +207,8 @@ def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
     cfg_file.write_text(cfg_text, encoding="utf-8")
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -255,7 +262,8 @@ def test_ops_summary_skipped_on_empty_run(monkeypatch, tmp_path):
     enviados = []
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         return pipeline.RunSummary()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -278,7 +286,8 @@ def test_ops_summary_sent_when_something_happened(monkeypatch, tmp_path):
     enviados = []
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         return pipeline.RunSummary(published=["x"])
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -302,7 +311,8 @@ def test_ops_summary_forced_by_config(monkeypatch, tmp_path):
     enviados = []
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         return pipeline.RunSummary()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -313,8 +323,67 @@ def test_ops_summary_forced_by_config(monkeypatch, tmp_path):
 def test_build_sources_defaults_to_shopee_only_when_key_absent(monkeypatch):
     monkeypatch.setenv("SHOPEE_APP_ID", "id")
     monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
-    sources = cli._build_sources({})
+    sources, avisos = cli._build_sources({})
     assert [s.name for s in sources] == ["shopee"]
+    assert avisos == []
+
+
+def test_build_sources_devolve_o_aviso_da_fonte_sem_env(monkeypatch, capsys):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.delenv("MELI_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MELI_CLIENT_SECRET", raising=False)
+    sources, avisos = cli._build_sources({"sources": {"shopee": True, "meli": True}})
+    assert [s.name for s in sources] == ["shopee"]
+    assert len(avisos) == 1 and avisos[0].startswith("⚠️") and "meli" in avisos[0]
+    assert avisos[0] in capsys.readouterr().out      # o print continua
+
+
+def test_build_channels_devolve_o_aviso_do_canal_sem_env(monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    for k in ("TELEGRAM_OPS_CHAT_ID", "IG_USER_ID", "IG_ACCESS_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    channels, avisos = cli._build_channels(
+        {"channels": {"telegram": True, "story_dispatch": True, "instagram_feed": True}})
+    assert [c.name for c in channels] == ["telegram"]
+    assert [a.split(" ")[2] for a in avisos] == ["story_dispatch", "instagram_feed"]
+    assert all(a.startswith("⚠️ canal") for a in avisos)
+    saida = capsys.readouterr().out
+    assert all(a in saida for a in avisos)
+
+
+def test_run_canal_ligado_sem_env_vira_aviso_no_resumo(monkeypatch, tmp_path):
+    # Teste obrigatório 5: o aviso chega ao pipeline (e dali ao chat de ops),
+    # não só ao journal.
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    monkeypatch.delenv("IG_USER_ID", raising=False)
+    monkeypatch.delenv("IG_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("MELI_CLIENT_ID", raising=False)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+               .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+               .replace("data/watchlist.json",
+                        str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_text += ("\nsources:\n  shopee: true\n  meli: true\n"
+                 "channels:\n  telegram: true\n  instagram_feed: true\n")
+    cfg_file.write_text(cfg_text, encoding="utf-8")
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        chamado["avisos"] = list(warnings_iniciais or [])
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    assert any("instagram_feed" in a for a in chamado["avisos"])
+    assert any("meli" in a for a in chamado["avisos"])
 
 
 def test_run_builds_meli_source_when_enabled_and_env_present(monkeypatch, tmp_path):
@@ -332,7 +401,8 @@ def test_run_builds_meli_source_when_enabled_and_env_present(monkeypatch, tmp_pa
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["sources"] = sources
         return pipeline.RunSummary()
 
@@ -357,7 +427,8 @@ def test_run_warns_and_skips_meli_without_env(monkeypatch, tmp_path, capsys):
 
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["sources"] = sources
         return pipeline.RunSummary()
 
@@ -383,7 +454,8 @@ def test_instagram_api_variant_from_config(monkeypatch, tmp_path):
     cfg_file = tmp_path / "config.yaml"; cfg_file.write_text(base + extra, encoding="utf-8")
     chamado = {}
 
-    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None):
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -403,7 +475,7 @@ def test_build_channels_passes_regua_from_config(monkeypatch):
         monkeypatch.setenv(k, v)
     cfg = {"channels": {"story_dispatch": True, "instagram_feed": True},
            "selection": {"min_real_discount_pct": 30, "seal_tolerance": 1.10}}
-    channels = {c.name: c for c in cli._build_channels(cfg)}
+    channels = {c.name: c for c in cli._build_channels(cfg)[0]}
     assert set(channels) == {"story_dispatch", "instagram_feed"}
     for canal in channels.values():
         assert canal.min_real_discount_pct == 30
@@ -421,6 +493,6 @@ def test_build_channels_regua_defaults_match_pricing_and_message(monkeypatch):
     from afiliado import message, pricing
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
-    (story,) = cli._build_channels({"channels": {"story_dispatch": True}})
+    (story,), _ = cli._build_channels({"channels": {"story_dispatch": True}})
     assert story.min_real_discount_pct == pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT
     assert story.seal_tolerance == message.DEFAULT_SEAL_TOLERANCE

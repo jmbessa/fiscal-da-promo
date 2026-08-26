@@ -32,32 +32,46 @@ def _shopee() -> ShopeeSource:
     return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"])
 
 
+MELI_ENV_AVISO = ("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
+                  "(ver docs/runbooks/meli-setup.md)")
+
+
 def _meli() -> MeliSource | None:
     client_id = _env("MELI_CLIENT_ID")
     client_secret = _env("MELI_CLIENT_SECRET")
     if not (client_id and client_secret):
-        print("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
-              "(ver docs/runbooks/meli-setup.md)")
         return None
     return MeliSource(client_id, client_secret, refresh_token=_env("MELI_REFRESH_TOKEN"))
 
 
-def _build_sources(cfg: dict) -> list:
-    """Monta as fontes habilitadas em `sources:` (config.yaml).
+def _aviso(avisos: list[str], texto: str) -> None:
+    """Aviso de montagem: vai ao stdout (journal) E à lista que o pipeline
+    injeta em `summary.warnings` — antes era só o print, e o chat de ops via
+    "✅ Run concluído" com o Instagram/ML mudos (C4b)."""
+    print(texto)
+    avisos.append(texto)
+
+
+def _build_sources(cfg: dict) -> tuple[list, list[str]]:
+    """Monta as fontes habilitadas em `sources:` (config.yaml) e devolve
+    também os avisos de montagem.
 
     Seção ausente equivale a `{"shopee": True}` (comportamento de antes da
     fase 3) — o Mercado Livre nasce desligado. Fonte ligada sem env
-    necessária: aviso no stdout e segue sem ela, nunca derruba o run (mesmo
-    padrão de `_build_channels`)."""
+    necessária: aviso (stdout + resumo de ops) e segue sem ela, nunca
+    derruba o run (mesmo padrão de `_build_channels`)."""
     src_cfg = cfg.get("sources") or {"shopee": True}
     sources: list = []
+    avisos: list[str] = []
     if src_cfg.get("shopee", True):
         sources.append(_shopee())
     if src_cfg.get("meli", False):
         meli = _meli()
-        if meli is not None:
+        if meli is None:
+            _aviso(avisos, MELI_ENV_AVISO)
+        else:
             sources.append(meli)
-    return sources
+    return sources, avisos
 
 
 def _env(name: str) -> str:
@@ -95,22 +109,24 @@ def _regua(cfg: dict) -> dict:
     }
 
 
-def _build_channels(cfg: dict) -> list:
-    """Monta os canais habilitados em config.yaml a partir das envs disponíveis.
+def _build_channels(cfg: dict) -> tuple[list, list[str]]:
+    """Monta os canais habilitados em config.yaml a partir das envs
+    disponíveis e devolve também os avisos de montagem.
 
     Seção `channels` ausente equivale a `{"telegram": True}` (comportamento da
     fase 1). Cada entrada aceita bool ou dict (`enabled`, `max_per_day` —
     fase 1.7); quando `max_per_day` está presente, vira atributo de instância
     no canal construído (`ch.max_per_day`), lido pelo pipeline via getattr.
-    Canal ligado sem env necessária: aviso no stdout e segue sem ele — nunca
-    derruba o run. Os canais que renderizam arte/legenda recebem a régua
-    (`_regua`) do config."""
+    Canal ligado sem env necessária: aviso (stdout + resumo de ops) e segue
+    sem ele — nunca derruba o run. Os canais que renderizam arte/legenda
+    recebem a régua (`_regua`) do config."""
     ch_cfg = cfg.get("channels") or {"telegram": True}
     brand_cfg = cfg.get("brand") or {}
     brand_handle = brand_cfg.get("handle") or None
     brand_name = brand_cfg.get("name") or "Fiscal da Promo"
     regua = _regua(cfg)
     channels: list = []
+    avisos: list[str] = []
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("telegram"))
     if enabled:
@@ -122,7 +138,8 @@ def _build_channels(cfg: dict) -> list:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
         else:
-            print("⚠️ canal telegram ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID ausente")
+            _aviso(avisos, "⚠️ canal telegram ignorado: variável "
+                           "TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID ausente")
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("story_dispatch"))
     if enabled:
@@ -135,7 +152,8 @@ def _build_channels(cfg: dict) -> list:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
         else:
-            print("⚠️ canal story_dispatch ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
+            _aviso(avisos, "⚠️ canal story_dispatch ignorado: variável "
+                           "TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("instagram_feed"))
     if enabled:
@@ -150,10 +168,10 @@ def _build_channels(cfg: dict) -> list:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
         else:
-            print("⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
-                  "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
+            _aviso(avisos, "⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
+                           "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
 
-    return channels
+    return channels, avisos
 
 
 def doctor(cfg: dict) -> int:
@@ -168,8 +186,10 @@ def doctor(cfg: dict) -> int:
 
     meli = _meli()  # reaproveita o helper de _build_sources: mesma leitura de
                     # env (_env, já com .strip()) e a mesma construção; sem
-                    # credenciais, _meli() já imprime o aviso e não falha o doctor.
-    if meli is not None:
+                    # credenciais, avisa e não falha o doctor.
+    if meli is None:
+        print(MELI_ENV_AVISO)
+    else:
         try:
             meli.ensure_token()  # só valida as credenciais OAuth
             offers = meli.fetch_offers(cfg)  # leitura local do pool, sem rede
@@ -262,10 +282,11 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(cfg)
 
     db = StateDB(cfg["state"]["path"], timezone=pipeline.schedule_settings(cfg)["timezone"])
-    sources = _build_sources(cfg)
+    sources, avisos = _build_sources(cfg)
     channels = []
     if not args.dry_run:
-        channels = _build_channels(cfg)
+        channels, avisos_canais = _build_channels(cfg)
+        avisos += avisos_canais
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
     try:
@@ -273,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         wl = None
     try:
-        summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl)
+        summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
+                               warnings_iniciais=avisos)
     except Exception as exc:
         if not args.dry_run and token and ops:
             send_text(token, ops, f"❌ Run abortado: {exc}")

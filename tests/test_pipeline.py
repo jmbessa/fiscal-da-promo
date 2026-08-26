@@ -622,6 +622,105 @@ def test_dry_run_nao_escreve_no_banco_nem_baixa_imagem(tmp_path, monkeypatch):
     db.close()
 
 
+# --- Fase 5A (M3): zero silencioso vira relatório ---------------------------
+
+def test_run_avisa_quando_o_filtro_zera_tudo(tmp_path, monkeypatch):
+    # Teste obrigatório 4: 50 buscadas → 0 candidatas → aviso com a contagem
+    # por portão (antes: run vazio, indistinguível de "tudo bem").
+    _congela(monkeypatch, 12, 0)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i), price_current_cents=999) for i in range(50)]
+    summary = pipeline.run(CFG, [FakeSource(offers)], [FakeChannel()], db,
+                           validator=no_network_validator)
+    aviso = next(w for w in summary.warnings if "0 candidatas" in w)
+    assert aviso == ("⚠️ 50 ofertas buscadas, 0 candidatas — dedupe: 0 · faixa de preço: 50 · "
+                     "acima da referência: 0 · sem dados: 0 · categoria: 0 · EV: 0")
+    assert summary.published == [] and summary.discarded == []
+    db.close()
+
+
+def test_run_nao_avisa_zero_candidatas_quando_ha_candidata(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    summary = pipeline.run(CFG, [FakeSource([make_offer()])], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert not any("candidatas" in w for w in summary.warnings)
+    db.close()
+
+
+def test_run_avisa_fonte_habilitada_com_zero_ofertas(tmp_path, monkeypatch):
+    # C4: o aviso de "0 buscadas" existia só para o meli; a Shopee vazia era
+    # um run vazio silencioso.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    summary = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert "⚠️ shopee: 0 ofertas buscadas" in summary.warnings
+    assert not any("candidatas" in w for w in summary.warnings)   # 0 buscadas ≠ filtro
+    db.close()
+
+
+def test_run_meli_zero_ofertas_traz_o_motivo_do_pool(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class MeliVencido(FakeSource):
+        name = "meli"
+        pool_warning = "pool vencido: gerado em 2026-07-01, validade 30d"
+
+    summary = pipeline.run(CFG, [MeliVencido([])], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert any(w.startswith("⚠️ meli: 0 ofertas buscadas") and "pool vencido" in w
+               for w in summary.warnings)
+    db.close()
+
+
+def test_run_warnings_iniciais_entram_no_resumo_uma_vez_por_dia(tmp_path, monkeypatch):
+    # Teste obrigatório 5: "canal ligado sem env" era só um print no journal.
+    _congela(monkeypatch, 12, 0)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    aviso = "⚠️ canal instagram_feed ignorado: IG_ACCESS_TOKEN ausente"
+    s1 = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db,
+                      validator=no_network_validator, warnings_iniciais=[aviso])
+    s2 = pipeline.run(CFG, [FakeSource([])], [FakeChannel()], db,
+                      validator=no_network_validator, warnings_iniciais=[aviso])
+    assert aviso in s1.warnings
+    assert aviso not in s2.warnings
+    db.close()
+
+
+def test_run_avisa_llm_indisponivel(tmp_path, monkeypatch):
+    # C4c: LLM fora → 100 posts com a MESMA headline, e o resumo dizia
+    # "✅ Publicados (1)" igual a um run saudável.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)   # ninguém conta
+    db = StateDB(tmp_path / "s.db")
+
+    def caiu(*a, **k):
+        llm.stats.chamadas += 1
+        llm.stats.falhas += 1
+        return None
+
+    monkeypatch.setattr(llm, "ask_json", caiu)
+    llm.stats.chamadas, llm.stats.falhas = 99, 99      # lixo de outro run: é zerado
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id=str(i)) for i in range(3)])],
+                           [FakeChannel()], db, validator=no_network_validator)
+    # 1 ranking + 2 tentativas de copy × 2 ofertas publicadas = 5
+    assert "ℹ️ LLM indisponível em 5 de 5 chamadas — ranking/copy de fallback" in summary.warnings
+    assert len(summary.published) == 2
+    db.close()
+
+
+def test_run_nao_avisa_llm_quando_nao_houve_falha(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    summary = pipeline.run(CFG, [FakeSource([make_offer()])], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert not any("LLM" in w for w in summary.warnings)
+    db.close()
+
+
 def test_run_config_zero_chega_ao_build_message(tmp_path, monkeypatch):
     # A11: `min_real_discount_pct: 0` / `seal_tolerance: 0` no config eram
     # trocados pelo default antes de chegar ao texto do post.

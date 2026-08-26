@@ -33,6 +33,44 @@ def test_filter_offers(tmp_path):
     db.close()
 
 
+def test_filter_offers_with_stats_conta_por_portao(tmp_path):
+    # C4a: seis `continue` sem contador — 50 ofertas entravam, 0 sobravam e
+    # ninguém sabia por quê. Cada portão conta o que descartou.
+    db = StateDB(tmp_path / "s.db")
+    db.record_post(make_post(item_id="dup"), channel="telegram", message_id="1")
+    cfg = {**CFG, "selection": {**CFG["selection"], "category_ids": ["100636"],
+                                "require_price_ref": True, "min_ev_brl": 2.0}}
+    offers = [
+        make_offer(item_id="ok", category="100636", price_ref_cents=30000),
+        make_offer(item_id="semtitulo", title="", category="100636"),
+        make_offer(item_id="semimg", image_url="", category="100636"),
+        make_offer(item_id="cat", category="999"),
+        make_offer(item_id="caro", category="100636", price_ref_cents=2600,
+                   price_current_cents=3390),
+        make_offer(item_id="semref", category="100636"),
+        make_offer(item_id="faixa", category="100636", price_ref_cents=1000,
+                   price_current_cents=999),
+        make_offer(item_id="dup", category="100636", price_ref_cents=30000),
+        make_offer(item_id="ev", category="100636", price_ref_cents=30000,
+                   commission_pct=0.1),
+    ]
+    result, stats = selection.filter_offers_with_stats(offers, db, cfg)
+    assert [o.item_id for o in result] == ["ok"]
+    assert stats == selection.FilterStats(sem_dados=2, categoria=1, acima_ref=1, sem_ref=1,
+                                          faixa_preco=1, dedupe=1, ev=1)
+    assert stats.total == 8
+    assert stats.resumo() == ("dedupe: 1 · faixa de preço: 1 · acima da referência: 1 · "
+                              "sem dados: 2 · categoria: 1 · EV: 1 · sem referência: 1")
+    assert selection.filter_offers(offers, db, cfg) == result   # wrapper antigo
+    db.close()
+
+
+def test_filter_stats_resumo_omite_sem_referencia_quando_zero():
+    stats = selection.FilterStats(dedupe=3, faixa_preco=2)
+    assert stats.resumo() == ("dedupe: 3 · faixa de preço: 2 · acima da referência: 0 · "
+                              "sem dados: 0 · categoria: 0 · EV: 0")
+
+
 def test_filter_offers_publica_sem_desconto(tmp_path):
     # Decisão de volume máximo: o desconto do vendedor NÃO é mais portão. Uma
     # oferta sem desconto nenhum (o caso de toda oferta do ML, que nasce com

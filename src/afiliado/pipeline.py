@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 
-from afiliado import copywriter, message, pricing, selection, state, validate
+from afiliado import copywriter, llm, message, pricing, selection, state, validate
 from afiliado.channels.base import Channel
 from afiliado.models import Post
 from afiliado.sources.base import Source
@@ -82,7 +82,11 @@ class _Warner:
         return True
 
 
-def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict) -> RunSummary:
+def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict,
+            warn: "_Warner") -> RunSummary:
+    if llm.stats.falhas:
+        warn(f"ℹ️ LLM indisponível em {llm.stats.falhas} de {llm.stats.chamadas} chamadas"
+             " — ranking/copy de fallback")
     if not dry_run:
         db.record_run(len(summary.published), len(summary.discarded),
                       ref_window_days=int(pricing.setting(
@@ -91,7 +95,8 @@ def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict) -> RunSu
 
 
 def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
-        dry_run: bool = False, validator=None, watchlist: Watchlist | None = None) -> RunSummary:
+        dry_run: bool = False, validator=None, watchlist: Watchlist | None = None,
+        warnings_iniciais: list[str] | None = None) -> RunSummary:
     if validator is None:
         # Dry-run (A10): nada de rede além de fetch_offers/refresh_price —
         # a imagem não é baixada (o link já é checado offline, C6).
@@ -100,6 +105,12 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     summary = RunSummary()
     warn = _Warner(db, summary, dry_run)
     sel = cfg["selection"]
+    llm.stats.reset()
+
+    # Avisos de quem montou fontes/canais (ex.: canal ligado sem env) — antes
+    # eram só um print no journal e o chat de ops via "✅ Run concluído".
+    for aviso in warnings_iniciais or []:
+        warn(aviso)
 
     if watchlist is None:
         warn("ℹ️ Sem watchlist — ranking sem boosts")
@@ -108,19 +119,19 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         watchlist = None
 
     offers = []
-    meli_offer_count = None
-    meli_pool_warning = None
     for src in sources:
         src_offers = src.fetch_offers(cfg)  # SourceError propaga: aborta o run
-        if src.name == "meli":
-            meli_offer_count = len(src_offers)
-            meli_pool_warning = getattr(src, "pool_warning", None)
+        pool_warning = getattr(src, "pool_warning", None) if src.name == "meli" else None
+        if not src_offers:
+            # Fonte HABILITADA devolvendo zero é evento, não silêncio (C4).
+            if src.name == "meli":
+                warn("⚠️ meli: 0 ofertas buscadas — "
+                     + (pool_warning or "pool vazio ou vencido — rode /meli-links-refresh"))
+            else:
+                warn(f"⚠️ {src.name}: 0 ofertas buscadas")
+        elif pool_warning:
+            warn(f"ℹ️ meli: {pool_warning}")
         offers.extend(src_offers)
-
-    if meli_offer_count == 0:
-        warn("ℹ️ meli: pool vazio ou vencido — rode /meli-links-refresh")
-    elif meli_pool_warning:
-        warn(f"ℹ️ meli: {meli_pool_warning}")
 
     # A observação de hoje entra no histórico ANTES de a mediana ser lida.
     # Dry-run não escreve no banco (A10).
@@ -158,13 +169,16 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     if not dry_run:
         if not channels:
             warn("⚠️ nenhum canal disponível — nada a publicar")
-            return _finish(summary, db, dry_run, sel)
+            return _finish(summary, db, dry_run, sel, warn)
         if not any(aberto(ch) for ch in channels):
             warn("ℹ️ teto diário atingido em todos os canais")
-            return _finish(summary, db, dry_run, sel)
+            return _finish(summary, db, dry_run, sel, warn)
 
     offers = pricing.enrich_offers(offers, db, watchlist, cfg)
-    candidates = selection.filter_offers(offers, db, cfg)
+    candidates, cortes = selection.filter_offers_with_stats(offers, db, cfg)
+    if offers and not candidates:
+        # O quinto zero silencioso (C4a): N entraram, 0 sobraram, e por quê.
+        warn(f"⚠️ {len(offers)} ofertas buscadas, 0 candidatas — {cortes.resumo()}")
     ranked = selection.rank_offers(candidates, db.recent_titles(), cfg, watchlist)
     reserva = [o for o in selection.order_by_ev(candidates, cfg, watchlist) if o not in ranked]
     fila = ranked + reserva
@@ -234,4 +248,4 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if ch.name in tetos_atingidos:
             warn(f"ℹ️ {ch.name}: teto diário ({getattr(ch, 'max_per_day', None)}) atingido")
 
-    return _finish(summary, db, dry_run, sel)
+    return _finish(summary, db, dry_run, sel, warn)

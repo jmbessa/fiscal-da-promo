@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 
 from afiliado import llm
 from afiliado.models import Offer
@@ -6,6 +7,33 @@ from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
 
 MAX_CANDIDATES_FOR_PROMPT = 30
+
+
+@dataclass(frozen=True)
+class FilterStats:
+    """Quantas ofertas cada portão de `filter_offers` descartou (fase 5A,
+    C4a). Sem isto, "50 buscadas → 0 candidatas" era um run vazio,
+    indistinguível de "tudo bem"."""
+    sem_dados: int = 0      # sem título, imagem ou URL
+    categoria: int = 0      # fora do allowlist da fonte
+    acima_ref: int = 0      # mais caro que a referência × max_above_ref
+    sem_ref: int = 0        # require_price_ref e referência desconhecida
+    faixa_preco: int = 0    # fora de price_min_brl..price_max_brl
+    dedupe: int = 0         # publicado há menos de dedupe_days
+    ev: int = 0             # abaixo de min_ev_brl
+
+    @property
+    def total(self) -> int:
+        return (self.sem_dados + self.categoria + self.acima_ref + self.sem_ref
+                + self.faixa_preco + self.dedupe + self.ev)
+
+    def resumo(self) -> str:
+        texto = (f"dedupe: {self.dedupe} · faixa de preço: {self.faixa_preco} · "
+                 f"acima da referência: {self.acima_ref} · sem dados: {self.sem_dados} · "
+                 f"categoria: {self.categoria} · EV: {self.ev}")
+        if self.sem_ref:
+            texto += f" · sem referência: {self.sem_ref}"
+        return texto
 
 
 def _allowed_categories(cfg: dict, source: str) -> set[str]:
@@ -19,34 +47,54 @@ def _allowed_categories(cfg: dict, source: str) -> set[str]:
     return {str(c) for c in raw}
 
 
-def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
+def filter_offers_with_stats(offers: list[Offer], db: StateDB,
+                             cfg: dict) -> tuple[list[Offer], FilterStats]:
+    """Portões por regra (sem LLM) e a contagem do que cada um descartou."""
     sel = cfg["selection"]
     cats_by_source: dict[str, set[str]] = {}
+    cortes: dict[str, int] = {}
+
+    def corta(portao: str) -> None:
+        cortes[portao] = cortes.get(portao, 0) + 1
+
     result = []
     for o in offers:
         if not (o.title and o.image_url and o.product_url):
+            corta("sem_dados")
             continue
         allowed_cats = cats_by_source.setdefault(o.source, _allowed_categories(cfg, o.source))
         if allowed_cats and o.category not in allowed_cats:
+            corta("categoria")
             continue
         # Régua honesta: o desconto não decide SE publicamos (isso mataria o
         # volume e o ML inteiro) — decide só o que o post ALEGA. O único corte
         # de preço é não anunciar algo mais caro que o típico.
         if o.price_ref_cents > 0 and (
                 o.price_current_cents > o.price_ref_cents * float(sel["max_above_ref"])):
+            corta("acima_ref")
             continue
         if sel.get("require_price_ref") and o.price_ref_cents <= 0:
+            corta("sem_ref")
             continue
         preco_brl = o.price_current_cents / 100
         if not sel["price_min_brl"] <= preco_brl <= sel["price_max_brl"]:
+            corta("faixa_preco")
             continue
         if db.was_posted_recently(o.source, o.item_id, sel["dedupe_days"]):
+            corta("dedupe")
             continue
         result.append(o)
     piso = float(sel.get("min_ev_brl") or 0)
     if piso > 0:
-        result = [o for o in result if ev_score(o, cfg) >= piso]
-    return result
+        acima_do_piso = [o for o in result if ev_score(o, cfg) >= piso]
+        cortes["ev"] = len(result) - len(acima_do_piso)
+        result = acima_do_piso
+    return result, FilterStats(**cortes)
+
+
+def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
+    """Assinatura antiga: só a lista. O pipeline usa `filter_offers_with_stats`."""
+    return filter_offers_with_stats(offers, db, cfg)[0]
 
 
 def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> float:

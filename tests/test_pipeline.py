@@ -1123,3 +1123,107 @@ def test_run_expoe_o_aviso_do_pool_do_meli(tmp_path, monkeypatch):
                            [FakeChannel()], db, validator=no_network_validator)
     assert any("entrada(s) do pool ignorada(s)" in w for w in summary.warnings)
     db.close()
+
+
+# =============================================================================
+# Fase 5C (M1/C1) — estoque de candidatas: descoberta desacoplada da publicação
+# =============================================================================
+
+CFG_ESTOQUE = {**CFG, "shopee": {"candidate_max_age_days": 3}}
+
+
+class FatiaDeDescoberta(FakeSource):
+    """Fonte que devolve uma fatia diferente a cada run, como a varredura
+    rotativa da Shopee."""
+
+    def __init__(self, fatias):
+        self._fatias = list(fatias)
+        self.discovery_stats = pipeline_stats(0, 0, 0)
+
+    def fetch_offers(self, cfg):
+        lote = self._fatias.pop(0) if self._fatias else []
+        self.discovery_stats = pipeline_stats(8, len(lote) * 2, len(lote))
+        return lote
+
+
+def pipeline_stats(calls, nodes, eligible):
+    from afiliado.sources.shopee import DiscoveryStats
+    return DiscoveryStats(calls, nodes, eligible)
+
+
+def test_a_candidata_de_um_run_anterior_continua_publicavel(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta([[make_offer(item_id="a")], [make_offer(item_id="b")]])
+    cfg = {**CFG_ESTOQUE, "selection": {**CFG["selection"], "posts_per_run": 1}}
+    ch = FakeChannel()
+    pipeline.run(cfg, [fonte], [ch], db, validator=no_network_validator)
+    assert [p.offer.item_id for p in ch.sent] == ["a"]
+    # 2º run: a fatia só traz "b", mas "a" segue no estoque — e o dedupe é que
+    # decide, não o esquecimento.
+    pipeline.run(cfg, [fonte], [ch], db, validator=no_network_validator)
+    assert [p.offer.item_id for p in ch.sent] == ["a", "b"]
+    assert {o.item_id for o in db.load_candidates("shopee", 3)} == {"a", "b"}
+    db.close()
+
+
+def test_resumo_registra_a_fatia_de_descoberta(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta([[make_offer(item_id=str(i)) for i in range(3)]])
+    summary = pipeline.run(CFG_ESTOQUE, [fonte], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert summary.discovery == [
+        "🔎 shopee: 8 chamadas · 6 nós · 3 elegíveis · 3 novos no estoque (3 no total)"]
+    assert "🔎 shopee: 8 chamadas" in summary.text()
+    db.close()
+
+
+def test_o_preco_de_uma_candidata_do_estoque_nao_vira_observacao_de_hoje(tmp_path, monkeypatch):
+    """Só a fatia RECÉM buscada entra no price_log: gravar o preço de uma
+    candidata de 3 dias atrás como "hoje" inventaria uma observação."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    velha = make_offer(item_id="velha", price_current_cents=5000)
+    db.upsert_candidates([velha])
+    fonte = FatiaDeDescoberta([[make_offer(item_id="nova", price_current_cents=7000)]])
+    pipeline.run(CFG_ESTOQUE, [fonte], [], db, dry_run=False,
+                 validator=no_network_validator)
+    assert db.price_history("shopee", "nova", 1) == [7000]
+    assert db.price_history("shopee", "velha", 1) == []
+    db.close()
+
+
+def test_dry_run_nao_grava_o_estoque(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta([[make_offer(item_id="a")]])
+    pipeline.run(CFG_ESTOQUE, [fonte], [], db, dry_run=True,
+                 validator=no_network_validator)
+    assert db.load_candidates("shopee", 3) == []
+    db.close()
+
+
+def test_fonte_sem_candidate_max_age_days_nao_usa_estoque(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta([[make_offer(item_id="a")], []])
+    ch = FakeChannel()
+    pipeline.run(CFG, [fonte], [ch], db, validator=no_network_validator)   # sem shopee:
+    pipeline.run(CFG, [fonte], [ch], db, validator=no_network_validator)
+    assert db.conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 0
+    assert [p.offer.item_id for p in ch.sent] == ["a"]
+    db.close()
+
+
+def test_candidata_vencida_sai_do_estoque(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 12, 0, dia=20)
+    db.upsert_candidates([make_offer(item_id="velha")])
+    _congela(monkeypatch, 12, 0, dia=26)
+    fonte = FatiaDeDescoberta([[make_offer(item_id="nova")]])
+    pipeline.run(CFG_ESTOQUE, [fonte], [], db, validator=no_network_validator)
+    assert [o.item_id for o in db.load_candidates("shopee", 3)] == ["nova"]
+    assert db.conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 1
+    db.close()

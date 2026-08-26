@@ -68,15 +68,53 @@ sources:
   shopee: true
   meli: false
 
+# Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26
+# contra a API real (147 chamadas; docs/superpowers/reviews/2026-08-26-descoberta-shopee.md).
+# O que ela mostrou: cada (categoria, sortType) é uma janela de 40 páginas × 50
+# = 2.000 itens (`hasNextPage: false` na p40), 54,6% dos itens das raízes são
+# elegíveis (≈ 5.460/mês, único motivo de corte: preço < R$ 20) e a p1 muda
+# 1-2 itens em 50 a cada ~9 h. Ou seja: reler as mesmas 2 páginas a cada 5 min
+# dava 244 itens únicos/mês (8 posts/dia a dedupe 30); ler UMA FATIA por run e
+# acumular num estoque dá 60/dia com margem de 3x, sem afrouxar o dedupe.
 shopee:
-  sort_types: [2]           # a API praticamente ignora a ordenação; 2 = mais vendidos
-  list_type: 0
-  pages: 2
-  page_size: 50
+  sort_types: [2]           # 1 e 6 = mesmo conjunto; 3/4 = 0 elegíveis; 5 = 72% sem venda
+  list_type: 0              # 1 e 2 = mesmo conjunto que 0; 3/4 exigem matchId
+  page_size: 50             # máximo aceito pela API (limit=100 → erro 11001)
+  pages: 40                 # janela real por listagem; o cursor volta à p1 no fim
+  calls_per_run: 8          # 5 raízes + 2 subcategorias + 1 keyword ≈ 1.500 chamadas/dia
+  candidate_max_age_days: 3 # por quantos dias a candidata descoberta segue na fila
   # Buscar POR categoria muda tudo: sem isso a API devolve majoritariamente a
   # categoria 100644 (fora da nossa lista). Medido em 2026-08-25: desconto médio
   # sobe de 19% para ~47% e a mediana de vendas de 282 para milhares.
+  # Uma página de raiz por run, por categoria: as 5 janelas inteiras a cada 40
+  # runs (~3h20).
   category_ids: ["100630", "100636", "100001", "100637", "100632"]
+  # Subcategorias de nível 2: cada uma tem a SUA janela de 2.000, disjunta da
+  # raiz nas páginas fundas (300/300 itens inéditos nas p10/p40 de 5 delas) —
+  # mas a p1 é quase o topo da raiz (0-1 inédito em 50), por isso a rotação
+  # começa na p2. As IDs são as que têm >= 25 itens no top-500 da própria raiz.
+  subcategories_per_run: 2
+  subcategory_first_page: 2
+  subcategory_ids: [
+    100663, 100659, 100662, 100664, 100658, 102002,                    # Beleza
+    100716, 100717, 100711, 100715, 100710, 100709, 100721, 100718,    # Casa
+    100018, 100002, 100019,                                            # Saúde
+    100727, 100725, 100726, 100728,                                    # Esportes
+    100684, 100678, 100675, 100679, 100683,                            # Mãe e Bebê
+  ]
+  # 40 termos × páginas 1-2 = 80 fatias, 1 por run. `keyword` funciona junto com
+  # `productCatId` mas NÃO é filtro estrito (8% dos nós vêm de outra categoria):
+  # quem descarta é o allowlist de selection.category_ids. Cada lista está
+  # ordenada por elegíveis inéditos medidos; os últimos de cada linha renderam
+  # 0-14 e são os primeiros a sair se a cota de chamadas apertar.
+  keywords_per_run: 1
+  keyword_pages: 2
+  keywords:
+    "100001": [creatina, whey, colágeno, massageador, vitamina, balança, termômetro, escova dental]
+    "100630": [sérum, protetor solar, shampoo, perfume, depilador, batom, hidratante, maquiagem]
+    "100636": [lixeira, panela, protetor colchão, mop, lençol, cortina, travesseiro, organizador]
+    "100637": [halteres, legging, guarda chuva, camisa térmica, tênis, conjunto fitness, bicicleta, dry fit]
+    "100632": [patinete, mamadeira, carrinho bebê, toalha umedecida, lençol berço, mordedor, brinquedo sensorial, fralda]
 
 # Fase 3B: descoberta no Mercado Livre lê um pool curado (offers_path) em vez
 # de buscar ao vivo — /sites/MLB/search e /items/{id} devolvem 403 na API real

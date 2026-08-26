@@ -29,8 +29,10 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _shopee() -> ShopeeSource:
-    return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"])
+def _shopee(db: StateDB | None = None) -> ShopeeSource:
+    """`db` é o cursor da varredura rotativa (fase 5C, M1): sem ele a rotação
+    existe dentro do run mas não sobrevive ao processo — é o caso do `doctor`."""
+    return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"], db=db)
 
 
 MELI_ENV_AVISO = ("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
@@ -53,7 +55,7 @@ def _aviso(avisos: list[str], texto: str) -> None:
     avisos.append(texto)
 
 
-def _build_sources(cfg: dict) -> tuple[list, list[str]]:
+def _build_sources(cfg: dict, db: StateDB | None = None) -> tuple[list, list[str]]:
     """Monta as fontes habilitadas em `sources:` (config.yaml) e devolve
     também os avisos de montagem.
 
@@ -65,7 +67,7 @@ def _build_sources(cfg: dict) -> tuple[list, list[str]]:
     sources: list = []
     avisos: list[str] = []
     if src_cfg.get("shopee", True):
-        sources.append(_shopee())
+        sources.append(_shopee(db))
     if src_cfg.get("meli", False):
         meli = _meli()
         if meli is None:
@@ -162,7 +164,10 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
 def doctor(cfg: dict) -> int:
     ok = True
     try:
-        offers = _shopee().fetch_offers({**cfg, "shopee": {**cfg["shopee"], "pages": 1}})
+        # Uma chamada só (a p1 de uma raiz): o doctor confere credencial e
+        # parsing, não faz varredura — e sem StateDB não mexe no cursor do run.
+        offers = _shopee().fetch_offers(
+            {**cfg, "shopee": {**cfg["shopee"], "calls_per_run": 1, "pages": 1}})
         print(f"✅ Shopee: {len(offers)} ofertas; primeira: "
               f"{offers[0] if offers else '(vazio — confira sort_types/list_type)'}")
     except Exception as exc:
@@ -295,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(cfg)
 
     db = StateDB(cfg["state"]["path"], timezone=pipeline.schedule_settings(cfg)["timezone"])
-    sources, avisos = _build_sources(cfg)
+    sources, avisos = _build_sources(cfg, db)
     channels = []
     if not args.dry_run:
         channels, avisos_canais = _build_channels(cfg)

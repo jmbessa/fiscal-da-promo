@@ -44,6 +44,10 @@ class RunSummary:
     published: list[str] = field(default_factory=list)
     discarded: list[tuple[str, str]] = field(default_factory=list)   # (rótulo, motivo)
     warnings: list[str] = field(default_factory=list)
+    # Fase 5C (M1): o que a fatia de descoberta deste run custou e rendeu.
+    # NÃO é aviso (não passa pelo warn_once — cada run tem números próprios) e
+    # NÃO faz o run notificar sozinho: só acompanha um resumo que já ia sair.
+    discovery: list[str] = field(default_factory=list)
 
     def _linhas_de_descarte(self) -> list[str]:
         grupos: dict[str, list[tuple[str, str]]] = {}
@@ -62,6 +66,7 @@ class RunSummary:
         linhas += [f"• {p}" for p in self.published] or ["• (nenhum)"]
         linhas.append(f"Descartados ({len(self.discarded)}):")
         linhas += self._linhas_de_descarte() or ["• (nenhum)"]
+        linhas += self.discovery
         if self.warnings:
             linhas.append("Avisos:")
             linhas += [f"• {w}" for w in self.warnings]
@@ -127,6 +132,59 @@ class _Warner:
         return True
 
 
+def candidate_max_age_days(cfg: dict, source: str) -> int:
+    """`<fonte>.candidate_max_age_days` do config: por quantos dias uma
+    candidata descoberta continua elegível. 0/ausente = a fonte não usa o
+    estoque (o pool do ML, por exemplo, já é relido inteiro a cada run)."""
+    secao = cfg.get(source)
+    if not isinstance(secao, dict):
+        return 0
+    try:
+        return max(0, int(secao.get("candidate_max_age_days") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
+                       frescas: dict[str, list], summary: RunSummary,
+                       dry_run: bool) -> list:
+    """Candidatas do run = ESTOQUE persistido ∪ a fatia recém descoberta
+    (fase 5C, C1).
+
+    Antes, cada run ranqueava só o que tinha acabado de ver — e via sempre as
+    mesmas duas páginas. Agora a descoberta é rotativa (uma fatia por run) e o
+    estoque acumula o que as fatias anteriores acharam; dedupe, filtros e
+    ranking rodam sobre a união. A fatia de hoje SOBRESCREVE o que o estoque
+    tinha do mesmo item: o preço mais novo vence."""
+    resultado: dict[tuple[str, str], object] = {}
+    for src in sources:
+        lote = frescas.get(src.name)
+        if lote is None:                       # fonte que falhou: nada a somar
+            continue
+        idade = candidate_max_age_days(cfg, src.name)
+        if idade <= 0:
+            for o in lote:
+                resultado[(o.source, o.item_id)] = o
+            continue
+        estoque = db.load_candidates(src.name, idade)
+        conhecidos = {o.item_id for o in estoque}
+        novos = len({o.item_id for o in lote} - conhecidos)
+        for o in estoque:
+            resultado[(o.source, o.item_id)] = o
+        for o in lote:
+            resultado[(o.source, o.item_id)] = o
+        if not dry_run:
+            db.upsert_candidates(lote)
+            db.prune_candidates(idade, source=src.name)
+        stats = getattr(src, "discovery_stats", None)
+        if stats is not None:
+            summary.discovery.append(
+                f"🔎 {src.name}: {stats.calls} chamadas · {stats.nodes} nós · "
+                f"{stats.eligible} elegíveis · {novos} novos no estoque "
+                f"({len(conhecidos | {o.item_id for o in lote})} no total)")
+    return list(resultado.values())
+
+
 def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict,
             warn: "_Warner") -> RunSummary:
     if llm.stats.falhas:
@@ -174,7 +232,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         warn(f"⚠️ Watchlist vencida há {watchlist.days_old()} dias — rode /watchlist-refresh")
         watchlist = watchlist.facts_only()
 
-    offers = []
+    frescas: dict[str, list] = {}
     erros_de_fonte: list[str] = []
     for src in sources:
         # Cada fonte isolada (A4): a Shopee em 5xx não derruba mais o ML.
@@ -184,6 +242,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             erros_de_fonte.append(f"{src.name}: {exc}")
             warn(f"⚠️ fonte {src.name} falhou: {exc}")
             continue
+        frescas[src.name] = src_offers
         pool_warning = getattr(src, "pool_warning", None) if src.name == "meli" else None
         if not src_offers:
             # Fonte HABILITADA devolvendo zero é evento, não silêncio (C4).
@@ -194,7 +253,6 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                 warn(f"⚠️ {src.name}: 0 ofertas buscadas")
         elif pool_warning:
             warn(f"ℹ️ meli: {pool_warning}")
-        offers.extend(src_offers)
 
     if sources and len(erros_de_fonte) == len(sources):
         # Só aqui o run aborta — e mesmo assim o resumo vai ao ops, via cli,
@@ -202,15 +260,19 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         raise RunAborted(summary, "todas as fontes falharam — " + "; ".join(erros_de_fonte))
 
     # A observação de hoje entra no histórico ANTES de a mediana ser lida —
-    # para as fontes cujo preço de descoberta É uma observação (Shopee). O
-    # ML chega com a mediana do pool como preço "atual": não é observação;
-    # o que entra no price_log dele é o preço vivo, logo após o refresh
-    # (C7c). Dry-run não escreve no banco (A10).
+    # para as fontes cujo preço de descoberta É uma observação (Shopee), e só
+    # para a fatia RECÉM buscada: o preço de uma candidata que veio do estoque
+    # tem até `candidate_max_age_days` dias e gravá-lo como "hoje" inventaria
+    # observação. O ML chega com a mediana do pool como preço "atual": não é
+    # observação; o que entra no price_log dele é o preço vivo, logo após o
+    # refresh (C7c). Dry-run não escreve no banco (A10).
     by_name = {s.name: s for s in sources}
     if not dry_run:
         pricing.record_observations(db, [
-            o for o in offers
-            if getattr(by_name.get(o.source), "observes_price_on_discovery", True)])
+            o for nome, lote in frescas.items() for o in lote
+            if getattr(by_name.get(nome), "observes_price_on_discovery", True)])
+
+    offers = _candidatas_do_run(cfg, db, sources, frescas, summary, dry_run)
 
     # -- Fase 5A (C2/C3): há canal aberto para publicar? -----------------------
     # Orçamento por canal = teto diário distribuído pela janela (ritmo).

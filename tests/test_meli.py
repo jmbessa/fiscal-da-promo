@@ -26,11 +26,22 @@ def _authed_handler(request: httpx.Request) -> httpx.Response:
 
 
 def write_pool(path, offers, generated_at=None, valid_days=30):
+    """`price_historic_min_cents` é obrigatório em cada entrada (fase 4: sem
+    ele a entrada é pulada). Para não repetir a chave nos testes que não se
+    importam com o piso, o padrão aqui é o próprio price_ref_cents; passe a
+    chave explicitamente (inclusive ausente/inválida) para exercitar a
+    rejeição."""
     generated_at = generated_at or date.today()
+    entradas = []
+    for offer in offers:
+        item = dict(offer)
+        if "price_ref_cents" in item:
+            item.setdefault("price_historic_min_cents", item["price_ref_cents"])
+        entradas.append(item)
     path.write_text(json.dumps({
         "generated_at": generated_at.isoformat(),
         "valid_days": valid_days,
-        "offers": offers,
+        "offers": entradas,
     }), encoding="utf-8")
     return path
 
@@ -159,6 +170,9 @@ def test_fetch_offers_le_pool_e_mapeia_campos(tmp_path):
     assert o.category == "MLB264586"
     assert o.price_current_cents == 6890
     assert o.price_original_cents == 6890  # sem desconto inflado (ver Mudança 3)
+    assert o.price_ref_cents == 6890       # a NOSSA referência vem do pool curado
+    assert o.price_floor_cents == 4792     # mínima histórica -> selo de menor preço
+    assert o.real_discount_pct == 0        # no preço típico: nada a alegar
     assert o.sales == 13337
     assert o.rating == 4.8
     assert o.commission_pct == 4.0
@@ -302,12 +316,15 @@ def test_refresh_price_sem_preco_novo_levanta_source_error(tmp_path):
         src.refresh_price(offer)
 
 
-def test_refresh_price_acima_da_minima_historica_levanta_source_error(tmp_path):
+def test_refresh_price_nao_tem_mais_teto_proprio(tmp_path):
+    # Fase 4: o teto do ML (max_above_historic_min) saiu — era ele que segurava
+    # o volume do ML em ~11 de 38. Quem decide publicabilidade agora é
+    # selection.max_above_ref + validate.check_price, igual para as duas lojas.
     def handler(request: httpx.Request):
         if request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
         if request.url.path.endswith("/items"):
-            # piso é 4792; 4792 * 1.10 = 5271.2 -> 6890 estoura o teto
+            # piso 4792; antes 68.90 estourava o teto de 1.10 e virava SourceError
             return httpx.Response(200, json={"results": [
                 {"item_id": "A", "price": 68.90, "condition": "new"},
             ]})
@@ -315,95 +332,69 @@ def test_refresh_price_acima_da_minima_historica_levanta_source_error(tmp_path):
 
     src, offer = _make_offer_from_pool(
         tmp_path, price_ref_cents=6890, price_historic_min_cents=4792, handler=handler)
-    with pytest.raises(SourceError, match="acima da mínima histórica"):
-        src.refresh_price(offer)
-
-
-def test_refresh_price_dentro_do_teto_customizado(tmp_path):
-    def handler(request: httpx.Request):
-        if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path.endswith("/items"):
-            return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 68.90, "condition": "new"},
-            ]})
-        raise AssertionError(f"caminho inesperado: {request.url.path}")
-
-    pool_path = tmp_path / "meli_offers.json"
-    write_pool(pool_path, [
-        {"product_id": "MLB1", "title": "X", "price_ref_cents": 6890,
-         "price_historic_min_cents": 4792},
-    ])
-    src = source_with(handler, tmp_path)
-    # max_above_historic_min bem folgado -> 68.90 passa
-    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path),
-                                        "max_above_historic_min": 2.0}})
-    updated = src.refresh_price(offers[0])
+    updated = src.refresh_price(offer)
     assert updated.price_current_cents == 6890
 
 
-def test_refresh_price_original_cents_mantem_maior_que_o_vivo(tmp_path):
+def test_refresh_price_so_atualiza_o_preco_atual(tmp_path):
     def handler(request: httpx.Request):
         if request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
         if request.url.path.endswith("/items"):
-            # preço ao vivo caiu para 59.90, abaixo do price_ref_cents (68.90)
             return httpx.Response(200, json={"results": [
                 {"item_id": "A", "price": 59.90, "condition": "new"},
             ]})
         raise AssertionError(f"caminho inesperado: {request.url.path}")
 
-    pool_path = tmp_path / "meli_offers.json"
-    write_pool(pool_path, [
-        {"product_id": "MLB18725310", "title": "Creatina 1kg", "price_ref_cents": 6890},
-    ])  # sem price_historic_min_cents: sem piso, sem filtro (testado à parte)
-    src = source_with(handler, tmp_path)
-    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}})
-    updated = src.refresh_price(offers[0])
+    src, offer = _make_offer_from_pool(
+        tmp_path, price_ref_cents=6890, price_historic_min_cents=4792, handler=handler)
+    updated = src.refresh_price(offer)
     assert updated.price_current_cents == 5990
-    assert updated.price_original_cents == 6890  # mantém o price_ref_cents (maior)
+    assert updated.price_ref_cents == 6890     # a referência do pool sobrevive
+    assert updated.price_floor_cents == 4792   # e o piso também
+    assert updated.real_discount_pct == 13     # 68,90 -> 59,90
 
 
-def test_refresh_price_original_cents_igual_quando_vivo_e_maior(tmp_path):
-    def handler(request: httpx.Request):
-        if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path.endswith("/items"):
-            # preço ao vivo subiu para 72.00, acima do price_ref_cents (68.90)
-            return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 72.00, "condition": "new"},
-            ]})
-        raise AssertionError(f"caminho inesperado: {request.url.path}")
+def test_refresh_price_preco_acima_da_referencia_e_barrado_depois(tmp_path):
+    # refresh_price deixa passar; quem barra é a validação (a rede que pega a
+    # oferta que encareceu entre a busca e a publicação).
+    from afiliado import validate
+    from afiliado.errors import ValidationError
 
-    pool_path = tmp_path / "meli_offers.json"
-    write_pool(pool_path, [
-        {"product_id": "MLB18725310", "title": "Creatina 1kg", "price_ref_cents": 6890},
-    ])  # sem price_historic_min_cents: sem piso, sem filtro (testado à parte)
-    src = source_with(handler, tmp_path)
-    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}})
-    updated = src.refresh_price(offers[0])
-    assert updated.price_current_cents == 7200
-    assert updated.price_original_cents == 7200  # igual ao atual, não infla
-
-
-def test_refresh_price_sem_historic_min_nao_filtra(tmp_path):
     def handler(request: httpx.Request):
         if request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
         if request.url.path.endswith("/items"):
             return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 999.90, "condition": "new"},
+                {"item_id": "A", "price": 99.90, "condition": "new"},
             ]})
         raise AssertionError(f"caminho inesperado: {request.url.path}")
 
+    src, offer = _make_offer_from_pool(
+        tmp_path, price_ref_cents=6890, price_historic_min_cents=4792, handler=handler)
+    updated = src.refresh_price(offer)
+    cfg = {"selection": {"max_above_ref": 1.00, "price_min_brl": 20, "price_max_brl": 1000}}
+    with pytest.raises(ValidationError, match="acima da referência"):
+        validate.check_price(updated, cfg)
+
+
+def test_fetch_offers_pula_entrada_sem_minima_historica(tmp_path):
+    # Antes essas entradas eram aceitas e desligavam o piso em silêncio.
     pool_path = tmp_path / "meli_offers.json"
     write_pool(pool_path, [
-        {"product_id": "MLB1", "title": "X", "price_ref_cents": 6890},  # sem price_historic_min_cents
+        {"product_id": "MLB1", "title": "Sem piso", "price_ref_cents": 6890,
+         "price_historic_min_cents": None},
+        {"product_id": "MLB2", "title": "Piso zero", "price_ref_cents": 6890,
+         "price_historic_min_cents": 0},
+        {"product_id": "MLB3", "title": "Piso float", "price_ref_cents": 6890,
+         "price_historic_min_cents": 4792.5},
+        {"product_id": "MLB4", "title": "Piso ok", "price_ref_cents": 6890,
+         "price_historic_min_cents": 4792},
     ])
-    src = source_with(handler, tmp_path)
+    src = source_with(_no_network_handler, tmp_path)
     offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}})
-    updated = src.refresh_price(offers[0])  # não levanta: sem piso, sem filtro
-    assert updated.price_current_cents == 99990
+    assert [o.item_id for o in offers] == ["MLB4"]
+    assert "3 entrada(s) do pool ignorada(s)" in src.pool_warning
 
 
 def test_refresh_price_erro_http_vira_source_error(tmp_path):

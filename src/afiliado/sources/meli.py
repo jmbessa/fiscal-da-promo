@@ -22,7 +22,6 @@ TOKEN_EXPIRY_MARGIN_S = 60
 # usados só em `refresh_price`, imediatamente antes de publicar.
 DEFAULT_OFFERS_PATH = "data/meli_offers.json"
 DEFAULT_VALID_DAYS = 30
-DEFAULT_MAX_ABOVE_HISTORIC_MIN = 1.10
 
 
 class MeliSource:
@@ -42,10 +41,6 @@ class MeliSource:
         self._access_token: str | None = None
         self._expires_at: float = 0.0
         self._links_pool: dict[str, str] | None = None
-        # Preenchidos por fetch_offers; refresh_price os usa para o filtro de
-        # "oferta real" sem precisar reler o pool nem receber cfg de novo.
-        self._historic_min: dict[str, int] = {}
-        self._max_above_historic_min: float = DEFAULT_MAX_ABOVE_HISTORIC_MIN
         # Motivo de fetch_offers ter devolvido [] (pool ausente/inválido/vencido);
         # None quando a última leitura teve sucesso. Só informativo (doctor/logs).
         self.pool_warning: str | None = None
@@ -159,9 +154,6 @@ class MeliSource:
         me = cfg.get("meli") or {}
         offers_path = Path(me.get("offers_path") or DEFAULT_OFFERS_PATH)
         commission_pct = float(me.get("commission_pct") or 0.0)
-        self._max_above_historic_min = float(
-            me.get("max_above_historic_min") or DEFAULT_MAX_ABOVE_HISTORIC_MIN)
-        self._historic_min = {}
         self.pool_warning = None
 
         try:
@@ -180,17 +172,26 @@ class MeliSource:
 
         offers: list[Offer] = []
         seen_ids: set[str] = set()
+        sem_piso = 0
         for item in raw.get("offers") or []:
             if not isinstance(item, dict):
                 continue
-            offer = _parse_pool_offer(item, commission_pct)
+            historic = item.get("price_historic_min_cents")
+            # Entrada sem mínima histórica não entra: antes ela era aceita e
+            # desligava o piso em silêncio (achado da revisão).
+            if (not isinstance(historic, int) or isinstance(historic, bool)
+                    or historic <= 0):
+                sem_piso += 1
+                continue
+            offer = _parse_pool_offer(item, commission_pct, int(historic))
             if offer is None or offer.item_id in seen_ids:
                 continue
             seen_ids.add(offer.item_id)
             offers.append(offer)
-            historic = item.get("price_historic_min_cents")
-            if isinstance(historic, (int, float)) and not isinstance(historic, bool) and historic > 0:
-                self._historic_min[offer.item_id] = int(historic)
+        if sem_piso:
+            self.pool_warning = (
+                f"{sem_piso} entrada(s) do pool ignorada(s): "
+                "price_historic_min_cents ausente ou não inteiro > 0")
         return offers
 
     # -- preço ao vivo (imediatamente antes de publicar) -------------------
@@ -199,9 +200,13 @@ class MeliSource:
         """Busca o preço ao vivo em `/products/{item_id}/items` (menor preço
         entre variações `condition == "new"`) e devolve um `Offer` novo
         (dataclass frozen) com `price_current_cents` atualizado. Levanta
-        `SourceError` se não houver preço ao vivo, ou se o preço subiu além
-        de `max_above_historic_min` × a mínima histórica do pool — a oferta
-        deixou de valer o post."""
+        `SourceError` só quando não há preço ao vivo nenhum.
+
+        Fase 4: o ML não tem mais teto de preço próprio — quem decide
+        publicabilidade é `selection.max_above_ref` + `validate.check_price`,
+        igual para as duas lojas. A mínima histórica do pool viaja na própria
+        oferta (`price_floor_cents`, carimbado em `fetch_offers`) e só alimenta
+        o selo de menor preço."""
         token = self.ensure_token()
         headers = {"Authorization": f"Bearer {token}"}
         url = f"{API_HOST}/products/{offer.item_id}/items"
@@ -219,23 +224,7 @@ class MeliSource:
         if live_cents is None:
             raise SourceError(f"meli: sem preço ao vivo disponível para {offer.item_id}")
 
-        floor = self._historic_min.get(offer.item_id)
-        if floor:
-            limite = floor * self._max_above_historic_min
-            if live_cents > limite:
-                raise SourceError(
-                    f"meli: preço acima da mínima histórica: "
-                    f"{live_cents} > {limite:.0f} (piso {floor})")
-
-        # price_ref_cents do pool (ver fetch_offers) já está em
-        # offer.price_original_cents nesse ponto — só mantém se ainda for
-        # maior que o preço ao vivo, senão os dois campos ficam iguais.
-        original_cents = offer.price_original_cents
-        if original_cents <= live_cents:
-            original_cents = live_cents
-
-        return dataclasses.replace(
-            offer, price_current_cents=live_cents, price_original_cents=original_cents)
+        return dataclasses.replace(offer, price_current_cents=live_cents)
 
     # -- link de afiliado (pool pré-gerado) --------------------------------
 
@@ -260,7 +249,8 @@ class MeliSource:
         return self._links_pool
 
 
-def _parse_pool_offer(item: dict, commission_pct: float) -> Offer | None:
+def _parse_pool_offer(item: dict, commission_pct: float,
+                      historic_min_cents: int) -> Offer | None:
     product_id = str(item.get("product_id") or "").strip()
     title = str(item.get("title") or "").strip()
     if not product_id or not title:
@@ -283,6 +273,8 @@ def _parse_pool_offer(item: dict, commission_pct: float) -> Offer | None:
         category=str(item.get("category") or ""),
         sales=int(item.get("sales") or 0),
         rating=float(item.get("rating") or 0.0),
+        price_ref_cents=price_ref_cents,
+        price_floor_cents=historic_min_cents,
     )
 
 

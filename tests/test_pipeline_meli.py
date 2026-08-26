@@ -27,10 +27,13 @@ MELI_COMMISSION_PCT = 4.0
 # mínimo necessário para o pipeline rodar sem depender de rede/LLM real.
 CFG = {
     "selection": {
-        "posts_per_run": 1, "min_discount_pct": 20, "price_min_brl": 20,
+        "posts_per_run": 1, "price_min_brl": 20,
         "price_max_brl": 1000, "dedupe_days": 30,
         "category_ids": {"shopee": ["100630", "100636"], "meli": []},
-        "ev_weights": {"popularity": 0.3},
+        "max_above_ref": 1.00, "require_price_ref": False,
+        "min_real_discount_pct": 10, "ref_window_days": 90,
+        "ref_min_observations": 5, "seal_tolerance": 1.05,
+        "ev_weights": {"popularity": 0.3, "discount": 0.5},
         "min_ev_brl": 0.50,
     },
     "llm": {"model": "haiku"},

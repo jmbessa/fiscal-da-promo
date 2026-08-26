@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from afiliado import copywriter, message, selection, validate
+from afiliado import copywriter, message, pricing, selection, validate
 from afiliado.channels.base import Channel
 from afiliado.models import Post
 from afiliado.sources.base import Source
@@ -39,15 +39,23 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
 
     offers = []
     meli_offer_count = None
+    meli_pool_warning = None
     for src in sources:
         src_offers = src.fetch_offers(cfg)  # SourceError propaga: aborta o run
         if src.name == "meli":
             meli_offer_count = len(src_offers)
+            meli_pool_warning = getattr(src, "pool_warning", None)
         offers.extend(src_offers)
 
     if meli_offer_count == 0:
         summary.warnings.append(
             "ℹ️ meli: pool vazio ou vencido — rode /meli-links-refresh")
+    elif meli_pool_warning:
+        summary.warnings.append(f"ℹ️ meli: {meli_pool_warning}")
+
+    # A observação de hoje entra no histórico ANTES de a mediana ser lida.
+    pricing.record_observations(db, offers)
+    offers = pricing.enrich_offers(offers, db, watchlist, cfg)
 
     candidates = selection.filter_offers(offers, db, cfg)
     ranked = selection.rank_offers(candidates, db.recent_titles(), cfg, watchlist)
@@ -55,7 +63,8 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     fila = ranked + reserva
 
     by_name = {s.name: s for s in sources}
-    target = cfg["selection"]["posts_per_run"]
+    sel = cfg["selection"]
+    target = sel["posts_per_run"]
     count = 0
     usados: dict[str, int] = {}
     usados_dia = {ch.name: db.count_posts_today(ch.name)
@@ -65,16 +74,25 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     for offer in fila:
         if count >= target:
             break
-        rotulo = f"{offer.title[:40]} ({offer.discount_pct}% OFF)"
+        # O rótulo definitivo só existe DEPOIS do refresh: antes dele o
+        # desconto seria o do preço velho.
+        rotulo = offer.title[:40]
         try:
             src = by_name[offer.source]
             refresh = getattr(src, "refresh_price", None)
             if refresh is not None:
                 offer = refresh(offer)
+            rotulo = (f"{offer.title[:40]} ({offer.real_discount_pct}% OFF)"
+                      if offer.real_discount_pct else offer.title[:40])
             link = src.resolve_affiliate_link(offer)
             copy = copywriter.write_copy(offer, cfg)
             price_floor = watchlist.price_floor(offer.item_id) if watchlist is not None else None
-            text = message.build_message(offer, copy, link, price_floor=price_floor)
+            text = message.build_message(
+                offer, copy, link, price_floor=price_floor,
+                min_real_discount_pct=int(
+                    sel.get("min_real_discount_pct") or pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT),
+                seal_tolerance=float(
+                    sel.get("seal_tolerance") or message.DEFAULT_SEAL_TOLERANCE))
             post = Post(offer=offer, copy=copy, affiliate_link=link, message_text=text,
                        price_floor=price_floor)
             validator(post, cfg)
@@ -116,5 +134,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             summary.warnings.append(f"ℹ️ {ch.name}: teto diário ({cap}) atingido")
 
     if not dry_run:
-        db.record_run(len(summary.published), len(summary.discarded))
+        db.record_run(len(summary.published), len(summary.discarded),
+                      ref_window_days=int(sel.get("ref_window_days")
+                                          or pricing.DEFAULT_REF_WINDOW_DAYS))
     return summary

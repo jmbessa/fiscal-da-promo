@@ -407,6 +407,34 @@ def test_doctor_usa_o_retorno_do_send_text(monkeypatch, capsys):
     assert "✅ Telegram: mensagem de teste enviada" in capsys.readouterr().out
 
 
+def test_doctor_imprime_a_validacao_do_pool_do_meli(monkeypatch, tmp_path, capsys):
+    # Teste obrigatório 8: o doctor roda a mesma validação do pool que o run
+    # e imprime o resultado — quantas valem e por que as outras caíram.
+    import httpx
+    from tests.test_meli import write_pool
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    pool = write_pool(tmp_path / "pool.json", [
+        {"product_id": "A", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "B", "title": "t", "price_ref_cents": 999999},
+        {"product_id": "C", "title": "t", "price_ref_cents": 1000},
+        {"product_id": "D", "title": "t", "price_ref_cents": 5000, "price_p25_cents": None},
+    ])
+    cfg["meli"]["offers_path"] = str(pool)
+
+    def token_ok(request):
+        return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
+
+    meli = cli.MeliSource("cid", "sec", token_path=tmp_path / "t.json",
+                          links_path=tmp_path / "l.json",
+                          client=httpx.Client(transport=httpx.MockTransport(token_ok)))
+    monkeypatch.setattr(cli, "_meli", lambda: meli)
+    assert cli.doctor(cfg) == 0
+    out = capsys.readouterr().out
+    assert ("⚠️ Mercado Livre: token ok; 1 oferta(s) válida(s) no pool; "
+            "3 entrada(s) do pool ignorada(s) (2 fora da faixa de preço, 1 sem p25)") in out
+
+
 def test_heartbeat_e_enviado_mesmo_com_notify_empty_runs_false(monkeypatch, tmp_path):
     # M12: o "Bom dia" é um aviso, então passa pelo mesmo caminho de envio —
     # run "vazio" com heartbeat notifica.

@@ -177,11 +177,14 @@ def doctor(cfg: dict) -> int:
     else:
         try:
             meli.ensure_token()  # só valida as credenciais OAuth
-            offers = meli.fetch_offers(cfg)  # leitura local do pool, sem rede
+            # Leitura local do pool, sem rede — a MESMA validação do run
+            # (C7d): quantas entradas valem e, por motivo, quantas caíram.
+            offers = meli.fetch_offers(cfg)
+            pool = f"{len(offers)} oferta(s) válida(s) no pool"
             if meli.pool_warning:
-                print(f"⚠️ Mercado Livre: token ok; {meli.pool_warning}")
+                print(f"⚠️ Mercado Livre: token ok; {pool}; {meli.pool_warning}")
             else:
-                print(f"✅ Mercado Livre: token ok; {len(offers)} ofertas no pool")
+                print(f"✅ Mercado Livre: token ok; {pool}")
         except Exception as exc:
             ok = False
             print(f"❌ Mercado Livre: {exc}")

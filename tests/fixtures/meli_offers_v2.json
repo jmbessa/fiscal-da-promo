@@ -1,0 +1,49 @@
+{
+ "generated_at": "2026-08-26",
+ "valid_days": 30,
+ "source": "FIXTURE DE TESTE (fase 5B) — formato novo do pool. product_id, título, imagem, categoria, buy_box_item_id, vendas e nota são reais (JoomPulse 2026-08-26 / pool anterior); price_ref/p25/janelas/mínima são SINTÉTICOS: o histórico semanal (MlbProductPricesDaily) não pôde ser consultado (cota do JoomPulse). Não usar em produção.",
+ "offers": [
+  {
+   "product_id": "MLB66637233",
+   "title": "Creatina Monohidratada 500g Pó Growth",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_602304-MLA109372354737_032026-O.webp",
+   "category": "MLB264586",
+   "buy_box_item_id": "MLB7125449388",
+   "price_ref_cents": 10490,
+   "price_p25_cents": 9990,
+   "price_window_days": 91,
+   "price_historic_min_cents": 9990,
+   "price_min_window_days": 365,
+   "sales": 42857,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB26796581",
+   "title": "Creatina Monohidratada Pura 500g Dark Lab Unidade",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_968096-MLA115057376622_082026-O.webp",
+   "category": "MLB264586",
+   "buy_box_item_id": "MLB4812143184",
+   "price_ref_cents": 4990,
+   "price_p25_cents": 4490,
+   "price_window_days": 91,
+   "price_historic_min_cents": 3191,
+   "price_min_window_days": 365,
+   "sales": 27574,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB68104527",
+   "title": "Kit Body Splash Masculino Barbarius + Enigma + Midtown 200ml",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_997574-MLA109633443994_042026-O.webp",
+   "category": "MLB1246",
+   "buy_box_item_id": "MLB4683756059",
+   "price_ref_cents": 8900,
+   "price_p25_cents": 8500,
+   "price_window_days": 63,
+   "price_historic_min_cents": 7913,
+   "price_min_window_days": 365,
+   "sales": 22556,
+   "rating": 4.7
+  }
+ ]
+}

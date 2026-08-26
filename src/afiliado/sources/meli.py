@@ -2,6 +2,7 @@ import dataclasses
 import json
 import os
 import time
+from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -18,14 +19,31 @@ TOKEN_EXPIRY_MARGIN_S = 60
 
 # Fase 3B: `/sites/MLB/search` e `/items/{id}` devolvem 403 na API real —
 # a descoberta agora lê um pool curado externamente (ver Mudança 1/2 do
-# spec). `/products/{id}` e `/products/{id}/items` seguem liberados e são
-# usados só em `refresh_price`, imediatamente antes de publicar.
+# spec). `/products/{id}/items` segue liberado e é usado só em
+# `refresh_price`, imediatamente antes de publicar.
 DEFAULT_OFFERS_PATH = "data/meli_offers.json"
 DEFAULT_VALID_DAYS = 30
+# Páginas de /products/{id}/items percorridas atrás do anúncio do buy box
+# (100 anúncios por página; o maior produto visto tinha 37).
+MAX_ITEMS_PAGES = 5
+
+# Campos inteiros > 0 obrigatórios em cada entrada do pool (fase 5B, C7d) e
+# o motivo, por grupo, que vai ao aviso quando faltam.
+CAMPOS_DE_PRECO = (
+    ("price_ref_cents", "sem referência"),
+    ("price_p25_cents", "sem p25"),
+    ("price_window_days", "sem janela da referência"),
+    ("price_historic_min_cents", "sem mínima histórica"),
+    ("price_min_window_days", "sem janela da mínima"),
+)
 
 
 class MeliSource:
     name = "meli"
+    # O preço "atual" com que a oferta sai do pool é a MEDIANA da janela, não
+    # uma observação: o pipeline não a grava no price_log (C7c). O que entra
+    # no histórico do ML é o preço vivo do buy box, logo após `refresh_price`.
+    observes_price_on_discovery = False
 
     def __init__(self, client_id: str, client_secret: str,
                  refresh_token: str = "", token_path: str | Path = "data/meli_token.json",
@@ -41,8 +59,12 @@ class MeliSource:
         self._access_token: str | None = None
         self._expires_at: float = 0.0
         self._links_pool: dict[str, str] | None = None
-        # Motivo de fetch_offers ter devolvido [] (pool ausente/inválido/vencido);
-        # None quando a última leitura teve sucesso. Só informativo (doctor/logs).
+        # product_id -> item_id do anúncio que vence o buy box (do pool);
+        # `refresh_price` só aceita o preço DESSE anúncio.
+        self._buy_box_ids: dict[str, str] = {}
+        # Motivo de fetch_offers ter devolvido menos do que o pool tem (pool
+        # ausente/inválido/vencido, entradas puladas e por quê); None quando
+        # a última leitura foi limpa. Vai ao doctor e ao resumo de ops.
         self.pool_warning: str | None = None
 
     # -- autenticação ---------------------------------------------------
@@ -150,8 +172,17 @@ class MeliSource:
         `data/meli_offers.json`) — NENHUMA chamada de rede aqui. Arquivo
         ausente/inválido ou vencido (`generated_at` + `valid_days` no
         passado) devolve lista vazia sem levantar exceção: o pipeline segue
-        só com as demais fontes; `self.pool_warning` guarda o motivo."""
+        só com as demais fontes; `self.pool_warning` guarda o motivo.
+
+        Validação na carga (fase 5B, C7d): cada entrada é PULADA — e contada
+        no aviso, por motivo — quando falta qualquer campo de preço inteiro
+        > 0 (`CAMPOS_DE_PRECO`), quando `price_ref_cents / 100` sai de
+        `selection.price_min_brl..price_max_brl`, quando o p25 passa da
+        referência, quando a mínima histórica passa do p25, ou quando não há
+        `buy_box_item_id` (sem ele `refresh_price` nunca teria preço: entrada
+        morta por construção). Um pool que era foto de um dia (C7) não passa."""
         me = cfg.get("meli") or {}
+        sel = cfg.get("selection") or {}
         offers_path = Path(me.get("offers_path") or DEFAULT_OFFERS_PATH)
         commission_pct = float(me.get("commission_pct") or 0.0)
         self.pool_warning = None
@@ -172,59 +203,84 @@ class MeliSource:
 
         offers: list[Offer] = []
         seen_ids: set[str] = set()
-        sem_piso = 0
+        motivos: Counter[str] = Counter()
         for item in raw.get("offers") or []:
             if not isinstance(item, dict):
+                motivos["entrada não é objeto"] += 1
                 continue
-            historic = item.get("price_historic_min_cents")
-            # Entrada sem mínima histórica não entra: antes ela era aceita e
-            # desligava o piso em silêncio (achado da revisão).
-            if (not isinstance(historic, int) or isinstance(historic, bool)
-                    or historic <= 0):
-                sem_piso += 1
+            offer, motivo = _parse_pool_offer(item, commission_pct, sel)
+            if offer is None:
+                motivos[motivo] += 1
                 continue
-            offer = _parse_pool_offer(item, commission_pct, int(historic))
-            if offer is None or offer.item_id in seen_ids:
+            if offer.item_id in seen_ids:
+                motivos["id repetido"] += 1
                 continue
             seen_ids.add(offer.item_id)
+            self._buy_box_ids[offer.item_id] = str(item["buy_box_item_id"])
             offers.append(offer)
-        if sem_piso:
+        if motivos:
+            detalhe = ", ".join(f"{n} {motivo}" for motivo, n in
+                                sorted(motivos.items(), key=lambda kv: (-kv[1], kv[0])))
             self.pool_warning = (
-                f"{sem_piso} entrada(s) do pool ignorada(s): "
-                "price_historic_min_cents ausente ou não inteiro > 0")
+                f"{sum(motivos.values())} entrada(s) do pool ignorada(s) ({detalhe})")
         return offers
 
     # -- preço ao vivo (imediatamente antes de publicar) -------------------
 
     def refresh_price(self, offer: Offer) -> Offer:
-        """Busca o preço ao vivo em `/products/{item_id}/items` (menor preço
-        entre variações `condition == "new"`) e devolve um `Offer` novo
-        (dataclass frozen) com `price_current_cents` atualizado. Levanta
-        `SourceError` só quando não há preço ao vivo nenhum.
+        """Preço vivo = o do anúncio que vence o BUY BOX (C7b), nunca o menor
+        entre os vendedores: a página de catálogo mostra o vencedor, e o
+        post dizia R$ 32 enquanto o clique mostrava R$ 45.
 
-        Fase 4: o ML não tem mais teto de preço próprio — quem decide
-        publicabilidade é `selection.max_above_ref` + `validate.check_price`,
-        igual para as duas lojas. A mínima histórica do pool viaja na própria
-        oferta (`price_floor_cents`, carimbado em `fetch_offers`) e só alimenta
-        o selo de menor preço."""
+        Caminho escolhido (verificado ao vivo em 2026-08-26 com token de
+        aplicação E de usuário, em 3 produtos do pool): `GET /products/{id}`
+        traz a chave `buy_box_winner`, mas sempre `null` — o endpoint não
+        entrega o vencedor a este app. Então: `GET /products/{id}/items` e o
+        item cujo `item_id == buy_box_item_id` do pool (o `buyBoxId` do
+        JoomPulse, presente na lista real: MLB7125449388 a R$ 104,90 entre
+        37 vendedores cujo menor preço era R$ 58,90). Anúncio ausente da
+        lista, sem preço, ou produto sem `buy_box_item_id` → `SourceError`
+        ("sem buy box"): a oferta é descartada — nunca cai para o mínimo.
+
+        Devolve um `Offer` novo (dataclass frozen) com `price_current_cents`.
+        Publicabilidade continua sendo de `selection.max_above_ref` +
+        `validate.check_price`; ref/p25/piso do pool viajam na oferta."""
+        buy_box_id = self._buy_box_ids.get(offer.item_id, "")
+        if not buy_box_id:
+            raise SourceError(f"meli: sem buy box conhecido para {offer.item_id}")
         token = self.ensure_token()
         headers = {"Authorization": f"Bearer {token}"}
         url = f"{API_HOST}/products/{offer.item_id}/items"
-        try:
-            r = self.client.get(url, headers=headers)
-            r.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise SourceError(f"meli API: {exc}") from exc
-        try:
-            data = r.json()
-        except ValueError as exc:
-            raise SourceError(f"meli API: resposta não é JSON válido: {exc}") from exc
 
-        live_cents = _min_live_price_cents(data.get("results") or [])
-        if live_cents is None:
-            raise SourceError(f"meli: sem preço ao vivo disponível para {offer.item_id}")
-
-        return dataclasses.replace(offer, price_current_cents=live_cents)
+        offset, total, vistos = 0, None, 0
+        for _ in range(MAX_ITEMS_PAGES):
+            try:
+                r = self.client.get(url, headers=headers, params={"offset": offset} if offset else None)
+                r.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise SourceError(f"meli API: {exc}") from exc
+            try:
+                data = r.json()
+            except ValueError as exc:
+                raise SourceError(f"meli API: resposta não é JSON válido: {exc}") from exc
+            results = data.get("results") or []
+            vistos += len(results)
+            winner = _item_by_id(results, buy_box_id)
+            if winner is not None:
+                live_cents = _price_cents(winner.get("price"))
+                if live_cents is None:
+                    raise SourceError(
+                        f"meli: buy box {buy_box_id} de {offer.item_id} sem preço")
+                return dataclasses.replace(offer, price_current_cents=live_cents)
+            paging = data.get("paging") if isinstance(data.get("paging"), dict) else {}
+            total = paging.get("total")
+            limit = int(paging.get("limit") or len(results) or 0)
+            offset += limit
+            if not results or total is None or offset >= int(total):
+                break
+        raise SourceError(
+            f"meli: sem buy box — anúncio {buy_box_id} não está entre os "
+            f"{vistos} vendedores de {offer.item_id}")
 
     # -- link de afiliado (pool pré-gerado) --------------------------------
 
@@ -249,53 +305,70 @@ class MeliSource:
         return self._links_pool
 
 
+def _int_positivo(valor) -> int | None:
+    """Inteiro > 0 (bool não conta; float não conta — centavos são inteiros)."""
+    if isinstance(valor, bool) or not isinstance(valor, int) or valor <= 0:
+        return None
+    return valor
+
+
 def _parse_pool_offer(item: dict, commission_pct: float,
-                      historic_min_cents: int) -> Offer | None:
+                      sel: dict) -> tuple[Offer | None, str]:
+    """(Offer, "") quando a entrada é válida; (None, motivo) quando é pulada."""
     product_id = str(item.get("product_id") or "").strip()
     title = str(item.get("title") or "").strip()
     if not product_id or not title:
-        return None
-    try:
-        price_ref_cents = int(item["price_ref_cents"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if price_ref_cents <= 0:
-        return None
+        return None, "sem id ou título"
+    valores: dict[str, int] = {}
+    for campo, motivo in CAMPOS_DE_PRECO:
+        valor = _int_positivo(item.get(campo))
+        if valor is None:
+            return None, motivo
+        valores[campo] = valor
+    if not str(item.get("buy_box_item_id") or "").strip():
+        return None, "sem buy box"
+    ref, p25 = valores["price_ref_cents"], valores["price_p25_cents"]
+    minima = valores["price_historic_min_cents"]
+    preco_min = sel.get("price_min_brl")
+    preco_max = sel.get("price_max_brl")
+    if ((preco_min is not None and ref / 100 < float(preco_min))
+            or (preco_max is not None and ref / 100 > float(preco_max))):
+        return None, "fora da faixa de preço"
+    if p25 > ref:
+        return None, "p25 acima da referência"
+    if minima > p25:
+        return None, "mínima acima do p25"
     return Offer(
         source="meli",
         item_id=product_id,
         title=title,
-        price_original_cents=price_ref_cents,
-        price_current_cents=price_ref_cents,
+        price_original_cents=ref,
+        price_current_cents=ref,
         commission_pct=commission_pct,
         image_url=str(item.get("image_url") or ""),
         product_url=f"https://www.mercadolivre.com.br/p/{product_id}",
         category=str(item.get("category") or ""),
         sales=int(item.get("sales") or 0),
         rating=float(item.get("rating") or 0.0),
-        price_ref_cents=price_ref_cents,
-        price_floor_cents=historic_min_cents,
-    )
+        price_ref_cents=ref,
+        price_p25_cents=p25,
+        price_window_days=valores["price_window_days"],
+        price_floor_cents=minima,
+        price_floor_window_days=valores["price_min_window_days"],
+    ), ""
 
 
-def _min_live_price_cents(results: list) -> int | None:
-    """Menor `price` entre os `results` de `/products/{id}/items` com
-    `condition == "new"` e `price` presente. `original_price` é ignorado de
-    propósito — vem quase sempre `null` na API real, não dá para calcular
-    desconto por aqui (ver Mudança 3 do spec)."""
-    best: Decimal | None = None
+def _item_by_id(results: list, item_id: str) -> dict | None:
     for result in results:
-        if not isinstance(result, dict) or result.get("condition") != "new":
-            continue
-        price = result.get("price")
-        if price is None:
-            continue
-        try:
-            candidate = Decimal(str(price))
-        except InvalidOperation:
-            continue
-        if best is None or candidate < best:
-            best = candidate
-    if best is None:
+        if isinstance(result, dict) and str(result.get("item_id") or "") == item_id:
+            return result
+    return None
+
+
+def _price_cents(price) -> int | None:
+    if price is None:
         return None
-    return int(best * 100)
+    try:
+        return int(Decimal(str(price)) * 100)
+    except InvalidOperation:
+        return None

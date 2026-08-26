@@ -180,8 +180,10 @@ do anúncio que vence o buy box. Formato:
 ### Validação na carga (o que o leitor rejeita, e diz por quê)
 
 Entrada **pulada e contada no aviso, por motivo**: campo de preço ausente,
-não inteiro ou ≤ 0 (`sem referência` / `sem p25` / `sem janela da referência`
-/ `sem mínima histórica` / `sem janela da mínima`); `price_ref_cents / 100`
+textual ou ≤ 0 (`sem referência` / `sem p25` / `sem janela da referência`
+/ `sem mínima histórica` / `sem janela da mínima`); campo de preço com
+FRAÇÃO de centavo (`4500.5` → `não inteiro`; o float integral `2590.0` é
+aceito como 2590 — JSON não distingue os dois); `price_ref_cents / 100`
 fora de `selection.price_min_brl..price_max_brl` (`fora da faixa de preço` —
 o item a R$ 19,90 do pool antigo morria em silêncio em todo run);
 `price_p25_cents > price_ref_cents` (`p25 acima da referência`);

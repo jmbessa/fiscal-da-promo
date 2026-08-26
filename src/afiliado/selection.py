@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass
 
-from afiliado import llm
+from afiliado import llm, pricing
 from afiliado.models import Offer
 from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
@@ -97,6 +97,19 @@ def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
     return filter_offers_with_stats(offers, db, cfg)[0]
 
 
+def _desconto_alegavel(offer: Offer, cfg: dict | None = None) -> int:
+    """O desconto que o post PODE alegar (`pricing.verdict`) — 0 em modo B.
+
+    O bônus de ranking usava o `real_discount_pct` cru: um item com 27%
+    verificáveis mas em modo B (sem p25, janela curta, ou abaixo do mínimo)
+    subia na fila por um desconto que o post dele nunca vai dizer. Só desconto
+    ALEGÁVEL ranqueia."""
+    sel = (cfg or {}).get("selection") or {}
+    minimo = int(pricing.setting(sel, "min_real_discount_pct",
+                                 pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT))
+    return pricing.verdict(offer, minimo).discount_pct
+
+
 def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> float:
     """Retorno esperado por post: comissão em R$ ponderada pela popularidade."""
     w = cfg["selection"].get("ev_weights") or {}
@@ -104,10 +117,11 @@ def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> flo
     commission_brl = offer.commission_brl or (
         (offer.price_current_cents / 100) * (offer.commission_pct / 100))
     score = commission_brl * (1 + wp * math.log10(offer.sales + 1))
-    # Bônus só por desconto VERIFICADO contra a nossa referência — o "de"
-    # inflado do vendedor não vale nada aqui.
+    # Bônus só pelo desconto que o VEREDITO autoriza alegar — o "de" inflado
+    # do vendedor não vale nada aqui, e o desconto que a régua proíbe alegar
+    # também não.
     wd = float(w.get("discount", 0.5))
-    score *= (1 + wd * offer.real_discount_pct / 100)
+    score *= (1 + wd * _desconto_alegavel(offer, cfg) / 100)
     if watchlist is not None:
         score *= watchlist.boost_for(offer)
     return score
@@ -118,10 +132,10 @@ def order_by_ev(offers: list[Offer], cfg: dict, watchlist: Watchlist | None = No
 
 
 def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,
-                 watchlist: Watchlist | None = None) -> str:
+                 watchlist: Watchlist | None = None, cfg: dict | None = None) -> str:
     linhas = "\n".join(
         f"- id={o.item_id} | {o.title} | categoria={o.category} | "
-        f"desconto verificado={o.real_discount_pct}% | vendas={o.sales} | "
+        f"desconto verificado={_desconto_alegavel(o, cfg)}% | vendas={o.sales} | "
         f"comissão=R${(o.price_current_cents / 100) * (o.commission_pct / 100):.2f} "
         f"({o.commission_pct:.1f}%)"
         + (" | em alta: sim" if watchlist is not None and o.item_id in watchlist.hot_items else "")
@@ -145,7 +159,7 @@ def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict,
     if len(candidates) <= n:
         return list(candidates)
     presented = order_by_ev(candidates, cfg, watchlist)[:MAX_CANDIDATES_FOR_PROMPT]
-    data = llm.ask_json(_rank_prompt(presented, recent_titles, n, watchlist),
+    data = llm.ask_json(_rank_prompt(presented, recent_titles, n, watchlist, cfg),
                         model=cfg["llm"]["model"])
     # Só uma LISTA vale: `{"chosen": null}` levantava TypeError fora de
     # qualquer try e derrubava o run a cada 5 min (A1); uma string ("id1")

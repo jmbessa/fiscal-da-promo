@@ -1023,7 +1023,9 @@ def test_run_config_zero_chega_ao_veredito(tmp_path, monkeypatch):
     db = StateDB(tmp_path / "s.db")
     pipeline.run(cfg, [FakeSource([make_offer()])], [FakeChannel()], db,
                  validator=no_network_validator)
-    assert capturado == [0]
+    # o veredito é consultado no ranking (bônus de EV) e no post; o config
+    # zero chega aos dois — nenhum caminho troca o 0 pelo default.
+    assert capturado and all(minimo == 0 for minimo in capturado)
     db.close()
 
 

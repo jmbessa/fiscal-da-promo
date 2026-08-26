@@ -324,11 +324,27 @@ class MeliSource:
         return self._links_pool
 
 
-def _int_positivo(valor) -> int | None:
-    """Inteiro > 0 (bool não conta; float não conta — centavos são inteiros)."""
-    if isinstance(valor, bool) or not isinstance(valor, int) or valor <= 0:
-        return None
-    return valor
+def _centavos(valor) -> tuple[int | None, str]:
+    """(centavos, "") quando o valor é um inteiro > 0 — inclusive o float
+    INTEGRAL que o JSON produz (`2590.0` É 2590: planilha, dump de pandas ou
+    uma divisão em Python geram o ponto, e a entrada não pode morrer por
+    causa dele).
+
+    (None, "não inteiro") quando é float com fração (`4500.5` centavos não
+    existe): o motivo tem de dizer isso, e não "sem referência" — mandar a
+    curadoria caçar um campo que está lá é pior do que não avisar.
+
+    (None, "") para o resto (ausente, nulo, texto, bool, <= 0): vale o motivo
+    do CAMPO."""
+    if isinstance(valor, bool):
+        return None, ""
+    if isinstance(valor, float):
+        if not valor.is_integer():          # NaN e inf também caem aqui
+            return None, "não inteiro"
+        valor = int(valor)
+    if not isinstance(valor, int) or valor <= 0:
+        return None, ""
+    return valor, ""
 
 
 def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
@@ -340,9 +356,9 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         return None, "sem id ou título"
     valores: dict[str, int] = {}
     for campo, motivo in CAMPOS_DE_PRECO:
-        valor = _int_positivo(item.get(campo))
+        valor, problema = _centavos(item.get(campo))
         if valor is None:
-            return None, motivo
+            return None, problema or motivo
         valores[campo] = valor
     if not str(item.get("buy_box_item_id") or "").strip():
         return None, "sem buy box"

@@ -296,25 +296,57 @@ def _pool_com(tmp_path, entradas):
     return [o.item_id for o in offers], src.pool_warning
 
 
-def test_pool_pula_cada_campo_de_preco_ausente_ou_nao_inteiro(tmp_path):
+def test_pool_pula_cada_campo_de_preco_ausente_ou_invalido(tmp_path):
     ok = {"product_id": "OK", "title": "ok", "price_ref_cents": 5000}
     ids, aviso = _pool_com(tmp_path, [
         ok,
         {**ok, "product_id": "P1", "price_p25_cents": None},
         {**ok, "product_id": "P2", "price_p25_cents": 0},
         {**ok, "product_id": "P3", "price_p25_cents": "R$ 45"},
-        {**ok, "product_id": "P4", "price_p25_cents": 4500.5},
         {**ok, "product_id": "P5", "price_p25_cents": True},
         {**ok, "product_id": "M1", "price_historic_min_cents": None},
         {**ok, "product_id": "M2", "price_historic_min_cents": 0},
-        {**ok, "product_id": "M3", "price_historic_min_cents": 4792.5},
         {**ok, "product_id": "J1", "price_window_days": 0},
         {**ok, "product_id": "J2", "price_min_window_days": None},
         {**ok, "product_id": "R1", "price_ref_cents": "R$ 50"},
     ])
     assert ids == ["OK"]
-    assert aviso == ("11 entrada(s) do pool ignorada(s) (5 sem p25, 3 sem mínima histórica, "
+    assert aviso == ("9 entrada(s) do pool ignorada(s) (4 sem p25, 2 sem mínima histórica, "
                      "1 sem janela da mínima, 1 sem janela da referência, 1 sem referência)")
+
+
+def test_pool_aceita_centavos_em_float_integral(tmp_path):
+    # JSON não distingue 2590 de 2590.0 (planilha, dump de pandas, divisão em
+    # Python): o float INTEGRAL É o inteiro e a entrada não pode morrer por
+    # causa do ponto — antes ela caía como "sem referência", motivo que mandava
+    # a curadoria procurar um campo que estava lá.
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "F", "title": "t", "price_ref_cents": 5000.0,
+                            "price_p25_cents": 4500.0, "price_historic_min_cents": 4000.0,
+                            "price_window_days": 91.0, "price_min_window_days": 365.0}])
+    src = source_with(_no_network_handler, tmp_path)
+    (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    assert src.pool_warning is None
+    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (5000, 4500, 91)
+    assert (o.price_floor_cents, o.price_floor_window_days) == (4000, 365)
+    # inteiros de verdade: o resto do código faz aritmética de centavos
+    assert all(isinstance(v, int) for v in (o.price_ref_cents, o.price_p25_cents,
+                                            o.price_current_cents, o.price_window_days,
+                                            o.price_floor_cents, o.price_floor_window_days))
+
+
+def test_pool_centavos_fracionados_dizem_nao_inteiro(tmp_path):
+    # 4500,5 centavos não existe. O motivo tem de dizer isso — "sem p25" numa
+    # entrada que TEM p25 manda a curadoria caçar o campo errado.
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "OK", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "P4", "title": "t", "price_ref_cents": 5000, "price_p25_cents": 4500.5},
+        {"product_id": "M3", "title": "t", "price_ref_cents": 5000,
+         "price_historic_min_cents": 4792.5},
+        {"product_id": "R2", "title": "t", "price_ref_cents": 5000.7},
+    ])
+    assert ids == ["OK"]
+    assert aviso == "3 entrada(s) do pool ignorada(s) (3 não inteiro)"
 
 
 def test_pool_pula_referencia_fora_da_faixa_de_preco(tmp_path):

@@ -5,7 +5,7 @@ import pytest
 from afiliado import llm, selection
 from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
-from tests.test_models import make_offer
+from tests.test_models import make_offer, make_offer_ref
 from tests.test_state import make_post
 
 CFG = {
@@ -124,10 +124,26 @@ def test_filter_offers_require_price_ref(tmp_path):
 
 def test_ev_score_bonifica_desconto_verificado():
     base = make_offer(price_current_cents=24999)
-    com_desconto = make_offer(price_current_cents=24999, price_ref_cents=49998)  # 50%
+    com_desconto = make_offer_ref(49998, price_current_cents=24999)  # 50%, modo A
     assert com_desconto.real_discount_pct == 50
     assert (selection.ev_score(com_desconto, CFG)
             == pytest.approx(selection.ev_score(base, CFG) * (1 + 0.5 * 0.5)))
+
+
+def test_ev_score_so_bonifica_o_desconto_alegavel():
+    # O bônus usava o `real_discount_pct` cru: um item com 50% que a régua
+    # PROÍBE alegar (sem p25/janela -> modo B) subia no ranking por um
+    # desconto que o post dele nunca vai dizer. Agora vale o veredito.
+    mudo = make_offer(price_current_cents=24999, price_ref_cents=49998)  # 50% cru
+    assert mudo.real_discount_pct == 50
+    assert selection.ev_score(mudo, CFG) == pytest.approx(
+        selection.ev_score(make_offer(price_current_cents=24999), CFG))
+    # e o mínimo do config manda: 20% cru com min_real_discount_pct=30 é modo B
+    quase = make_offer_ref(10000, price_current_cents=8000)
+    cfg = {**CFG, "selection": {**CFG["selection"], "min_real_discount_pct": 30}}
+    sem_ref = make_offer(price_current_cents=8000)
+    assert selection.ev_score(quase, cfg) == pytest.approx(selection.ev_score(sem_ref, cfg))
+    assert selection.ev_score(quase, CFG) > selection.ev_score(sem_ref, CFG)
 
 
 def test_ev_score_ignora_desconto_do_vendedor():
@@ -140,12 +156,20 @@ def test_ev_score_ignora_desconto_do_vendedor():
 
 
 def test_rank_prompt_usa_desconto_verificado():
-    offer = make_offer(price_original_cents=350_000, price_current_cents=24999,
-                       price_ref_cents=49998)
-    prompt = selection._rank_prompt([offer], [], 2)
+    offer = make_offer_ref(49998, price_original_cents=350_000, price_current_cents=24999)
+    prompt = selection._rank_prompt([offer], [], 2, cfg=CFG)
     assert "desconto verificado=50%" in prompt
     assert "desconto=93%" not in prompt
     assert "Desconto 0% não é defeito" in prompt
+
+
+def test_rank_prompt_mostra_o_desconto_do_veredito_nao_o_cru():
+    # O que o LLM ranqueia é o que o post pode alegar: sem p25/janela o item
+    # entra na lista com 0%, não com os 50% que nunca serão publicados.
+    mudo = make_offer(price_current_cents=24999, price_ref_cents=49998)
+    prompt = selection._rank_prompt([mudo], [], 2, cfg=CFG)
+    assert "desconto verificado=0%" in prompt
+    assert "50%" not in prompt
 
 
 def test_filter_offers_min_ev_floor(tmp_path):

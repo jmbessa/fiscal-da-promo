@@ -8,26 +8,52 @@ from afiliado.models import CopyParts, Offer, Verdict
 # qualquer palavra de desconto é mentira — o "de" do vendedor não conta e o
 # `real_discount_pct` abaixo do mínimo também não (C10: a copy dizia "4% OFF"
 # sobre um bloco de preço sem De/Por).
+_PROIBIDAS = ("off, %, baixou, caiu, promoção, promoções, promocional, desconto, "
+              "descontos, oferta relâmpago, mais barato, economize")
 SEM_DESCONTO_VERIFICADO = (
     "IMPORTANTE: este item está SEM desconto verificado. NÃO use palavras de "
-    "desconto (off, %, baixou, caiu, promoção, promoção relâmpago, menor preço). "
+    f"desconto ({_PROIBIDAS}, menor preço). "
     "Destaque utilidade, popularidade ou nota.\n"
+)
+# Modo B COM selo: o selo é a ÚNICA alegação de preço verificada que o post
+# tem (preço <= mínima medida, com a janela). Proibir "menor preço" aqui
+# calava a própria verdade — o bloco de preço já vai carimbá-la.
+COM_SELO = (
+    "IMPORTANTE: este item está SEM desconto verificado, MAS tem selo "
+    'verificado: "{selo}". Você PODE dizer que é o menor preço da janela — é '
+    "a única alegação de preço que este post pode fazer. NÃO use palavras de "
+    f"desconto ({_PROIBIDAS}). Destaque também utilidade, popularidade ou nota.\n"
 )
 # O que o LLM não pode escrever em modo B — se escrever, a resposta é
 # descartada como inválida (tenta de novo; depois cai no fallback neutro).
+# `\boff\b(?!-)` não pega "off-white" (cor, não desconto), e o plural
+# "promoções"/"descontos" escapava da lista antiga.
 _PALAVRAS_DE_DESCONTO = re.compile(
-    r"%|\b(?:off|baixou|caiu|promo(?:ção|cao)?|desconto|menor preço)\b", re.IGNORECASE)
+    r"%"
+    r"|\boff\b(?!-)"
+    r"|\b(?:baixou|caiu|descontos?|promo(?:ções|ção|coes|cao|cionais|cional)?"
+    r"|economiz\w*|mais barat[oa]s?|oferta rel[âa]mpago)\b",
+    re.IGNORECASE)
+_MENOR_PRECO = re.compile(r"\bmenor pre[çc]os?\b", re.IGNORECASE)
 
 
-def alega_desconto(copy: CopyParts) -> bool:
-    """True se algum campo da copy usa palavra de desconto."""
-    return any(_PALAVRAS_DE_DESCONTO.search(campo)
-               for campo in (copy.headline, copy.description, copy.cta))
+def alega_desconto(copy: CopyParts, permite_menor_preco: bool = False) -> bool:
+    """True se algum campo da copy usa palavra de desconto. Com
+    `permite_menor_preco` (item COM selo), "menor preço" deixa de ser
+    alegação proibida — é o que o selo afirma; todo o resto continua."""
+    for campo in (copy.headline, copy.description, copy.cta):
+        if _PALAVRAS_DE_DESCONTO.search(campo):
+            return True
+        if not permite_menor_preco and _MENOR_PRECO.search(campo):
+            return True
+    return False
 
 
 def _copy_prompt(offer: Offer, cfg: dict, verdict: Verdict) -> str:
     if verdict.mode == "A":
         regua = f"Desconto verificado: {verdict.discount_pct}%\n"
+    elif verdict.seal:
+        regua = "SEM desconto verificado.\n" + COM_SELO.format(selo=verdict.seal)
     else:
         regua = "SEM desconto verificado.\n" + SEM_DESCONTO_VERIFICADO
     return (
@@ -72,7 +98,7 @@ def write_copy(offer: Offer, cfg: dict, verdict: Verdict) -> CopyParts:
             validate.check_copy(copy)
         except ValidationError:
             continue
-        if verdict.mode != "A" and alega_desconto(copy):
+        if verdict.mode != "A" and alega_desconto(copy, permite_menor_preco=bool(verdict.seal)):
             continue
         return copy
     return fallback_copy(verdict)

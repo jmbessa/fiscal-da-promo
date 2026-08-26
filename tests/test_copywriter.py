@@ -63,6 +63,71 @@ def test_prompt_modo_b_diz_sem_desconto_e_proibe_palavras_de_desconto():
     assert "3%" not in prompt
 
 
+def _com_selo(**kw):
+    """Modo B COM selo: preço na mínima conhecida, janela de 191 dias."""
+    return make_offer(price_current_cents=2000, price_floor_cents=2000,
+                      price_floor_window_days=191, **kw)
+
+
+def test_prompt_modo_b_com_selo_libera_o_selo():
+    # O selo é a ÚNICA alegação de preço verificada de um post em modo B;
+    # proibir "menor preço" ali calava justamente a verdade que o post tem.
+    offer = _com_selo()
+    v = _v(offer)
+    assert v.mode == "B" and v.seal
+    prompt = copywriter._copy_prompt(offer, CFG, v)
+    assert v.seal in prompt
+    assert "PODE" in prompt
+    assert "SEM desconto verificado" in prompt
+    # sem selo, o mesmo modo B continua proibindo "menor preço"
+    sem_selo = copywriter._copy_prompt(make_offer(), CFG, NO_CLAIM)
+    assert "menor preço" in sem_selo and "PODE dizer" not in sem_selo
+
+
+def test_write_copy_modo_b_com_selo_aceita_menor_preco_do_llm(monkeypatch):
+    resposta = {"headline": "🏷️ Menor preço em 6 meses", "description": "Verificado por nós.",
+                "cta": "Garanta o seu 👇"}
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: resposta)
+    offer = _com_selo()
+    assert copywriter.write_copy(offer, CFG, _v(offer)) == CopyParts(**resposta)
+    # a MESMA copy, num item sem selo, é descartada -> fallback neutro
+    assert copywriter.write_copy(make_offer(), CFG, NO_CLAIM).headline == "🔥 Achado do dia"
+
+
+def test_write_copy_modo_b_com_selo_ainda_recusa_o_resto(monkeypatch):
+    respostas = iter([{"headline": "🏷️ Menor preço com 20% OFF", "description": "d", "cta": "c"},
+                      {"headline": "🏷️ Menor preço em 6 meses", "description": "d", "cta": "c"}])
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: next(respostas))
+    offer = _com_selo()
+    assert copywriter.write_copy(offer, CFG, _v(offer)).headline == "🏷️ Menor preço em 6 meses"
+
+
+def test_alega_desconto_pega_as_palavras_que_escapavam():
+    # "promoções" escapava do \bpromo(ção|cao)?\b (o plural não faz fronteira
+    # depois de "promo"); "descontos", "promocional", "economize", "mais
+    # barato" e "oferta relâmpago" nunca estiveram na lista.
+    for texto in ("promoções da semana", "descontos de verão", "preço promocional",
+                  "oferta relâmpago", "o mais barato do mês", "economize agora",
+                  "promoção", "promocionais"):
+        assert copywriter.alega_desconto(CopyParts("h", texto, "c")), texto
+
+
+def test_alega_desconto_nao_pega_off_white():
+    # "off-white" é cor, não desconto: o \boff\b casava com o hífen e mandava
+    # a copy honesta para o fallback.
+    assert not copywriter.alega_desconto(CopyParts("Tênis off-white 🤍", "d", "c"))
+    assert copywriter.alega_desconto(CopyParts("Tênis com 50% OFF", "d", "c"))
+    assert copywriter.alega_desconto(CopyParts("h", "está off hoje", "c"))
+
+
+def test_alega_desconto_com_selo_libera_so_o_menor_preco():
+    menor = CopyParts("🏷️ Menor preço do semestre", "d", "c")
+    assert copywriter.alega_desconto(menor)
+    assert not copywriter.alega_desconto(menor, permite_menor_preco=True)
+    assert copywriter.alega_desconto(CopyParts("Menor preço e 20% OFF", "d", "c"),
+                                     permite_menor_preco=True)
+
+
 def test_fallback_copy_modo_b_nao_alega_desconto():
     # Teste obrigatório 6.
     copy = copywriter.fallback_copy(NO_CLAIM)

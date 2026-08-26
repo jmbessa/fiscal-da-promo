@@ -201,9 +201,10 @@ Este passo NÃO regenera título/imagem/histórico — 4 consultas, não 40.
 ## Validação na carga (o que o leitor rejeita)
 
 `MeliSource.fetch_offers` pula, contando no aviso por motivo: campo de preço
-ausente/≤ 0 (`price_ref_cents`, `price_p25_cents`,
-`price_window_days`, `price_historic_min_cents`, `price_min_window_days`) ou
-não inteiro; `price_ref_cents/100` fora de
+ausente/textual/≤ 0 (`price_ref_cents`, `price_p25_cents`,
+`price_window_days`, `price_historic_min_cents`, `price_min_window_days`);
+campo com fração de centavo (`4500.5` → `não inteiro`; `2590.0` vale 2590);
+`price_ref_cents/100` fora de
 `selection.price_min_brl..price_max_brl`; `price_p25_cents >
 price_ref_cents`; `price_historic_min_cents > price_p25_cents`; sem
 `buy_box_item_id`; `buy_box_checked_at` (ou, na falta dele, `generated_at`)

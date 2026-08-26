@@ -1,8 +1,10 @@
-# Runbook — Agendamento de produção (meta: 50–100 ofertas/dia)
+# Runbook — Agendamento de produção (meta: 60 ofertas/dia)
 
-O `config.yaml` define **quanto** postar (`channels.telegram.max_per_day: 100`,
-`selection.posts_per_run`, piso `selection.min_ev_brl`); o agendador externo
-define **de quanto em quanto tempo checar**. Duas opções, ambas sem custo:
+O `config.yaml` define **quanto** postar (`channels.telegram.max_per_day: 60`,
+`selection.posts_per_run`, piso `selection.min_ev_brl`) e **em que janela**
+(`schedule:` — fuso, início e fim do dia de operação; o teto de cada canal é
+distribuído ao longo dela); o agendador externo define **de quanto em quanto
+tempo checar**. Duas opções, ambas sem custo:
 
 | | GitHub Actions | VPS gratuita |
 |---|---|---|
@@ -61,12 +63,17 @@ Repositório privado: use um token de acesso pessoal na URL do clone
 
 O script instala Python, Node e o Claude Code, cria o usuário de serviço
 `afiliado`, monta o venv em `/opt/afiliado/.venv`, ajusta o fuso para
-America/Sao_Paulo e instala as unidades systemd de `deploy/`.
+America/Sao_Paulo (se falhar, avisa em destaque — corrija antes de ligar o
+timer: a janela e o ritmo usam a hora local) e instala as unidades systemd de
+`deploy/` (`afiliado.service`, `afiliado.timer` e `afiliado-notify.service`,
+que avisa o chat de operações se a unidade morrer). É re-executável: rodar
+de novo atualiza o código (`git pull` como o usuário `afiliado`) e reinstala
+as unidades.
 
 ### B3. Segredos
 
 A VPS lê um `.env` local (o CLI chama `load_dotenv()` antes de tudo) — as
-mesmas 8 variáveis dos GitHub Secrets:
+mesmas **11 variáveis** dos GitHub Secrets (o script já cria o template):
 
 ```bash
 sudo nano /opt/afiliado/.env
@@ -74,11 +81,16 @@ sudo chmod 600 /opt/afiliado/.env
 ```
 
 ```
-SHOPEE_APP_ID=            TELEGRAM_OPS_CHAT_ID=
-SHOPEE_APP_SECRET=        CLAUDE_CODE_OAUTH_TOKEN=
-TELEGRAM_BOT_TOKEN=       IG_USER_ID=
-TELEGRAM_CHANNEL_ID=      IG_ACCESS_TOKEN=
+SHOPEE_APP_ID=            CLAUDE_CODE_OAUTH_TOKEN=     MELI_CLIENT_ID=
+SHOPEE_APP_SECRET=        IG_USER_ID=                  MELI_CLIENT_SECRET=
+TELEGRAM_BOT_TOKEN=       IG_ACCESS_TOKEN=             MELI_REFRESH_TOKEN=
+TELEGRAM_CHANNEL_ID=
+TELEGRAM_OPS_CHAT_ID=
 ```
+
+`IG_*` e `MELI_*` podem ficar vazias: o canal/fonte é ignorado e o aviso
+("canal instagram_feed ignorado: … ausente") chega ao chat de operações, uma
+vez por dia.
 
 ### B4. Validar antes de ligar
 
@@ -95,10 +107,12 @@ systemctl list-timers afiliado.timer      # próximo disparo
 journalctl -u afiliado.service -f         # acompanhar
 ```
 
-`deploy/afiliado.timer` dispara **a cada 5 min das 08:00 às 23:55**
-(`OnCalendar=*-*-* 08..23:00/5:00`). Para mudar janela ou intervalo, edite
-`/etc/systemd/system/afiliado.timer`, depois `systemctl daemon-reload &&
-systemctl restart afiliado.timer`.
+`deploy/afiliado.timer` dispara **a cada 5 min das 08:00 às 23:55** (192
+runs/dia, `OnCalendar=*-*-* 08..23:00/5:00`, `Persistent=false`: um disparo
+perdido não é recuperado de madrugada). Para mudar janela ou intervalo, edite
+`/etc/systemd/system/afiliado.timer` **e** `schedule.window_start/window_end`
+no `config.yaml` (o ritmo diário usa a mesma janela; fora dela o orçamento é
+0), depois `systemctl daemon-reload && systemctl restart afiliado.timer`.
 
 Alternativa sem systemd (crontab do usuário):
 ```cron
@@ -115,18 +129,31 @@ Alternativa sem systemd (crontab do usuário):
 | Ver os últimos runs | `journalctl -u afiliado.service --since "1 hour ago"` |
 | Pausar tudo | `sudo systemctl disable --now afiliado.timer` |
 | Rodar um ciclo agora | `sudo systemctl start afiliado.service` |
+| Testar o aviso de falha | `sudo systemctl start afiliado-notify.service` (chega "❌ unidade afiliado falhou" no chat de operações) |
 | Backup do estado | `sudo cp /opt/afiliado/data/state.db ~/state-$(date +%F).db` |
 
 ## Notas
 
 - **Checar ≠ postar.** A cada 5 min o pipeline checa; publica só se houver
   oferta acima do piso (`selection.min_ev_brl`), inédita no dedupe de 30 dias e
-  dentro dos tetos diários. Runs sem novidade não geram mensagem no chat de
-  operações (`ops.notify_empty_runs: false`).
+  dentro do orçamento do momento de algum canal (o teto diário é distribuído
+  pela janela: 60/dia é ~1 a cada 16 min). Quando nenhum canal pode publicar,
+  o run termina antes de chamar o LLM. Runs sem novidade não geram mensagem
+  no chat de operações (`ops.notify_empty_runs: false`) — com três exceções
+  que **sempre** chegam: o heartbeat do primeiro run do dia ("☀️ Bom dia —
+  ontem: N publicados …"), avisos novos (cada texto uma vez por dia — se o
+  Bom dia não chegar, a VPS morreu) e falhas (run abortado, interrompido por
+  sinal, ou a unidade morta: `OnFailure=` → "❌ unidade afiliado falhou").
+- **Silêncio não é normal.** Sem o "Bom dia" às ~08:00, algo caiu: a Oracle
+  Always Free recolhe VMs ociosas. `systemctl status afiliado.timer` e
+  `journalctl -u afiliado.service --since today`.
 - O `state.db` da VPS passa a ser a fonte de verdade do dedupe; ao migrar de
   volta para o Actions, copie o arquivo para o repositório antes.
 - `IG_ACCESS_TOKEN` é token de Página e não expira; `CLAUDE_CODE_OAUTH_TOKEN`
   vale ~1 ano (renovar em ago/2027).
-- Consumo de LLM: ~2 chamadas por oferta publicada. Com 100/dia são ~200
-  chamadas curtas — se a cota Max apertar, desligue o ranqueamento por LLM
-  (o ordenamento por valor esperado é determinístico e cobre bem sozinho).
+- Consumo de LLM: 1 ranking por run com candidatas + ~1 copy por oferta
+  publicada (2 se a primeira falhar). Com 60/dia são ~250 chamadas curtas por
+  dia; se o LLM cair, o resumo diz "LLM indisponível em X de Y chamadas" e a
+  copy/ranking seguem no fallback determinístico. O `claude -p` roda sem
+  ferramentas, sem settings do repositório e com ambiente em lista branca
+  (só `CLAUDE_CODE_OAUTH_TOKEN` e o básico do sistema).

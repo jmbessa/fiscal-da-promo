@@ -22,7 +22,7 @@ CTA e link curto de afiliado.
 | Afiliação | Usuário já cadastrado nos programas da Shopee e do Mercado Livre; hoje gera links manualmente |
 | Audiência | Começa do zero em todos os canais; construir audiência faz parte do projeto |
 | Nicho | "Achadinhos" geral com categorias fixas no config (ex.: casa, eletrônicos, beleza); nichar depois conforme dados de cliques |
-| Autonomia | Totalmente automático — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline |
+| Autonomia | Automático para Telegram e feed do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. Exceção: stories (`story_dispatch`, fase 2A) são semi-automáticos — a arte e o link chegam prontos ao chat de operações e o dono posta à mão |
 | Infra | GitHub Actions (cron) no início; design portátil para VPS (mesmo CLI via cron/systemd, sem dependência do Actions no código) |
 | LLM | Cota da assinatura Claude Max via Claude Code headless (`claude -p`), token de CI gerado com `claude setup-token`; fallback para API key se `ANTHROPIC_API_KEY` estiver definida |
 | Stack | Python (3.12+), SQLite para estado, pacote único com CLI |
@@ -43,16 +43,22 @@ dificuldade de teste sem benefício num funil fixo) e no-code/n8n (limites em
 criativo, dedupe e portabilidade).
 
 Cada execução de `afiliado run` processa um ciclo completo e termina. O
-agendador externo define o ritmo — fase 1.8: produção na cron/systemd da VPS
-a cada 5 min (288 execuções/dia, 1 oferta por run; ver
+agendador externo define o ritmo — fase 1.8: produção no timer systemd da VPS
+a cada 5 min das 08:00 às 23:55 (192 execuções/dia, 1 oferta por run; ver
 `docs/runbooks/vps-setup.md`), com o cron do Actions (hora em hora,
-08h–23h BRT) como backup/disparo manual. Canais com esforço manual ou limites
-de audiência/API (ex.: `story_dispatch`, `instagram_feed`, e o teto de
-segurança de `telegram` na fase 1.8) ganham um teto diário opcional
-(`max_per_day`) para não saturar mesmo com o ritmo de 5 min. Com dedupe de 30
-dias e 288 checagens/dia, o estoque de boas ofertas esgota rápido — um piso de
-valor esperado (`selection.min_ev_brl`, fase 1.8) evita postar sobras quando
-isso acontece.
+08h–23h BRT) como backup/disparo manual. Cada canal tem um teto diário
+(`max_per_day`: `telegram` 60 — a meta do canal —, `story_dispatch` 6,
+`instagram_feed` 2), contado no **dia local** de `schedule.timezone` e, desde
+a fase 5A, **distribuído pela janela** `schedule.window_start`–`window_end`:
+um canal só publica enquanto o que já postou hoje está abaixo de
+`min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`;
+fora da janela o orçamento é 0. Sem nenhum canal aberto o run termina antes
+do ranking — nenhuma oferta paga preço ao vivo, link, copy ou validação sem
+ter onde ser publicada. `story_dispatch` é **semi-automático**: a arte e o
+link chegam prontos ao chat de operações e o dono posta o story à mão. Com
+dedupe de 30 dias e 192 checagens/dia, o estoque de boas ofertas esgota
+rápido — um piso de valor esperado (`selection.min_ev_brl`, fase 1.8) evita
+postar sobras quando isso acontece.
 
 ## 4. Estrutura de componentes
 
@@ -194,22 +200,31 @@ Cada fase é um ciclo próprio de plano → implementação → validação.
 
 ## 9. Política de falhas
 
-Regra geral: uma oferta ruim não derruba o run; o run só aborta se não houver o
-que publicar. Nada falha em silêncio — tudo aparece no resumo de operações,
-exceto o caso abaixo de run vazio (fase 1.8), que é ausência de evento, não
-falha; o caminho de exceção (run abortado) sempre notifica.
+Regra geral: uma oferta ruim não derruba o run; uma fonte ruim não derruba as
+outras; o run só aborta se todas as fontes falharem. Nada falha em silêncio —
+tudo aparece no resumo de operações (cada aviso uma vez por dia local, para o
+chat de ops não virar ruído), exceto o run vazio sem aviso novo (fase 1.8),
+que é ausência de evento, não falha; o caminho de exceção (run abortado ou
+interrompido) sempre notifica, e o primeiro run do dia sempre manda um
+heartbeat.
 
-| Falha | Comportamento |
+| Falha | Comportamento (como implementado na fase 5A) |
 |---|---|
-| API de fonte fora | Retry com backoff (3x); persistindo, aborta o run e notifica operações |
-| Oferta falha em qualquer etapa | Descarta, promove a próxima do ranking, segue |
-| Nenhuma oferta atinge o piso de EV (`min_ev_brl`, fase 1.8) | Candidatas abaixo do piso são cortadas no filtro; se sobrar 0, o run publica nada, sem erro |
-| Run sem nada a contar — nada publicado, nada descartado, nenhum aviso (fase 1.8, cadência de 5 min) | Resumo de operações NÃO é enviado (evita 288 mensagens/dia); opcional `ops.notify_empty_runs: true` restaura o envio sempre |
-| LLM indisponível no ranking | Fallback determinístico: top N por valor esperado (EV) |
-| LLM indisponível na copy | Copy de template padrão |
-| Publicação falha | Retry 3x; falhou → não grava como publicado (volta candidato no próximo run). Contagem de `posts_per_run` é **por oferta**, não por canal: uma oferta conta como publicada se ao menos um canal aceitar; canais com `max_per_run` (ex.: `instagram_feed`, limite 1) pulam a oferta sem contar como falha quando o limite do run já foi atingido |
-| Teto diário por canal (`max_per_day`, fase 1.7) | Pula o canal sem contar como falha quando o teto (contado no SQLite, dia UTC) já foi atingido; oferta segue publicando nos demais canais |
-| Runs simultâneos | Impossível: `concurrency` no workflow serializa |
+| API de fonte fora | Shopee: 1 tentativa + até 3 repetições com backoff (0,5 s, 1,5 s, 4 s) em 429, 5xx e erro de conexão; persistindo, a fonte falha, vira aviso ("fonte shopee falhou: …") e o run segue com as outras. Só quando TODAS as fontes falham o run aborta — e ainda assim o resumo com os avisos vai ao ops |
+| Fonte habilitada devolve 0 ofertas | Aviso "`<fonte>`: 0 ofertas buscadas" (o ML acrescenta o motivo do pool) |
+| Filtro zera N > 0 ofertas | Aviso "N ofertas buscadas, 0 candidatas — dedupe: a · faixa de preço: b · acima da referência: c · sem dados: d · categoria: e · EV: f" |
+| Oferta falha em qualquer etapa | Descarta, promove a próxima do ranking, segue. No resumo, descartes com o mesmo motivo (≥ 4) viram uma linha: "31× preço acima da referência (ex.: …)" |
+| Nenhuma oferta atinge o piso de EV (`min_ev_brl`, fase 1.8) | Candidatas abaixo do piso são cortadas no filtro (contam em "EV"); se sobrar 0, o run publica nada, sem erro |
+| Run sem nada a contar — nada publicado, nada descartado, nenhum aviso novo (fase 1.8, cadência de 5 min) | Resumo de operações NÃO é enviado (evita 192 mensagens/dia); opcional `ops.notify_empty_runs: true` restaura o envio sempre. O heartbeat do primeiro run do dia ("☀️ Bom dia — ontem: N publicados, M descartados em K runs") é um aviso e sempre chega |
+| Aviso de estado persistente (watchlist vencida, pool vencido, teto, canal sem env, LLM caído) | Entra no resumo uma vez por dia local (tabela `warned`, chave = texto sem dígitos); em dry-run nada é gravado |
+| LLM indisponível no ranking | Fallback determinístico: top N por valor esperado (EV); `{"chosen": null}` ou qualquer coisa que não seja lista também cai no fallback, sem exceção |
+| LLM indisponível na copy | Copy de template padrão. Ao fim do run, "LLM indisponível em X de Y chamadas — ranking/copy de fallback" |
+| Publicação falha | Telegram: 3 tentativas em erro de rede; `429` com `retry_after` ≤ 30 s dorme e repete uma vez (sem cair para `sendMessage`), acima disso falha. Falhou → não grava como publicado (volta candidato no próximo run). Contagem de `posts_per_run` é **por oferta**, não por canal: uma oferta conta como publicada se ao menos um canal aceitar; canais com `max_per_run` (ex.: `instagram_feed`, limite 1) pulam a oferta sem contar como falha quando o limite do run já foi atingido |
+| Teto diário por canal (`max_per_day`) | Contado no SQLite no **dia local** e distribuído pela janela (`schedule:`, ver §3). Canal fechado pelo ritmo é pulado em silêncio; canal no teto de verdade vira aviso. Nenhum canal aberto (antes do ranking ou após uma publicação) → o run termina sem pagar LLM/link/validação pelas ofertas restantes |
+| Resumo de ops gigante | `send_text` divide em mensagens de até 4000 caracteres em quebras de linha; `ok: false` da API vai ao journal com a `description` |
+| Run interrompido por sinal (`TimeoutStartSec`, SIGINT) | O CLI avisa "❌ Run interrompido (sinal n)" e sai com 128+n |
+| Unidade systemd morre (OOM, venv quebrado) | `OnFailure=afiliado-notify.service` → "❌ unidade afiliado falhou — ver journalctl -u afiliado" |
+| Runs simultâneos | Impossível: `concurrency` no workflow serializa; na VPS, oneshot ativo não é sobreposto pelo timer |
 
 ## 10. Testes
 

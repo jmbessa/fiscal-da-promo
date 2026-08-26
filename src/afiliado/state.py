@@ -134,7 +134,7 @@ class StateDB:
     def record_prices(self, rows: list[tuple[str, str, int]], day: str | None = None) -> None:
         """Versão em lote de `record_price`: uma única transação para todas as
         observações do run (nada de commit por linha em laço). O dia é o
-        LOCAL — em UTC, os 288 runs de um dia BRT viravam dois "dias"."""
+        LOCAL — em UTC, os 192 runs de um dia BRT viravam dois "dias"."""
         dia = day or self.local_today().isoformat()
         valores = [(source, item_id, dia, int(price_cents))
                    for source, item_id, price_cents in rows

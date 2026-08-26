@@ -1,16 +1,20 @@
 """Reprodução: teto diário contado em dia UTC + timer 08h-23h55 BRT.
-Simula o pipeline publicando 1 post por slot de 5 min enquanto count_posts_today < 100,
-com posted_at real (UTC) — mostra em que hora BRT o canal cala e quando volta."""
+Simula o pipeline publicando 1 post por slot de 5 min enquanto count_posts_today < teto,
+com posted_at real (UTC) — mostra em que hora BRT o canal cala e quando volta.
+
+Ajuste da fase 5A: o portão do pipeline passou a ser o orçamento de ritmo
+(pipeline.pacing_budget: teto distribuído pela janela, no dia local) — a
+simulação usa a mesma função, com o teto do config (60/dia)."""
 import sys
 sys.path.insert(0, r"G:\Biblioteca\Documentos\Projetos\Afiliado\.claude\worktrees\fase3b-meli-hibrido\src")
 import tempfile, os
 from datetime import datetime, timedelta, timezone
-from afiliado import state
+from afiliado import pipeline, state
 from afiliado.state import StateDB
 from afiliado.models import Offer, Post, CopyParts
 
 BRT = timezone(timedelta(hours=-3))
-CAP = 100
+CAP = 60
 tmp = tempfile.mkdtemp()
 db = StateDB(os.path.join(tmp, "s.db"))
 
@@ -27,7 +31,7 @@ for day in range(1, 4):
     while t <= end:
         state._now = lambda t=t: t.astimezone(timezone.utc)   # relogio do StateDB
         used = db.count_posts_today("telegram")
-        if used < CAP:
+        if used < pipeline.pacing_budget(CAP, t):   # mesmo portão do pipeline.run
             n += 1
             db.record_post(Post(offer=offer(n), copy=CopyParts("h", "d", "c"),
                                 affiliate_link="l", message_text="m"), "telegram", "x")

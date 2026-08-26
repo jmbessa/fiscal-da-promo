@@ -21,8 +21,15 @@ Pipeline automático de divulgação de ofertas com link de afiliado
 | `IG_USER_ID` / `IG_ACCESS_TOKEN` | Feed automático do Instagram (fase 2A) — seguir `docs/runbooks/meta-setup.md` |
 | `MELI_CLIENT_ID` / `MELI_CLIENT_SECRET` / `MELI_REFRESH_TOKEN` | Fonte Mercado Livre (fase 3, desligada por padrão) — seguir `docs/runbooks/meli-setup.md` |
 
+São **11 variáveis**: `SHOPEE_APP_ID`, `SHOPEE_APP_SECRET`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHANNEL_ID`, `TELEGRAM_OPS_CHAT_ID`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`IG_USER_ID`, `IG_ACCESS_TOKEN`, `MELI_CLIENT_ID`, `MELI_CLIENT_SECRET`,
+`MELI_REFRESH_TOKEN`. As do Instagram e do Mercado Livre podem ficar vazias:
+o canal/fonte correspondente é ignorado com aviso no chat de operações.
+
 No GitHub: Settings → Secrets and variables → Actions → criar os secrets acima
-(todos já repassados pelo `publish.yml`).
+(todos já repassados pelo `publish.yml`). Na VPS, o `.env` (template completo
+em `deploy/install-vps.sh`).
 
 ## Instagram (fase 2A)
 
@@ -71,8 +78,25 @@ ao vivo → link) em `docs/runbooks/meli-setup.md`.
 ## Comandos
 
 - `afiliado doctor` — verifica Shopee, Telegram e Claude CLI com credenciais reais.
-- `afiliado run --dry-run` — pipeline completo (APIs reais) imprimindo os posts sem publicar.
+- `afiliado run --dry-run` — pipeline completo (APIs reais) imprimindo os posts
+  sem publicar. Sem efeitos colaterais: não escreve no `state.db`, não baixa a
+  imagem e não toca no link de afiliado.
 - `afiliado run` — executa e publica de verdade.
+
+## Portões e política de falhas (fase 5A)
+
+- **Link de afiliado nunca é clicado pelo pipeline.** A validação do link é
+  offline (`https` + host em `validation.allowed_domains`); um GET no link
+  curto seria um clique artificial do IP da VPS. Só a imagem é baixada.
+- **Fontes isoladas.** A Shopee em 5xx vira aviso e o run segue com o ML; a
+  Shopee repete até 3× com backoff (0,5 s, 1,5 s, 4 s) em 429/5xx/conexão. O
+  run só aborta quando todas as fontes falham — e mesmo assim manda o resumo.
+- **Telegram.** Erro de rede: 3 tentativas; `429` com `retry_after` ≤ 30 s:
+  dorme e repete uma vez. O resumo de ops é dividido em mensagens de até 4000
+  caracteres e uma resposta `ok: false` vai ao journal.
+- **`claude -p` sem ferramentas.** O LLM roda com `--tools ""`, sem settings/
+  hooks do projeto, em diretório temporário vazio e com um ambiente em lista
+  branca (nenhum segredo de Telegram/Shopee/ML/Instagram).
 
 ## Watchlist semanal
 
@@ -87,14 +111,14 @@ operações.
 
 Duas modalidades, desde a fase 1.8:
 
-- **VPS a cada 5 min (produção)** — cron da VPS chama `afiliado run` a cada 5
-  minutos (288 execuções/dia, 1 oferta por run). É a cadência real do canal;
-  setup completo em `docs/runbooks/vps-setup.md`. `state.db` fica local e
-  persiste sozinho (sem commit).
+- **VPS a cada 5 min (produção)** — o timer systemd chama `afiliado run` a
+  cada 5 minutos das 08:00 às 23:55 (192 execuções/dia, 1 oferta por run). É
+  a cadência real do canal; setup completo em `docs/runbooks/vps-setup.md`.
+  `state.db` fica local e persiste sozinho (sem commit).
 - **`.github/workflows/publish.yml` (backup)** — roda de hora em hora, das
   08h às 23h BRT, e commita `data/state.db` de volta. Não acompanha a cadência
   de 5 min (o cron do Actions tem piso de 5 min mas atrasa 5–30 min, e custo de
-  minutos muito acima da cota gratuita rodando 288x/dia) — serve como
+  minutos muito acima da cota gratuita rodando 192x/dia) — serve como
   redundância caso a VPS caia, e para disparo manual: aba Actions → publish →
   Run workflow (com opção dry-run).
 
@@ -103,17 +127,27 @@ esgota rápido — sem um piso de qualidade o pipeline passaria a postar sobras.
 `selection.min_ev_brl` corta candidatas com valor esperado (comissão em R$ ×
 popularidade, sem boost de watchlist) abaixo do piso; 0 ou ausente desliga.
 
-Canais com esforço manual ou limites de audiência/API têm um teto diário
-opcional (`max_per_day` em `config.yaml`, contado no SQLite): `telegram` em
-120/dia (teto de segurança do motor de volume na cadência de 5 min),
-`story_dispatch` em 6/dia (artes de story que chegam ao seu chat) e
-`instagram_feed` em 2/dia. Um canal que bate o teto no meio do run é pulado em
-silêncio (aparece como aviso no resumo, não como falha); ajuste os valores na
-seção `channels:` do `config.yaml`.
+Cada canal tem um teto diário (`max_per_day` em `config.yaml`, contado no
+SQLite **no dia local** de `schedule.timezone`): `telegram` em 60/dia (a meta
+do canal), `story_dispatch` em 6/dia (artes de story que chegam ao seu chat —
+**semi-automático**: você posta o story à mão) e `instagram_feed` em 2/dia.
+Desde a fase 5A o teto é **distribuído pela janela** (`schedule.window_start`
+– `window_end`): um canal só publica enquanto o que já postou hoje está
+abaixo de `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`
+— 60/dia vira ~1 a cada 16 min, 6 stories viram ~1 a cada 2h40, o 2º feed só
+sai da metade da janela em diante, e fora da janela nada é publicado. Quando
+nenhum canal pode publicar, o run termina antes de chamar o LLM (nenhuma
+oferta paga preço, link ou copy sem ter onde ser publicada); um canal que
+bate o teto de verdade aparece como aviso no resumo, não como falha.
 
-Com 288 runs/dia, mandar um resumo a cada execução inundaria o chat de
-operações. Desde a fase 1.8, o resumo só é enviado quando o run publicou,
-descartou algo ou gerou aviso — run completamente vazio não notifica. O
-caminho de exceção (run abortado) continua notificando sempre. Para voltar ao
-comportamento antigo (resumo em todo run), `ops.notify_empty_runs: true` em
-`config.yaml`.
+Com 192 runs/dia, mandar um resumo a cada execução inundaria o chat de
+operações. O resumo só é enviado quando o run publicou, descartou algo ou
+gerou aviso — e cada aviso entra **uma vez por dia** (tabela `warned`), então
+uma watchlist vencida não vira 192 mensagens. O primeiro run do dia manda um
+heartbeat ("☀️ Bom dia — ontem: N publicados, M descartados em K runs"),
+sempre; um run vazio sem aviso novo não notifica. Runs abortados (todas as
+fontes falharam) ou interrompidos por sinal notificam sempre, e a própria
+unidade systemd avisa se morrer (`OnFailure=`). Para voltar ao resumo em todo
+run, `ops.notify_empty_runs: true` em `config.yaml`. Quando o filtro zera
+tudo, o resumo diz quantas ofertas entraram e qual portão descartou cada uma;
+quando o LLM cai, diz em quantas chamadas a copy/ranking foram de fallback.

@@ -6,7 +6,7 @@ o dono do projeto posta a arte no app e cola o sticker com o link recebido.
 
 import httpx
 
-from afiliado import creative
+from afiliado import creative, message, pricing
 from afiliado.channels.base import PublishResult
 from afiliado.channels.telegram import API, _post_api, send_photo_bytes
 from afiliado.errors import SourceError
@@ -17,7 +17,9 @@ class StoryDispatchChannel:
     name = "story_dispatch"
 
     def __init__(self, bot_token: str, ops_chat_id: str, client: httpx.Client | None = None,
-                 brand_handle: str | None = None, brand_name: str = "Fiscal da Promo"):
+                 brand_handle: str | None = None, brand_name: str = "Fiscal da Promo",
+                 min_real_discount_pct: int = pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT,
+                 seal_tolerance: float = message.DEFAULT_SEAL_TOLERANCE):
         # .strip() mata o footgun clássico de token/chat_id colado com
         # espaço/quebra de linha nas pontas (env var, clipboard).
         self.bot_token = bot_token.strip()
@@ -25,12 +27,19 @@ class StoryDispatchChannel:
         self.client = client or httpx.Client(timeout=30)
         self.brand_handle = brand_handle
         self.brand_name = brand_name
+        # Régua honesta (selection.* do config, via cli._build_channels):
+        # min_real_discount_pct decide o modo da arte; seal_tolerance fica
+        # guardado para quando a arte ganhar o selo do histórico próprio —
+        # hoje o selo da arte é só o da watchlist (creative._selo_applicable).
+        self.min_real_discount_pct = min_real_discount_pct
+        self.seal_tolerance = seal_tolerance
 
     def publish(self, post: Post) -> PublishResult:
         try:
             art = creative.render_story(post.offer, post.copy, price_floor=post.price_floor,
                                         client=self.client, handle=self.brand_handle,
-                                        brand_name=self.brand_name)
+                                        brand_name=self.brand_name,
+                                        min_real_discount_pct=self.min_real_discount_pct)
         except SourceError as exc:
             return PublishResult(False, error=f"falha ao gerar arte do story: {exc}")
 

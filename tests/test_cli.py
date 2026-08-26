@@ -351,6 +351,62 @@ def test_run_abortado_manda_o_resumo_com_os_avisos_e_sai_com_erro(monkeypatch, t
     assert "fonte shopee falhou: HTTP 503" in enviados[0]
 
 
+def test_run_abortado_imprime_a_causa_no_journal(monkeypatch, tmp_path, capsys):
+    # M0-4: a causa vai também ao stdout (journalctl), não só ao chat de ops.
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        (open("config.yaml", encoding="utf-8").read()
+         .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+         .replace("data/watchlist.json",
+                  str(tmp_path / "sem-watchlist.json").replace("\\", "/"))),
+        encoding="utf-8")
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        raise pipeline.RunAborted(pipeline.RunSummary(),
+                                  "todas as fontes falharam — shopee: HTTP 503")
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    with pytest.raises(pipeline.RunAborted):
+        cli.main(["run", "--config", str(cfg_file)])
+    assert "❌ Run abortado: todas as fontes falharam — shopee: HTTP 503" in capsys.readouterr().out
+
+
+def _doctor_base(monkeypatch):
+    """doctor com Shopee vazia, ML sem env, LLM ok e Instagram desligado — só o
+    Telegram decide o resultado."""
+    class _Shopee:
+        def fetch_offers(self, cfg):
+            return []
+
+    monkeypatch.setattr(cli, "_shopee", lambda: _Shopee())
+    monkeypatch.setattr(cli, "_meli", lambda: None)
+    monkeypatch.setattr(cli.llm, "ask_json", lambda *a, **k: {"ok": True})
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    for k in ("IG_USER_ID", "IG_ACCESS_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    from afiliado import config
+    return config.load_config("config.yaml")
+
+
+def test_doctor_usa_o_retorno_do_send_text(monkeypatch, capsys):
+    # M0-5 (revisão da 5A): o doctor imprimia "✅ Telegram: mensagem de teste
+    # enviada" ignorando o bool de send_text — bot removido passava no doctor.
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: False)
+    assert cli.doctor(cfg) == 1
+    out = capsys.readouterr().out
+    assert "❌ Telegram" in out and "✅ Telegram" not in out
+
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    assert cli.doctor(cfg) == 0
+    assert "✅ Telegram: mensagem de teste enviada" in capsys.readouterr().out
+
+
 def test_heartbeat_e_enviado_mesmo_com_notify_empty_runs_false(monkeypatch, tmp_path):
     # M12: o "Bom dia" é um aviso, então passa pelo mesmo caminho de envio —
     # run "vazio" com heartbeat notifica.

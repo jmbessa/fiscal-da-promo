@@ -33,9 +33,16 @@ def check_link(url: str, cfg: dict) -> None:
     allowed = cfg["validation"]["allowed_domains"]
     if not url or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
         raise ValidationError("link vazio ou com espaço/caractere de controle")
+    # `https://evil.com\@meli.la/x`: urlsplit mantém a `\` no netloc e lê o
+    # host depois do `@` (meli.la); o navegador trata `\` como `/` e vai para
+    # evil.com. Barra invertida e qualquer userinfo são rejeitadas (5A, rev.).
+    if "\\" in url:
+        raise ValidationError(f"link com barra invertida: {url[:80]}")
     parts = urlsplit(url)
     if parts.scheme != "https":
         raise ValidationError(f"link sem https: {url[:80]}")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise ValidationError(f"link com credenciais no host: {url[:80]}")
     host = (parts.hostname or "").lower()
     if not host:
         raise ValidationError(f"link sem host: {url[:80]}")

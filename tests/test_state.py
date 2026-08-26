@@ -192,6 +192,21 @@ def test_warn_once_uma_vez_por_dia_local(tmp_path, monkeypatch):
     db.close()
 
 
+def test_record_run_poda_os_avisos_de_dias_anteriores(tmp_path, monkeypatch):
+    # M0-6 (revisão da 5A): `warned` nunca era podada. Só o dia local de hoje
+    # interessa ao warn_once; o resto sai junto com a poda do price_log.
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 12, 0, tzinfo=BRT))
+    assert db.warn_once("a") is True
+    _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
+    assert db.warn_once("b") is True
+    db.record_run(published=0, discarded=0)
+    rows = db.conn.execute("SELECT key, day FROM warned ORDER BY day").fetchall()
+    assert rows == [("b", "2026-08-26")]
+    assert db.warn_once("b") is False           # o de hoje continua valendo
+    db.close()
+
+
 # --- Fase 5A: heartbeat (contagem de ontem) ----------------------------------
 
 def test_day_stats_de_ontem(tmp_path, monkeypatch):

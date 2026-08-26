@@ -205,8 +205,13 @@ def doctor(cfg: dict) -> int:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
     if token and ops:
-        send_text(token, ops, "🩺 doctor: bot funcionando")
-        print("✅ Telegram: mensagem de teste enviada ao chat de operações")
+        # `send_text` devolve False (e imprime o `description` da API) quando
+        # o bot foi removido/chat id errado — antes o doctor dizia ✅ mesmo assim.
+        if send_text(token, ops, "🩺 doctor: bot funcionando"):
+            print("✅ Telegram: mensagem de teste enviada ao chat de operações")
+        else:
+            ok = False
+            print("❌ Telegram: envio ao chat de operações falhou (token/chat id?)")
     else:
         ok = False
         print("❌ Telegram: TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausentes")
@@ -319,8 +324,10 @@ def main(argv: list[str] | None = None) -> int:
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
                                warnings_iniciais=avisos)
     except pipeline.RunAborted as exc:
-        # Todas as fontes falharam: o resumo (com qual fonte e qual erro)
-        # vai ao ops mesmo assim, e o run sai com erro.
+        # Todas as fontes falharam: a causa está no próprio motivo (os avisos
+        # por fonte podem já ter sido deduplicados hoje) e vai ao journal e
+        # ao ops; o run sai com erro.
+        print(f"❌ Run abortado: {exc}")
         if not args.dry_run and token and ops:
             send_text(token, ops, exc.summary.text(header=f"❌ Run abortado: {exc}"))
         raise

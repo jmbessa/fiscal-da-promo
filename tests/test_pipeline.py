@@ -122,18 +122,19 @@ def test_dry_run_does_not_publish_nor_record(tmp_path, monkeypatch, capsys):
 
 
 def test_summary_text():
-    s = pipeline.RunSummary(published=["a"], discarded=["b: x"])
+    s = pipeline.RunSummary(published=["a"], discarded=[("b", "x")])
     assert "Publicados (1)" in s.text() and "Descartados (1)" in s.text()
+    assert "• b: x" in s.text()
 
 
 def test_summary_text_agrupa_descartes_com_o_mesmo_motivo():
     # C5: 60 linhas de descarte estouravam os 4096 chars do Telegram e o
     # resumo era descartado em silêncio — justamente no run de falha em massa.
-    descartes = [f"Produto {i}: preço R$ {30 + i},00 acima da referência R$ 26,00"
+    descartes = [(f"Produto {i}", f"preço R$ {30 + i},00 acima da referência R$ 26,00")
                  for i in range(31)]
-    descartes += ["Kit A: publicação falhou em telegram: Bad Request: chat not found",
-                  "Kit B: publicação falhou em telegram: Bad Request: chat not found",
-                  "Kit C: publicação falhou em telegram: Bad Request: chat not found"]
+    descartes += [("Kit A", "publicação falhou em telegram: Bad Request: chat not found"),
+                  ("Kit B", "publicação falhou em telegram: Bad Request: chat not found"),
+                  ("Kit C", "publicação falhou em telegram: Bad Request: chat not found")]
     text = pipeline.RunSummary(discarded=descartes).text()
     assert "Descartados (34)" in text
     assert "• 31× preço acima da referência (ex.: Produto 0)" in text
@@ -143,10 +144,27 @@ def test_summary_text_agrupa_descartes_com_o_mesmo_motivo():
 
 
 def test_summary_text_agrupa_a_partir_de_quatro():
-    descartes = ["Item %d: sem link de afiliado no pool para MLB%d" % (i, i) for i in range(4)]
+    descartes = [("Item %d" % i, "sem link de afiliado no pool para MLB%d" % i) for i in range(4)]
     text = pipeline.RunSummary(discarded=descartes).text()
     assert "• 4× sem link de afiliado no pool para MLB (ex.: Item 0)" in text
     assert "MLB0" not in text
+
+
+def test_descartes_guardam_rotulo_e_motivo_separados(tmp_path, monkeypatch):
+    # M0-3 (revisão da 5A): `_motivo` dividia a string no PRIMEIRO ": " — um
+    # título "Kit: 3 peças" virava motivo "peças: …" e o agrupamento errava.
+    # O descarte é guardado como (rótulo, motivo).
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i), title=f"Kit: {i} peças") for i in range(4)]
+
+    def validator(post, cfg, client=None):
+        raise ValidationError("link em domínio inesperado: evil.com")
+
+    summary = pipeline.run(CFG, [FakeSource(offers)], [FakeChannel()], db, validator=validator)
+    assert summary.discarded[0] == ("Kit: 0 peças", "link em domínio inesperado: evil.com")
+    assert "• 4× link em domínio inesperado: evil.com (ex.: Kit: 0 peças)" in summary.text()
+    db.close()
 
 
 def test_summary_text_includes_warnings():
@@ -273,7 +291,7 @@ def test_run_refresh_price_failure_discards_and_promotes_next(tmp_path, monkeypa
     assert len(ch.sent) == 2               # posts_per_run=2, oferta "0" descartada
     assert "0" not in [p.offer.item_id for p in ch.sent]
     assert len(summary.discarded) == 1
-    assert "mínima histórica" in summary.discarded[0]
+    assert "mínima histórica" in summary.discarded[0][1]
     db.close()
 
 
@@ -350,7 +368,7 @@ def test_run_offer_counts_when_one_channel_fails(tmp_path, monkeypatch):
     assert len(ch_a.sent) == 2
     assert len(ch_b.sent) == 2
     assert len(summary.discarded) == 2      # uma linha de falha de B por oferta
-    assert all("B" in d for d in summary.discarded)
+    assert all("B" in motivo for _, motivo in summary.discarded)
     db.close()
 
 
@@ -467,6 +485,36 @@ def test_run_todos_no_teto_nao_varre_a_fila(tmp_path, monkeypatch):
     assert summary.published == [] and summary.discarded == []
     assert [w for w in summary.warnings if "teto" in w] == [
         "ℹ️ teto diário atingido em todos os canais"]
+    db.close()
+
+
+def test_run_fechado_so_pelo_ritmo_encerra_em_silencio(tmp_path, monkeypatch):
+    # M0-1 (revisão da 5A): às 08:05 o orçamento do ritmo é 1 e já foi usado —
+    # o canal está fechado SÓ pelo ritmo, mas o run avisava "teto diário
+    # atingido em todos os canais": uma linha falsa no ops todo dia.
+    _congela(monkeypatch, 8, 5)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = _canal("telegram", 60)
+    _ja_postados(db, "telegram", 1)
+    src = ContadorSource([make_offer(item_id=str(i)) for i in range(3)])
+    summary = pipeline.run(CFG, [src], [ch], db, validator=no_network_validator)
+    assert ch.sent == [] and src.links == 0          # continua sem varrer a fila
+    assert not any("teto" in w for w in summary.warnings)
+    db.close()
+
+
+def test_run_teto_de_verdade_avisa_mesmo_com_outro_canal_so_no_ritmo(tmp_path, monkeypatch):
+    _congela(monkeypatch, 8, 5)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    no_ritmo, no_teto = _canal("telegram", 60), _canal("instagram_feed", 2)
+    _ja_postados(db, "telegram", 1)
+    _ja_postados(db, "instagram_feed", 2)
+    summary = pipeline.run(CFG, [FakeSource([make_offer()])], [no_ritmo, no_teto], db,
+                           validator=no_network_validator)
+    assert [w for w in summary.warnings if "teto" in w] == [
+        "ℹ️ teto diário atingido em instagram_feed"]
     db.close()
 
 
@@ -790,6 +838,23 @@ def test_run_aborta_so_quando_todas_as_fontes_falham_e_carrega_o_resumo(tmp_path
     avisos = info.value.summary.warnings
     assert any("fonte shopee falhou" in w for w in avisos)
     assert any("fonte meli falhou" in w for w in avisos)
+    db.close()
+
+
+def test_run_abortado_repetido_leva_a_causa_no_proprio_motivo(tmp_path, monkeypatch):
+    # M0-4 (revisão da 5A): no 2º run do dia o aviso por fonte já foi
+    # deduplicado pelo warn_once e os 191 "Run abortado" seguintes saíam sem
+    # a causa. O erro de cada fonte vai no próprio motivo do RunAborted.
+    _congela(monkeypatch, 12, 0)
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fontes = [FonteQuebrada("shopee", SourceError("HTTP 503")),
+              FonteQuebrada("meli", SourceError("token"))]
+    for _ in range(2):
+        with pytest.raises(pipeline.RunAborted) as info:
+            pipeline.run(CFG, fontes, [FakeChannel()], db, validator=no_network_validator)
+    assert info.value.summary.warnings == []          # 2º run: tudo já avisado hoje
+    assert str(info.value) == "todas as fontes falharam — shopee: HTTP 503; meli: token"
     db.close()
 
 

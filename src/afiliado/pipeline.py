@@ -31,29 +31,30 @@ AGRUPA_DESCARTES_A_PARTIR_DE = 4
 MAX_FALHAS_SEGUIDAS_POR_CANAL = 3
 
 
-def _motivo(descarte: str) -> str:
-    """`"<rótulo>: <motivo>"` → motivo sem os valores que variam por item."""
-    _, sep, resto = descarte.partition(": ")
-    return " ".join(_VALOR.sub("", resto if sep else descarte).split())
+def _motivo(motivo: str) -> str:
+    """Motivo sem os valores que variam por item (R$ …, dígitos) — a chave
+    do agrupamento. O descarte é guardado como `(rótulo, motivo)`: dividir
+    uma string única no primeiro ": " fazia o título "Kit: 3 peças" virar o
+    motivo "peças: …" (revisão da 5A)."""
+    return " ".join(_VALOR.sub("", motivo).split())
 
 
 @dataclass
 class RunSummary:
     published: list[str] = field(default_factory=list)
-    discarded: list[str] = field(default_factory=list)
+    discarded: list[tuple[str, str]] = field(default_factory=list)   # (rótulo, motivo)
     warnings: list[str] = field(default_factory=list)
 
     def _linhas_de_descarte(self) -> list[str]:
-        grupos: dict[str, list[str]] = {}
-        for d in self.discarded:
-            grupos.setdefault(_motivo(d), []).append(d)
+        grupos: dict[str, list[tuple[str, str]]] = {}
+        for rotulo, motivo in self.discarded:
+            grupos.setdefault(_motivo(motivo), []).append((rotulo, motivo))
         linhas: list[str] = []
         for motivo, itens in grupos.items():
             if len(itens) >= AGRUPA_DESCARTES_A_PARTIR_DE:
-                exemplo = itens[0].partition(": ")[0]
-                linhas.append(f"• {len(itens)}× {motivo} (ex.: {exemplo})")
+                linhas.append(f"• {len(itens)}× {motivo} (ex.: {itens[0][0]})")
             else:
-                linhas += [f"• {d}" for d in itens]
+                linhas += [f"• {rotulo}: {m}" for rotulo, m in itens]
         return linhas
 
     def text(self, header: str | None = None) -> str:
@@ -69,8 +70,9 @@ class RunSummary:
 
 class RunAborted(RuntimeError):
     """Nenhuma fonte devolveu nada E todas falharam (fase 5A, A4). Carrega o
-    resumo — com os avisos de qual fonte falhou e por quê — para o cli
-    mandar ao ops antes de sair com erro."""
+    resumo para o cli mandar ao ops antes de sair com erro. A causa (erro de
+    cada fonte) vai no PRÓPRIO motivo: o aviso por fonte é deduplicado pelo
+    `warn_once` e, a partir do 2º run do dia, o resumo sairia sem ela."""
 
     def __init__(self, summary: RunSummary, motivo: str):
         super().__init__(motivo)
@@ -170,13 +172,13 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         watchlist = None
 
     offers = []
-    fontes_com_falha = 0
+    erros_de_fonte: list[str] = []
     for src in sources:
         # Cada fonte isolada (A4): a Shopee em 5xx não derruba mais o ML.
         try:
             src_offers = src.fetch_offers(cfg)
         except (SourceError, httpx.HTTPError) as exc:
-            fontes_com_falha += 1
+            erros_de_fonte.append(f"{src.name}: {exc}")
             warn(f"⚠️ fonte {src.name} falhou: {exc}")
             continue
         pool_warning = getattr(src, "pool_warning", None) if src.name == "meli" else None
@@ -191,10 +193,10 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             warn(f"ℹ️ meli: {pool_warning}")
         offers.extend(src_offers)
 
-    if sources and fontes_com_falha == len(sources):
-        # Só aqui o run aborta — e mesmo assim o resumo (com os avisos) vai
-        # ao ops, via cli.
-        raise RunAborted(summary, "todas as fontes falharam")
+    if sources and len(erros_de_fonte) == len(sources):
+        # Só aqui o run aborta — e mesmo assim o resumo vai ao ops, via cli,
+        # com a causa no cabeçalho (os avisos podem já ter sido deduplicados).
+        raise RunAborted(summary, "todas as fontes falharam — " + "; ".join(erros_de_fonte))
 
     # A observação de hoje entra no histórico ANTES de a mediana ser lida.
     # Dry-run não escreve no banco (A10).
@@ -238,7 +240,14 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             warn("⚠️ nenhum canal disponível — nada a publicar")
             return _finish(summary, db, dry_run, sel, warn)
         if not any(aberto(ch) for ch in channels):
-            warn("ℹ️ teto diário atingido em todos os canais")
+            # Aviso só quando algum canal bateu o max_per_day de verdade.
+            # Fechado SÓ pelo ritmo (08:05: orçamento 1, já usado) é o
+            # normal de todo dia — encerra em silêncio (revisão da 5A).
+            nos_tetos = [ch.name for ch in channels if no_teto(ch)]
+            if len(nos_tetos) == len(channels):
+                warn("ℹ️ teto diário atingido em todos os canais")
+            elif nos_tetos:
+                warn("ℹ️ teto diário atingido em " + ", ".join(nos_tetos))
             return _finish(summary, db, dry_run, sel, warn)
 
     offers = pricing.enrich_offers(offers, db, watchlist, cfg)
@@ -281,7 +290,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                         price_floor=price_floor)
             validator(post, cfg)
         except Exception as exc:
-            summary.discarded.append(f"{rotulo}: {exc}")
+            summary.discarded.append((rotulo, str(exc)))
             continue
 
         if dry_run:
@@ -305,7 +314,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                 published_any = True
                 falhas_seguidas[ch.name] = 0
             else:
-                summary.discarded.append(f"{rotulo}: publicação falhou em {ch.name}: {res.error}")
+                summary.discarded.append((rotulo, f"publicação falhou em {ch.name}: {res.error}"))
                 falhas_seguidas[ch.name] = falhas_seguidas.get(ch.name, 0) + 1
                 if falhas_seguidas[ch.name] >= MAX_FALHAS_SEGUIDAS_POR_CANAL:
                     fechados.add(ch.name)

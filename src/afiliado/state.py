@@ -177,6 +177,12 @@ class StateDB:
         self.conn.commit()
         return cur.rowcount == 1
 
+    def prune_warned(self) -> None:
+        """Só o dia local de hoje interessa ao `warn_once`; os anteriores
+        saem (a tabela nunca era podada — revisão da 5A)."""
+        self.conn.execute("DELETE FROM warned WHERE day<?", (self.local_today().isoformat(),))
+        self.conn.commit()
+
     # -- runs e heartbeat ----------------------------------------------------
 
     def record_run(self, published: int, discarded: int, notes: str = "",
@@ -187,6 +193,7 @@ class StateDB:
         )
         self.conn.commit()
         self.prune_price_log(ref_window_days)
+        self.prune_warned()
 
     def day_stats(self, day: date) -> DayStats:
         """Contagem de um dia local: ofertas distintas em `posted` (uma

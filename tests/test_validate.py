@@ -69,6 +69,19 @@ def test_check_link_rejeita_espaco_e_caractere_de_controle(rede_proibida):
             validate.check_link(url, CFG)
 
 
+def test_check_link_rejeita_barra_invertida_e_userinfo(rede_proibida):
+    # M0-2 (revisão da 5A): `https://evil.com\@meli.la/x` PASSAVA — urlsplit
+    # mantém a `\` no netloc e lê o host depois do `@` (meli.la), mas o
+    # navegador trata `\` como `/` e vai para evil.com. Barra invertida e
+    # qualquer userinfo (`user@`, `user:pw@`) são rejeitados.
+    cfg = {"validation": {"allowed_domains": ["meli.la", "shope.ee"]}}
+    for url in ("https://evil.com\\@meli.la/x", "https://user@shope.ee/x",
+                "https://user:pw@shope.ee/x", "https://shope.ee\\x", "https://@shope.ee/x"):
+        with pytest.raises(ValidationError):
+            validate.check_link(url, cfg)
+    validate.check_link("https://meli.la/x", cfg)
+
+
 def test_check_link_nao_aceita_mais_client():
     # O parâmetro saiu de propósito: sem cliente HTTP não há como alguém
     # reintroduzir o GET no link por engano.

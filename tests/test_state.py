@@ -34,6 +34,65 @@ def test_record_run(tmp_path):
     db.close()  # sem exceção = schema e insert funcionam
 
 
+def test_record_price_mantem_o_menor_do_dia(tmp_path):
+    # Duas observações no mesmo dia: a referência fica com a MENOR (a mais
+    # conservadora — menos desconto alegado depois).
+    db = StateDB(tmp_path / "state.db")
+    db.record_price("shopee", "123456", 3390, day="2026-08-20")
+    db.record_price("shopee", "123456", 2600, day="2026-08-20")
+    db.record_price("shopee", "123456", 6890, day="2026-08-20")
+    assert db.price_history("shopee", "123456", days=30) == [2600]
+    db.close()
+
+
+def test_record_price_ignora_valores_nao_positivos(tmp_path):
+    db = StateDB(tmp_path / "state.db")
+    db.record_price("shopee", "123456", 0, day="2026-08-20")
+    db.record_price("shopee", "123456", -100, day="2026-08-21")
+    assert db.price_history("shopee", "123456", days=3650) == []
+    db.close()
+
+
+def test_price_history_respeita_a_janela_e_ordena_do_mais_recente(tmp_path):
+    from datetime import date, timedelta
+
+    db = StateDB(tmp_path / "state.db")
+    hoje = date.today()
+    for delta, cents in ((0, 3390), (10, 2600), (100, 9999)):
+        db.record_price("shopee", "123456", cents,
+                        day=(hoje - timedelta(days=delta)).isoformat())
+    assert db.price_history("shopee", "123456", days=90) == [3390, 2600]
+    assert db.price_history("shopee", "123456", days=365) == [3390, 2600, 9999]
+    assert db.price_history("shopee", "outro", days=365) == []
+    db.close()
+
+
+def test_prune_price_log_apaga_o_que_saiu_da_janela(tmp_path):
+    from datetime import date, timedelta
+
+    db = StateDB(tmp_path / "state.db")
+    hoje = date.today()
+    for delta, cents in ((0, 3390), (10, 2600), (100, 9999)):
+        db.record_price("shopee", "123456", cents,
+                        day=(hoje - timedelta(days=delta)).isoformat())
+    db.prune_price_log(days=90)
+    assert db.price_history("shopee", "123456", days=3650) == [3390, 2600]
+    db.close()
+
+
+def test_record_run_poda_o_price_log(tmp_path):
+    from datetime import date, timedelta
+
+    db = StateDB(tmp_path / "state.db")
+    hoje = date.today()
+    db.record_price("shopee", "123456", 9999,
+                    day=(hoje - timedelta(days=100)).isoformat())
+    db.record_price("shopee", "123456", 2600, day=hoje.isoformat())
+    db.record_run(published=1, discarded=0, ref_window_days=90)
+    assert db.price_history("shopee", "123456", days=3650) == [2600]
+    db.close()
+
+
 def test_count_posts_today(tmp_path):
     from datetime import date, timedelta
 

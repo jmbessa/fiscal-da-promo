@@ -13,12 +13,19 @@ class PriceFloor:
 
 
 @dataclass(frozen=True)
+class PriceRef:
+    ref_cents: int
+    window_days: int
+
+
+@dataclass(frozen=True)
 class Watchlist:
     generated_at: date
     valid_days: int
     category_boosts: dict[str, float] = field(default_factory=dict)
     hot_items: dict[str, float] = field(default_factory=dict)      # item_id -> boost
     price_floors: dict[str, PriceFloor] = field(default_factory=dict)
+    price_refs: dict[str, PriceRef] = field(default_factory=dict)
 
     def days_old(self, today: date | None = None) -> int:
         return ((today or date.today()) - self.generated_at).days
@@ -32,6 +39,9 @@ class Watchlist:
 
     def price_floor(self, item_id: str) -> PriceFloor | None:
         return self.price_floors.get(item_id)
+
+    def price_ref(self, item_id: str) -> PriceRef | None:
+        return self.price_refs.get(item_id)
 
 
 def load_watchlist(path: str | Path) -> Watchlist | None:
@@ -50,6 +60,8 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
         raw_hot_items = raw_hot_items if isinstance(raw_hot_items, dict) else {}
         raw_price_floors = raw.get("price_floors")
         raw_price_floors = raw_price_floors if isinstance(raw_price_floors, dict) else {}
+        raw_price_refs = raw.get("price_refs")
+        raw_price_refs = raw_price_refs if isinstance(raw_price_refs, dict) else {}
         return Watchlist(
             generated_at=date.fromisoformat(raw["generated_at"]),
             valid_days=int(raw.get("valid_days", 14)),
@@ -59,6 +71,9 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
             price_floors={str(k): PriceFloor(int(v["min_price_cents"]), int(v.get("window_days", 365)))
                           for k, v in raw_price_floors.items()
                           if isinstance(v, dict) and "min_price_cents" in v},
+            price_refs={str(k): PriceRef(int(v["ref_cents"]), int(v.get("window_days", 90)))
+                        for k, v in raw_price_refs.items()
+                        if isinstance(v, dict) and "ref_cents" in v},
         )
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None

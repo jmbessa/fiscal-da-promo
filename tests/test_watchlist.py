@@ -1,7 +1,7 @@
 import json
 from datetime import date
 
-from afiliado.watchlist import PriceFloor, Watchlist, load_watchlist
+from afiliado.watchlist import PriceFloor, PriceRef, Watchlist, load_watchlist
 from tests.test_models import make_offer
 
 
@@ -52,6 +52,44 @@ def test_is_stale_past_window():
     wl = Watchlist(generated_at=date(2026, 8, 1), valid_days=14)
     assert wl.days_old(date(2026, 8, 16)) == 15
     assert wl.is_stale(date(2026, 8, 16)) is True
+
+
+def test_load_watchlist_price_refs(tmp_path):
+    path = write_watchlist(tmp_path / "watchlist.json", {
+        "generated_at": "2026-08-23",
+        "price_refs": {"9212570285": {"ref_cents": 2590, "window_days": 90}},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.price_refs == {"9212570285": PriceRef(2590, 90)}
+    assert wl.price_ref("9212570285") == PriceRef(2590, 90)
+    assert wl.price_ref("nao-existe") is None
+
+
+def test_load_watchlist_price_refs_malformada_degrada(tmp_path):
+    path = write_watchlist(tmp_path / "refs_lista.json", {
+        "generated_at": "2026-08-23",
+        "price_refs": [1, 2, 3],
+        "category_boosts": {"100630": 1.3},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.price_refs == {}
+    assert wl.category_boosts == {"100630": 1.3}
+
+    path = write_watchlist(tmp_path / "refs_item_invalido.json", {
+        "generated_at": "2026-08-23",
+        "price_refs": {"bom": {"ref_cents": 2590}, "ruim": "nao é dict"},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.price_refs == {"bom": PriceRef(2590, 90)}
+
+
+def test_watchlist_sem_price_refs_fica_vazia():
+    wl = Watchlist(generated_at=date(2026, 8, 1), valid_days=14)
+    assert wl.price_refs == {}
+    assert wl.price_ref("x") is None
 
 
 def test_boost_for_category_only():

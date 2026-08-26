@@ -223,3 +223,88 @@ def test_day_stats_de_ontem(tmp_path, monkeypatch):
     assert (ontem.published, ontem.discarded, ontem.runs) == (2, 4, 2)
     assert db.day_stats(db.local_today()) == state.DayStats(0, 0, 0)
     db.close()
+
+
+# --- Fase 5C (M1/C1): estoque de candidatas e cursor de descoberta -----------
+
+def test_upsert_e_load_candidates(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    novos = db.upsert_candidates([make_offer(item_id="a"), make_offer(item_id="b")])
+    assert novos == 2
+    # regravar as mesmas não conta como novo, mas atualiza o payload
+    assert db.upsert_candidates([make_offer(item_id="a", title="outro")]) == 0
+    estoque = db.load_candidates("shopee", max_age_days=3)
+    assert {o.item_id for o in estoque} == {"a", "b"}
+    assert [o.title for o in estoque if o.item_id == "a"] == ["outro"]
+    assert db.load_candidates("meli", max_age_days=3) == []
+    db.close()
+
+
+def test_load_candidates_preserva_a_regua_da_oferta(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    db.upsert_candidates([make_offer(item_id="a", price_ref_cents=3000,
+                                     price_p25_cents=2800, price_window_days=90,
+                                     price_floor_cents=2500, price_floor_window_days=365,
+                                     commission_brl=4.5, rating=4.8, sales=1200)])
+    (o,) = db.load_candidates("shopee", max_age_days=3)
+    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (3000, 2800, 90)
+    assert (o.price_floor_cents, o.price_floor_window_days) == (2500, 365)
+    assert (o.commission_brl, o.rating, o.sales) == (4.5, 4.8, 1200)
+    db.close()
+
+
+def test_candidatas_velhas_saem_do_estoque(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, datetime(2026, 8, 20, 12, 0, tzinfo=BRT))
+    db.upsert_candidates([make_offer(item_id="velha")])
+    _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
+    db.upsert_candidates([make_offer(item_id="nova")])
+    assert {o.item_id for o in db.load_candidates("shopee", 3)} == {"nova"}
+    db.prune_candidates(3)
+    assert db.conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 1
+    db.close()
+
+
+def test_prune_candidates_por_fonte(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, datetime(2026, 8, 20, 12, 0, tzinfo=BRT))
+    db.upsert_candidates([make_offer(item_id="a"), make_offer(item_id="m", source="meli")])
+    _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
+    db.prune_candidates(3, source="shopee")
+    fontes = [r[0] for r in db.conn.execute("SELECT source FROM candidates").fetchall()]
+    assert fontes == ["meli"]
+    db.close()
+
+
+def test_payload_corrompido_nao_derruba_o_estoque(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    db.upsert_candidates([make_offer(item_id="ok")])
+    db.conn.execute("INSERT INTO candidates VALUES ('shopee','lixo',?,'{')",
+                    (state._now().isoformat(),))
+    db.conn.commit()
+    assert [o.item_id for o in db.load_candidates("shopee", 3)] == ["ok"]
+    db.close()
+
+
+def test_cursor_de_descoberta_persiste(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    assert db.get_cursor("shopee:root_page:100630", "1") == "1"
+    db.set_cursor("shopee:root_page:100630", "7")
+    assert db.get_cursor("shopee:root_page:100630", "1") == "7"
+    db.set_cursor("shopee:root_page:100630", "8")
+    assert db.get_cursor("shopee:root_page:100630", "1") == "8"
+    db.close()
+
+
+# --- Fase 5C (M2): cota por fonte -------------------------------------------
+
+def test_posted_today_by_source(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    db.record_post(make_post(item_id="a"), channel="telegram", message_id="1")
+    db.record_post(make_post(item_id="a"), channel="story_dispatch", message_id="2")
+    db.record_post(make_post(item_id="m", source="meli"), channel="telegram", message_id="3")
+    assert db.posted_today_by_source() == {"shopee": 1, "meli": 1}
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
+    assert db.posted_today_by_source() == {}
+    db.close()

@@ -1,10 +1,12 @@
+import dataclasses
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from afiliado.models import Post
+from afiliado.models import Offer, Post
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS posted (
@@ -36,7 +38,23 @@ CREATE TABLE IF NOT EXISTS warned (
     day TEXT NOT NULL,
     PRIMARY KEY (key, day)
 );
+CREATE TABLE IF NOT EXISTS candidates (
+    source TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (source, item_id)
+);
+CREATE TABLE IF NOT EXISTS discovery_cursor (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+# Campos que existem HOJE em Offer: um payload gravado por uma versão anterior
+# (sem `price_p25_cents`, por exemplo) continua carregável, e um campo que
+# sumiu do dataclass é ignorado em vez de derrubar o estoque inteiro.
+_CAMPOS_DE_OFERTA = frozenset(f.name for f in dataclasses.fields(Offer))
 
 DEFAULT_REF_WINDOW_DAYS = 90
 # Fase 5A (C3): o "dia" do teto, do price_log e dos avisos é o dia LOCAL da
@@ -113,6 +131,19 @@ class StateDB:
         ).fetchone()
         return row[0] if row else 0
 
+    def posted_today_by_source(self, now: datetime | None = None) -> dict[str, int]:
+        """Ofertas DISTINTAS publicadas hoje (dia local) por fonte — a mesma
+        oferta em 3 canais conta 1. Alimenta a cota por fonte (fase 5C, M2):
+        a fila prefere quem ainda está abaixo da meta do dia."""
+        dia = (now or _now()).astimezone(self.tz).date()
+        inicio, fim = self._day_bounds_utc(dia)
+        rows = self.conn.execute(
+            "SELECT source, COUNT(DISTINCT item_id) FROM posted "
+            "WHERE posted_at>=? AND posted_at<? GROUP BY source",
+            (inicio, fim),
+        ).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
     def record_post(self, post: Post, channel: str, message_id: str) -> None:
         o = post.offer
         self.conn.execute(
@@ -165,6 +196,72 @@ class StateDB:
         self.conn.execute("DELETE FROM price_log WHERE day<?", (cutoff,))
         self.conn.commit()
 
+    # -- estoque de candidatas (fase 5C, C1) ---------------------------------
+
+    def upsert_candidates(self, offers: list[Offer]) -> int:
+        """Grava as ofertas no estoque, uma linha por (fonte, item), com a
+        `Offer` inteira serializada em JSON. Devolve quantas eram INÉDITAS.
+
+        A descoberta deixou de ser refeita por run: cada run lê uma fatia do
+        espaço da API e o estoque acumula o resto (C1 — 2 páginas relidas a
+        cada 5 min davam 244 itens únicos/mês, 8/dia a dedupe 30). Reencontrar
+        um item atualiza `seen_at` e o payload: o preço mais novo vence."""
+        if not offers:
+            return 0
+        fontes = sorted({o.source for o in offers})
+        marcadores = ",".join("?" * len(fontes))
+        existentes = {
+            (r[0], r[1]) for r in self.conn.execute(
+                f"SELECT source, item_id FROM candidates WHERE source IN ({marcadores})",
+                tuple(fontes)).fetchall()}
+        novos = len({(o.source, o.item_id) for o in offers} - existentes)
+        agora = _now().isoformat()
+        self.conn.executemany(
+            "INSERT INTO candidates (source, item_id, seen_at, payload) VALUES (?,?,?,?) "
+            "ON CONFLICT(source,item_id) DO UPDATE SET "
+            "seen_at=excluded.seen_at, payload=excluded.payload",
+            [(o.source, o.item_id, agora, _serializa_oferta(o)) for o in offers],
+        )
+        self.conn.commit()
+        return novos
+
+    def load_candidates(self, source: str, max_age_days: int) -> list[Offer]:
+        """Candidatas da fonte vistas nos últimos N dias, mais recentes
+        primeiro. Payload ilegível é PULADO (nunca derruba o run)."""
+        cutoff = (_now() - timedelta(days=max_age_days)).isoformat()
+        rows = self.conn.execute(
+            "SELECT payload FROM candidates WHERE source=? AND seen_at>=? "
+            "ORDER BY seen_at DESC",
+            (source, cutoff),
+        ).fetchall()
+        ofertas = (_oferta_de_payload(r[0]) for r in rows)
+        return [o for o in ofertas if o is not None]
+
+    def prune_candidates(self, max_age_days: int, source: str | None = None) -> None:
+        """Apaga candidatas mais velhas que a janela (de uma fonte, ou de todas)."""
+        cutoff = (_now() - timedelta(days=max_age_days)).isoformat()
+        if source is None:
+            self.conn.execute("DELETE FROM candidates WHERE seen_at<?", (cutoff,))
+        else:
+            self.conn.execute("DELETE FROM candidates WHERE source=? AND seen_at<?",
+                              (source, cutoff))
+        self.conn.commit()
+
+    # -- cursor da varredura rotativa (fase 5C, M1) ---------------------------
+
+    def get_cursor(self, key: str, default: str = "") -> str:
+        """Valor do cursor de descoberta (qual fatia do espaço vem agora)."""
+        row = self.conn.execute(
+            "SELECT value FROM discovery_cursor WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_cursor(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO discovery_cursor (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value)))
+        self.conn.commit()
+
     # -- avisos uma vez por dia (fase 5A, A3) ---------------------------------
 
     def warn_once(self, key: str, day: str | None = None) -> bool:
@@ -209,3 +306,22 @@ class StateDB:
 
     def close(self) -> None:
         self.conn.close()
+
+
+def _serializa_oferta(offer: Offer) -> str:
+    return json.dumps(dataclasses.asdict(offer), ensure_ascii=False)
+
+
+def _oferta_de_payload(payload: str) -> Offer | None:
+    """`Offer` de volta do JSON, ou None quando a linha não é aproveitável —
+    JSON quebrado, payload que não é objeto, campo obrigatório que sumiu."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        return Offer(**{k: v for k, v in data.items() if k in _CAMPOS_DE_OFERTA})
+    except TypeError:
+        return None

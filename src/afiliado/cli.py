@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from afiliado import config, llm, pipeline
-from afiliado.channels.instagram_common import GRAPH_HOSTS
+from afiliado.channels.instagram_common import GRAPH_HOSTS, graph_error
 from afiliado.channels.instagram_feed import InstagramFeedChannel
 from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
@@ -234,6 +234,38 @@ def _doctor_links_do_meli(meli: MeliSource, offers: list, cfg: dict) -> bool:
     return True
 
 
+def _inteiro(valor) -> int | None:
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cota_de_publicacao(data) -> tuple[int | None, int | None, int]:
+    """`quota_usage` e `config.quota_total`/`quota_duration` da resposta de
+    `content_publishing_limit`.
+
+    Ao vivo (2026-08-27) a Meta devolveu
+    `{"data": [{"config": {"quota_total": 100, "quota_duration": 86400},
+    "quota_usage": 1}]}`; o mesmo objeto sem o envelope `data` também é lido.
+    Qualquer outra forma — lista vazia, campo ausente, número que não é número
+    — vira `(None, None, 24)`, e o doctor diz o que sabe em vez de estourar
+    (nunca vi esta rota falhar, e é justamente por isso que ela não pode
+    derrubar o diagnóstico inteiro). `quota_duration` vem em segundos."""
+    linha: dict = {}
+    if isinstance(data, dict):
+        linhas = data.get("data")
+        if isinstance(linhas, list) and linhas and isinstance(linhas[0], dict):
+            linha = linhas[0]
+        elif "quota_usage" in data or "config" in data:
+            linha = data
+    conf = linha.get("config")
+    conf = conf if isinstance(conf, dict) else {}
+    segundos = _inteiro(conf.get("quota_duration"))
+    return (_inteiro(linha.get("quota_usage")), _inteiro(conf.get("quota_total")),
+            segundos // 3600 if segundos else 24)
+
+
 def doctor(cfg: dict) -> int:
     ok = True
     try:
@@ -297,19 +329,40 @@ def doctor(cfg: dict) -> int:
     ig_user = os.environ.get("IG_USER_ID", "")
     ig_token = os.environ.get("IG_ACCESS_TOKEN", "")
     if ig_user and ig_token:
+        # `content_publishing_limit` no lugar de `?fields=username` (revisão da
+        # 5E): o username passa só com `instagram_basic` e imprimia ✅ com a
+        # permissão de PUBLICAR perdida — e essa perda mata os DOIS canais do
+        # Instagram de uma vez, agora que o story também sai pela API. Esta
+        # rota exige a permissão de publicação E devolve, na mesma viagem, a
+        # cota COMPARTILHADA por feed e story (100/24 h, medida ao vivo em
+        # 2026-08-27). O handle vem do config (é o desenhado nas artes): esta
+        # rota não devolve um, e uma segunda chamada só para isso gastaria
+        # rede para repetir o que já está no config.yaml.
         try:
-            r = httpx.get(f"{GRAPH_HOSTS[_instagram_api(cfg)]}/{ig_user}",
-                          params={"fields": "username", "access_token": ig_token}, timeout=20)
+            r = httpx.get(
+                f"{GRAPH_HOSTS[_instagram_api(cfg)]}/{ig_user}/content_publishing_limit",
+                params={"fields": "config,quota_usage", "access_token": ig_token}, timeout=20)
             data = r.json()
         except Exception as exc:
             ok = False
             print(f"❌ Instagram: {exc}")
         else:
-            if r.status_code == 200 and isinstance(data, dict) and "username" in data:
-                print(f"✅ Instagram: conectado como @{data['username']}")
+            if r.status_code == 200 and not (isinstance(data, dict) and data.get("error")):
+                # Quem prova a permissão é o 200; a cota é o extra. Forma
+                # estranha não vira ❌ — isso faria o dono desligar um canal
+                # que está funcionando.
+                usadas, total, horas = _cota_de_publicacao(data)
+                cota = (f"{usadas} de {total} na cota de {horas} h"
+                        if usadas is not None and total is not None
+                        else f"cota não informada pela Meta ({data})")
+                handle = (cfg.get("brand") or {}).get("handle") or f"id {ig_user}"
+                print(f"✅ Instagram: {handle} · publicação liberada · {cota}")
             else:
                 ok = False
-                print(f"❌ Instagram: {data}")
+                print(f"❌ Instagram: publicação bloqueada — {graph_error(data)}. "
+                      "Os DOIS canais (instagram_feed e instagram_story) param. "
+                      "Fallback: ligue channels.story_dispatch no config.yaml e poste "
+                      "os stories à mão (ver docs/runbooks/meta-setup.md)")
     else:
         print("ℹ️ Instagram: não configurado (ver docs/runbooks/meta-setup.md)")
 

@@ -960,3 +960,105 @@ def test_run_monta_o_story_a_partir_do_config_yaml(monkeypatch, tmp_path):
     story = next(c for c in chamado["channels"] if c.name == "instagram_story")
     assert story.max_per_day == 6
     assert story.brand_name == "Fiscal da Promo"
+
+
+# --- Fase 5E (revisão): o doctor confere a PERMISSÃO de publicar --------------
+# `GET /{ig_user}?fields=username` passa só com `instagram_basic` e dizia ✅ com
+# a permissão de PUBLICAR perdida. Agora que o story também sai pela API, essa
+# perda mata os DOIS canais do Instagram de uma vez, e o único sinal seria o
+# aviso de 3 falhas seguidas — enquanto o config.yaml manda o dono ligar o
+# `story_dispatch` exatamente nesse evento. Nenhum teste toca a rede.
+
+def _doctor_do_instagram(monkeypatch, resposta, status=200):
+    """doctor com tudo verde, Instagram configurado e a Graph API devolvendo
+    `resposta`. Devolve `(cfg, chamadas)` — `chamadas` registra (url, params)."""
+    import httpx
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setenv("IG_USER_ID", "178")
+    monkeypatch.setenv("IG_ACCESS_TOKEN", "igtok")
+    chamadas = []
+
+    def fake_get(url, params=None, timeout=None):
+        chamadas.append((url, params))
+        return httpx.Response(status, json=resposta)
+
+    monkeypatch.setattr(cli.httpx, "get", fake_get)
+    return cfg, chamadas
+
+
+def test_doctor_checa_a_permissao_de_publicacao_e_mostra_a_cota(monkeypatch, capsys):
+    """Uma chamada só: `content_publishing_limit` exige a permissão de publicar
+    E devolve a cota compartilhada entre feed e story."""
+    cfg, chamadas = _doctor_do_instagram(monkeypatch, {"data": [{
+        "config": {"quota_total": 100, "quota_duration": 86400}, "quota_usage": 8}]})
+    assert cli.doctor(cfg) == 0
+    url, params = chamadas[0]
+    assert url.endswith("/178/content_publishing_limit")
+    assert params["fields"] == "config,quota_usage"
+    assert params["access_token"] == "igtok"
+    assert ("✅ Instagram: @ofiscaldapromo · publicação liberada · "
+            "8 de 100 na cota de 24 h") in capsys.readouterr().out
+
+
+def test_doctor_falha_quando_a_conta_perdeu_a_permissao_de_publicar(monkeypatch, capsys):
+    cfg, _ = _doctor_do_instagram(monkeypatch, {"error": {
+        "message": "(#200) Requires instagram_content_publish permission"}}, status=400)
+    assert cli.doctor(cfg) == 1
+    out = capsys.readouterr().out
+    assert "❌ Instagram" in out and "✅ Instagram" not in out
+    assert "instagram_content_publish" in out
+    # E o que fazer: o fallback manual que o config.yaml já descreve.
+    assert "story_dispatch" in out
+
+
+def test_doctor_mostra_cota_zerada(monkeypatch, capsys):
+    """0 é número: um `if usage` engoliria a conta que ainda não publicou hoje."""
+    cfg, _ = _doctor_do_instagram(monkeypatch, {"data": [{
+        "config": {"quota_total": 100, "quota_duration": 86400}, "quota_usage": 0}]})
+    assert cli.doctor(cfg) == 0
+    assert "0 de 100 na cota de 24 h" in capsys.readouterr().out
+
+
+def test_doctor_le_a_cota_sem_o_envelope_data(monkeypatch, capsys):
+    """A rota foi medida ao vivo devolvendo `{"data": [{...}]}`; o objeto solto
+    é a outra forma plausível e vale o mesmo."""
+    cfg, _ = _doctor_do_instagram(monkeypatch, {
+        "config": {"quota_total": 100, "quota_duration": 86400}, "quota_usage": 1})
+    assert cli.doctor(cfg) == 0
+    assert "1 de 100 na cota de 24 h" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("resposta", [
+    {"data": []}, {"data": "?"}, {}, [], {"data": [{"config": {}}]},
+    {"data": [{"config": {"quota_total": "cem"}, "quota_usage": None}]}])
+def test_doctor_tolera_forma_estranha_da_cota(monkeypatch, capsys, resposta):
+    """A permissão é o que o HTTP 200 prova; a cota é o extra. Forma que o
+    doctor não conhece vira "cota não informada" — nunca uma exceção, e nunca
+    um ❌ que faria o dono desligar um canal que está funcionando."""
+    cfg, _ = _doctor_do_instagram(monkeypatch, resposta)
+    assert cli.doctor(cfg) == 0
+    out = capsys.readouterr().out
+    assert "✅ Instagram" in out and "publicação liberada" in out
+    assert "cota não informada" in out
+
+
+def test_doctor_com_a_graph_api_fora_do_ar_nao_levanta(monkeypatch, capsys):
+    import httpx
+    cfg, _ = _doctor_do_instagram(monkeypatch, {})
+
+    def explode(url, params=None, timeout=None):
+        raise httpx.ConnectError("sem rede")
+
+    monkeypatch.setattr(cli.httpx, "get", explode)
+    assert cli.doctor(cfg) == 1
+    assert "❌ Instagram" in capsys.readouterr().out
+
+
+def test_doctor_sem_instagram_configurado_continua_so_avisando(monkeypatch, capsys):
+    """Comportamento preservado: sem IG_USER_ID/IG_ACCESS_TOKEN o doctor avisa
+    e NÃO falha — quem não configurou o Instagram não perdeu permissão nenhuma."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    assert cli.doctor(cfg) == 0
+    assert "ℹ️ Instagram: não configurado" in capsys.readouterr().out

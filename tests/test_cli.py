@@ -1203,6 +1203,102 @@ def test_ig_login_que_falha_nao_vaza_a_senha(monkeypatch, tmp_path, capsys):
     assert not (tmp_path / "ig_session.json").exists()
 
 
+def test_config_yaml_traz_o_canal_de_figurinha_desligado_e_o_oficial_ligado():
+    """Mudança 5: o canal da API privada nasce DESLIGADO (o dono liga depois de
+    rodar `afiliado ig-login`) e o `instagram_story` (Graph API, sem figurinha)
+    fica ligado como fallback. Os dois nunca ao mesmo tempo."""
+    from afiliado import config
+    canais = config.load_config("config.yaml")["channels"]
+    link = canais["instagram_story_link"]
+    assert link["enabled"] is False
+    assert link["max_per_day"] == 6 and link["max_sem_link"] == 2
+    assert canais["instagram_story"]["enabled"] is True
+    assert not (link["enabled"] and canais["instagram_story"]["enabled"])
+
+
+# -- `doctor` e a regra de ouro ------------------------------------------------
+
+def _doctor_com_story_link(monkeypatch, tmp_path, ligado=True, oficial=False):
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    cfg["channels"] = {"instagram_story_link": {"enabled": ligado,
+                                                "max_per_day": 6, "max_sem_link": 2,
+                                                "session_path": str(tmp_path / "ig.json")},
+                       "instagram_story": {"enabled": oficial}}
+    return cfg
+
+
+def _sem_login_de_verdade(monkeypatch):
+    """Prende a Mudança 6: o doctor NÃO faz login. Cada autenticação extra é o
+    que atrai desafio — um diagnóstico por hora seria um login por hora."""
+    from afiliado.channels import instagram_story_link as mod
+
+    def boom():
+        raise AssertionError("o doctor tentou entrar no Instagram")
+
+    monkeypatch.setattr(mod, "_instagrapi", boom)
+
+
+def test_doctor_reclama_com_os_dois_canais_de_story_ligados(monkeypatch, tmp_path, capsys):
+    """Teste 9 do brief. Publicar pela API privada e pela oficial na mesma
+    conta, no mesmo dia, é o padrão que chama atenção."""
+    _env_do_story_link(monkeypatch)
+    _sem_login_de_verdade(monkeypatch)
+    cfg = _doctor_com_story_link(monkeypatch, tmp_path, ligado=True, oficial=True)
+
+    assert cli.doctor(cfg) == 1
+    saida = capsys.readouterr().out
+    assert "❌" in saida
+    assert "instagram_story_link" in saida and "instagram_story" in saida
+    assert "mesma conta" in saida.lower()
+    assert SENHA_DE_TESTE not in saida
+
+
+def test_doctor_confere_a_sessao_e_as_credenciais_sem_mostrar_valor(monkeypatch, tmp_path,
+                                                                    capsys):
+    _env_do_story_link(monkeypatch)
+    _sem_login_de_verdade(monkeypatch)
+    cfg = _doctor_com_story_link(monkeypatch, tmp_path)
+    (tmp_path / "ig.json").write_text('{"uuids": {}}', encoding="utf-8")
+
+    assert cli.doctor(cfg) == 0
+    saida = capsys.readouterr().out
+    assert "IG_USERNAME/IG_PASSWORD presentes" in saida
+    assert "sessão de 0 dia(s)" in saida and str(tmp_path / "ig.json") in saida
+    assert SENHA_DE_TESTE not in saida          # presença, nunca valor
+
+
+def test_doctor_sem_sessao_manda_rodar_ig_login(monkeypatch, tmp_path, capsys):
+    _env_do_story_link(monkeypatch)
+    _sem_login_de_verdade(monkeypatch)
+    cfg = _doctor_com_story_link(monkeypatch, tmp_path)
+
+    assert cli.doctor(cfg) == 0        # o canal ainda funciona: ele loga na hora
+    saida = capsys.readouterr().out
+    assert "⚠️" in saida and "afiliado ig-login" in saida
+
+
+def test_doctor_sem_credenciais_do_instagrapi_falha(monkeypatch, tmp_path, capsys):
+    _env_do_story_link(monkeypatch)
+    monkeypatch.delenv("IG_PASSWORD", raising=False)
+    _sem_login_de_verdade(monkeypatch)
+    cfg = _doctor_com_story_link(monkeypatch, tmp_path)
+
+    assert cli.doctor(cfg) == 1
+    saida = capsys.readouterr().out
+    assert "❌" in saida and "IG_PASSWORD" in saida
+    assert "IG_USERNAME/IG_PASSWORD presentes" not in saida
+
+
+def test_doctor_calado_quando_o_canal_esta_desligado(monkeypatch, tmp_path, capsys):
+    _env_do_story_link(monkeypatch)
+    _sem_login_de_verdade(monkeypatch)
+    cfg = _doctor_com_story_link(monkeypatch, tmp_path, ligado=False, oficial=True)
+
+    assert cli.doctor(cfg) == 0
+    assert "instagram_story_link" not in capsys.readouterr().out
+
+
 def test_ig_login_sem_instagrapi_instalado_diz_como_instalar(monkeypatch, tmp_path, capsys):
     from afiliado.channels import instagram_story_link as mod
 

@@ -235,6 +235,24 @@ channels:
   instagram_story:
     enabled: true
     max_per_day: 6           # stories por dia, ~um a cada 2h40 (o teto que era do despacho manual)
+  # Fase 5F: story COM figurinha de link, pelo instagrapi (API PRIVADA). Existe
+  # porque a Graph API NEGA figurinhas e o Meta Business Suite só põe link em
+  # story do Facebook — ver docs/superpowers/reviews/2026-08-27-sticker-de-link.md.
+  #
+  # REGRA DE OURO: este canal e o `instagram_story` acima NUNCA ficam ligados ao
+  # mesmo tempo. Publicar pela API privada e pela oficial na MESMA conta, no
+  # mesmo dia, é o padrão que chama atenção — o `doctor` reclama se os dois
+  # estiverem `enabled: true`. O de cima é o fallback: se este desarmar, ligue
+  # aquele e desligue este.
+  #
+  # E ele NÃO roda no GitHub Actions nem na VPS: só no `afiliado stories`, na
+  # máquina do dono (IP residencial, sessão e device estáveis). O `afiliado run`
+  # ignora este canal com aviso, mesmo ligado.
+  instagram_story_link:
+    enabled: false           # o dono liga depois de rodar `afiliado ig-login`
+    max_per_day: 6           # stories por dia, ~um a cada 2h40
+    max_sem_link: 2          # falhas de verificação SEGUIDAS antes de desarmar o canal
+    # session_path: data/ig_session.json   # padrão; está no .gitignore
 
 # Fase 1.8: chat de operações só recebe resumo quando o run publicou,
 # descartou ou gerou aviso — evita 192 mensagens/dia com a cadência de 5 min.

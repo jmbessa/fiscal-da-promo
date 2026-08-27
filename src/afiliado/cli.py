@@ -3,6 +3,7 @@ import io
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -468,7 +469,57 @@ def doctor(cfg: dict) -> int:
     else:
         print("ℹ️ Instagram: não configurado (ver docs/runbooks/meta-setup.md)")
 
+    if not _doctor_story_link(cfg):
+        ok = False
+
     return 0 if ok else 1
+
+
+def _doctor_story_link(cfg: dict) -> bool:
+    """Fase 5F: o canal do instagrapi, conferido SEM fazer login.
+
+    O doctor roda a cada diagnóstico; autenticar aqui gastaria uma autenticação
+    por execução, e é justamente a sequência de logins que atrai
+    `challenge_required`. Então ele confere só o que dá para ver do lado de
+    fora: os dois canais de story ligados juntos, a PRESENÇA das credenciais
+    (nunca o valor) e a sessão no disco.
+    """
+    ch_cfg = cfg.get("channels") or {}
+    ligado, _ = _channel_settings(ch_cfg.get(InstagramStoryLinkChannel.name))
+    oficial, _ = _channel_settings(ch_cfg.get(InstagramStoryChannel.name))
+    ok = True
+
+    if ligado and oficial:
+        ok = False
+        print("❌ instagram_story_link e instagram_story ligados ao mesmo tempo: publicar "
+              "pela API privada e pela oficial na MESMA CONTA, no mesmo dia, é o padrão "
+              "que chama atenção. Deixe só um ligado no config.yaml "
+              "(ver docs/runbooks/instagrapi-stories.md)")
+    if not ligado:
+        return ok
+
+    faltando = [nome for nome in ("IG_USERNAME", "IG_PASSWORD") if not _env(nome)]
+    if faltando:
+        ok = False
+        print(f"❌ instagram_story_link: {'/'.join(faltando)} ausente(s) no ambiente — "
+              "o canal não vai publicar nada (ver docs/runbooks/instagrapi-stories.md)")
+    else:
+        # Presença, nunca valor: esta é a senha da conta.
+        print("✅ instagram_story_link: IG_USERNAME/IG_PASSWORD presentes "
+              "(o doctor não faz login de propósito)")
+
+    sessao = ig_session_path(cfg)
+    if sessao.is_file():
+        idade = int((time.time() - sessao.stat().st_mtime) // 86400)
+        # Sessão VELHA é uma boa notícia, não um alerta: device estável e poucos
+        # logins é exatamente o que evita desafio. Só renove quando ela parar de
+        # funcionar (o canal avisa, com `afiliado ig-login` na mensagem).
+        print(f"✅ instagram_story_link: sessão de {idade} dia(s) em {sessao}")
+    else:
+        print(f"⚠️ instagram_story_link: sem sessão em {sessao} — rode `afiliado ig-login` "
+              "(senão o primeiro story do run faz login com senha, e login novo é o que "
+              "atrai desafio)")
+    return ok
 
 
 def ig_login(cfg: dict) -> int:

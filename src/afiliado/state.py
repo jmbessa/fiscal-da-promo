@@ -101,6 +101,11 @@ class StateDB:
         self.conn.executescript(_SCHEMA)
         self._migra_posted_manual()
         self.conn.commit()
+        # Fase 5A (A10): em `--dry-run` o pipeline liga isto e o cursor da
+        # descoberta para de avançar. Sem a trava, uma simulação empurrava a
+        # rotação da Shopee e a produção pulava uma fatia do ciclo — o único
+        # efeito colateral que sobrava do "dry-run não escreve nada".
+        self.somente_leitura = False
 
     def _migra_posted_manual(self) -> None:
         """`posted.manual` entrou depois (A12, rodada de correção da 5C): um
@@ -319,6 +324,8 @@ class StateDB:
         return row[0] if row else default
 
     def set_cursor(self, key: str, value: str) -> None:
+        if self.somente_leitura:
+            return
         self.conn.execute(
             "INSERT INTO discovery_cursor (key, value) VALUES (?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

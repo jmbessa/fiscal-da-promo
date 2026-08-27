@@ -238,6 +238,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         validator = (partial(validate.validate_post, skip_image=True) if dry_run
                      else validate.validate_post)
     summary = RunSummary()
+    db.somente_leitura = dry_run     # A10: nem o cursor da descoberta avança
     warn = _Warner(db, summary, dry_run)
     sel = cfg["selection"]
     llm.stats.reset()

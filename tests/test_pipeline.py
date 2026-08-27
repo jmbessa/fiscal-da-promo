@@ -753,7 +753,10 @@ def test_dry_run_nao_escreve_no_banco_nem_baixa_imagem(tmp_path, monkeypatch):
 
     monkeypatch.setattr(validate, "check_image", imagem_proibida)
     db = StateDB(tmp_path / "s.db")
-    tabelas = ("posted", "runs", "price_log", "warned")
+    # `discovery_cursor` entrou na lista depois do primeiro dry-run REAL: ele
+    # era a única tabela que a simulação ainda mexia, empurrando a rotação da
+    # descoberta e fazendo a produção pular uma fatia do ciclo.
+    tabelas = ("posted", "runs", "price_log", "warned", "discovery_cursor")
 
     def contagens():
         return {t: db.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabelas}

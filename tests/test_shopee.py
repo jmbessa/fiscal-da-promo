@@ -559,11 +559,28 @@ def test_refresh_price_atualiza_preco_e_comissao():
 
     offer = make_offer(source="shopee", item_id="123456", price_current_cents=24999)
     novo = source_with(handler).refresh_price(offer)
-    assert pedidos == [{"itemId": 123456}]
+    assert pedidos == [{"itemId": "123456"}]
     assert novo.price_current_cents == 1990
     assert novo.commission_pct == 15.0
     assert novo.commission_brl == pytest.approx(2.985)
     assert novo.title == offer.title and novo is not offer
+
+
+def test_refresh_price_manda_item_id_como_string_int64():
+    """Regressão de um bug que só o dry-run real pegou: o escalar `Int64` da
+    Shopee exige STRING no JSON. Com inteiro, TODA chamada devolvia
+    `wrong type` (code 10010) — medido ao vivo em 2026-08-26 — e o circuito
+    da 5C fechava a Shopee inteira a cada run, sem publicar nada dela.
+    Nenhum teste pegava isso porque o mock aceitava qualquer tipo."""
+    from tests.test_models import make_offer
+    tipos = []
+
+    def handler(request):
+        tipos.append(type(json.loads(request.content.decode())["variables"]["itemId"]))
+        return httpx.Response(200, json={"data": {"productOfferV2": {"nodes": [_no(123456)]}}})
+
+    source_with(handler).refresh_price(make_offer(source="shopee", item_id="123456"))
+    assert tipos == [str]
 
 
 def test_refresh_price_descarta_item_que_sumiu_da_listagem():

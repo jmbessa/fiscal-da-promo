@@ -105,7 +105,7 @@ selection:
 # afiliado (data/meli_links.json, ver docs/runbooks/meli-setup.md).
 sources:
   shopee: true
-  meli: false
+  meli: true
 
 # Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26
 # contra a API real (147 chamadas; docs/superpowers/reviews/2026-08-26-descoberta-shopee.md).

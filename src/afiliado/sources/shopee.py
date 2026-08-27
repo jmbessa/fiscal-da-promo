@@ -326,7 +326,12 @@ class ShopeeSource:
             item_id = int(str(offer.item_id).strip())
         except (TypeError, ValueError) as exc:
             raise SourceError(f"shopee: itemId inválido ({offer.item_id!r})") from exc
-        data = self._post({"query": ITEM_OFFER_QUERY, "variables": {"itemId": item_id}})
+        # `Int64` da Shopee exige STRING no JSON: medido ao vivo em 2026-08-26,
+        # `{"itemId": 20595061903}` devolve `wrong type` (code 10010) e
+        # `{"itemId": "20595061903"}` devolve o nó. O `int()` acima continua
+        # valendo como validação — o que vai na requisição é o texto.
+        data = self._post({"query": ITEM_OFFER_QUERY,
+                           "variables": {"itemId": str(item_id)}})
         nodes = (data.get("productOfferV2") or {}).get("nodes") or []
         vivo = None
         for node in nodes:

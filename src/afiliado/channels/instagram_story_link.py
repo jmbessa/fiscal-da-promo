@@ -23,7 +23,25 @@ sem nunca confundir um com o outro:
 
 O terceiro estado é a lição da 5E: não relate observação que você não fez. Um
 504 do Instagram não é evidência de que o instagrapi quebrou, então ele não
-mexe no contador de desarme — só o SEM_LINK mexe.
+mexe no contador de desarme — só o SEM_LINK mexe. E o SEM_LINK diz QUAL dos
+quatro ele é (`links` vazio, campo ausente, formato ilegível, outro endereço):
+o contrato `links[*].webUri` veio da doc da biblioteca, não de observação
+nossa, e com uma mensagem só a primeira renomeação de campo acusaria "quebrou"
+com os stories perfeitos no ar.
+
+**Os três freios, e o que cada um protege.**
+
+1. `e_erro_de_sessao` classifica desafio/sessão morta pelo NOME da exceção nos
+   TRÊS lugares que falam com o Instagram — login, upload e leitura de volta.
+   Com a sessão carregada o `login()` passa direto e o desafio aparece no
+   UPLOAD: era ali que ninguém o reconhecia, e o pipeline tentava de novo.
+2. Um story que FOI AO AR conta (`PublishResult.publicado`), mesmo sem
+   figurinha: ele ocupa um dos 6 do dia e entra no dedupe. Enquanto só o
+   sucesso contava, o canal quebrado publicava 2 por run sem gastar teto
+   nenhum.
+3. O desarme é GRAVADO no dia local (`StateDB.day_flags`): vale para o
+   processo seguinte, não só para o run. Rearma na virada do dia, numa
+   verificação boa, ou num `afiliado ig-login` bem-sucedido.
 
 **Onde este canal roda.** Na máquina do dono (`afiliado stories`), com IP
 residencial e sessão estável. NUNCA no GitHub Actions: IP de datacenter que
@@ -99,6 +117,16 @@ AVISO_SEM_PK = ("⚠️ instagram_story_link: o instagrapi não devolveu o pk do
 SEM_INSTAGRAPI = ("instagrapi não instalado — `pip install -e .[stories]` "
                   "(ver docs/runbooks/instagrapi-stories.md)")
 SESSAO_INVALIDA = "sessão do Instagram inválida — rode `afiliado ig-login`"
+
+# Os quatro jeitos de NÃO achar a figurinha. Todos são SEM_LINK (a direção
+# segura: parar de publicar), mas dizem coisas diferentes ao ops — e o contrato
+# `links[*].webUri` veio da doc do instagrapi, não de observação nossa. Com uma
+# mensagem só, a primeira renomeação de campo na biblioteca acusaria "quebrou"
+# com os stories perfeitos no ar.
+LINKS_VAZIO = "o story respondeu com `links` vazio"
+SEM_CAMPO_LINKS = "não encontrei o campo `links` na resposta do story_info"
+FORMATO_DESCONHECIDO = "os itens de `links` não trazem `webUri` que eu saiba ler"
+LINK_OUTRO_ENDERECO = "a figurinha aponta para outro endereço"
 
 
 class Verificacao(NamedTuple):
@@ -211,6 +239,15 @@ def mesma_url(a, b) -> bool:
     return str(a or "").strip().rstrip("/") == str(b or "").strip().rstrip("/")
 
 
+def _web_uri(link) -> str:
+    """O `webUri` de uma figurinha — modelo do instagrapi ou dicionário cru.
+
+    O dicionário existe porque nem toda resposta vira modelo pydantic; lê-lo
+    como ausência de link fazia um story SAUDÁVEL contar para o desarme."""
+    valor = link.get("webUri") if isinstance(link, dict) else getattr(link, "webUri", "")
+    return str(valor or "")
+
+
 def _pk(media) -> str:
     """O `pk` do story publicado — objeto do instagrapi ou dict, tanto faz.
     Vazio quer dizer "não sei qual story é este", e sem ele não há verificação
@@ -221,10 +258,20 @@ def _pk(media) -> str:
 
 def _grava_temporario(dados: bytes) -> Path:
     """A arte num arquivo: o instagrapi recebe CAMINHO, não bytes. Quem apaga é
-    o `finally` do `publish` — sempre, inclusive quando o upload levanta."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as arquivo:
-        arquivo.write(dados)
-        return Path(arquivo.name)
+    o `finally` do `publish` — sempre, inclusive quando o upload levanta.
+
+    Falhar AQUI (disco cheio, bytes que não são bytes) também apaga: o arquivo
+    já existe no instante em que `NamedTemporaryFile(delete=False)` volta, e o
+    `finally` do `publish` ainda não tem o caminho para limpar."""
+    arquivo = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    caminho = Path(arquivo.name)
+    try:
+        with arquivo:
+            arquivo.write(dados)
+    except BaseException:
+        caminho.unlink(missing_ok=True)
+        raise
+    return caminho
 
 
 class InstagramStoryLinkChannel:
@@ -278,14 +325,21 @@ class InstagramStoryLinkChannel:
 
         # A arte é a MESMA do canal oficial, com o MESMO veredito: story pela
         # Graph API e story com figurinha não podem contar histórias diferentes.
+        # A conversão e a gravação entram no MESMO try: o temporário nasce
+        # antes do `finally` de baixo, e uma falha aqui estouraria para dentro
+        # do laço do pipeline — contra o contrato "publish NUNCA levanta".
         try:
             art = creative.render_story(post.offer, post.copy, post.verdict,
                                         client=self.http_client, handle=self.brand_handle,
                                         brand_name=self.brand_name)
+            caminho = _grava_temporario(to_jpeg(art))
         except SourceError as exc:
-            return PublishResult(False, error=f"falha ao gerar arte do story: {exc}")
+            return PublishResult(False, error=self._sem_senha(
+                f"falha ao gerar arte do story: {exc}"))
+        except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta
+            return PublishResult(False, error=self._sem_senha(
+                f"falha ao preparar a arte do story ({type(exc).__name__}: {exc})"))
 
-        caminho = _grava_temporario(to_jpeg(art))
         try:
             return self._publica(post, caminho)
         finally:
@@ -366,12 +420,27 @@ class InstagramStoryLinkChannel:
                                self._sem_senha(f"{type(exc).__name__}: {exc}"))
         if story is None:
             return Verificacao(NAO_VERIFICADO, "story_info não devolveu o story")
-        links = list(getattr(story, "links", None) or [])
-        if any(mesma_url(getattr(link, "webUri", ""), uri) for link in links):
+        bruto = getattr(story, "links", None)
+        if bruto is None:
+            # O campo sumiu (ou nunca se chamou assim). É SEM_LINK — a direção
+            # segura —, mas com nome próprio: o dia em que o instagrapi
+            # renomear este campo, o ops precisa ler "mudou o formato" e não
+            # "o link não foi", que mandaria desligar um canal saudável.
+            return Verificacao(SEM_LINK, SEM_CAMPO_LINKS)
+        try:
+            links = list(bruto)
+        except TypeError:
+            return Verificacao(SEM_LINK, FORMATO_DESCONHECIDO)
+        if not links:
+            return Verificacao(SEM_LINK, LINKS_VAZIO)
+        uris = [_web_uri(link) for link in links]
+        if any(mesma_url(u, uri) for u in uris):
             return Verificacao(COM_LINK)
+        if not any(uris):
+            return Verificacao(SEM_LINK, FORMATO_DESCONHECIDO)
         # Figurinha apontando para OUTRO endereço é, para o seguidor, a mesma
         # tragédia que figurinha nenhuma.
-        return Verificacao(SEM_LINK, "a figurinha aponta para outro endereço" if links else "")
+        return Verificacao(SEM_LINK, LINK_OUTRO_ENDERECO)
 
     def _resultado(self, pk: str, verificacao: Verificacao) -> PublishResult:
         # Os três estados são falha ou sucesso, mas nos três o story JÁ ESTÁ NA

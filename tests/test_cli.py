@@ -1409,8 +1409,26 @@ def test_doctor_confere_a_sessao_e_as_credenciais_sem_mostrar_valor(monkeypatch,
     assert cli.doctor(cfg) == 0
     saida = capsys.readouterr().out
     assert "IG_USERNAME/IG_PASSWORD presentes" in saida
-    assert "sessão de 0 dia(s)" in saida and str(tmp_path / "ig.json") in saida
+    # O que o mtime mede é a ÚLTIMA GRAVAÇÃO, e `_guarda_sessao` reescreve o
+    # arquivo a cada login bem-sucedido: "sessão de N dias" seria sempre ~0 e
+    # não diria nada sobre a idade do device. O texto diz o que o número é.
+    assert "última sessão gravada há 0 dia(s)" in saida
+    assert str(tmp_path / "ig.json") in saida
     assert SENHA_DE_TESTE not in saida          # presença, nunca valor
+
+
+def test_a_senha_e_lida_sem_strip(monkeypatch, tmp_path, capsys):
+    """Menor da revisão: `_env` fazia `.strip()` no IG_PASSWORD. Senha que
+    termina em espaço vira `BadPassword` — que o canal relata como "sessão
+    inválida", mandando o dono para o galho errado do runbook."""
+    _env_do_story_link(monkeypatch)
+    _sem_login_de_verdade(monkeypatch)
+    monkeypatch.setenv("IG_PASSWORD", "  ")     # uma senha de dois espaços É uma senha
+    cfg = _doctor_com_story_link(monkeypatch, tmp_path)
+
+    assert cli.doctor(cfg) == 0
+    assert "IG_USERNAME/IG_PASSWORD presentes" in capsys.readouterr().out
+    assert cli._senha() == "  "
 
 
 def test_doctor_sem_sessao_manda_rodar_ig_login(monkeypatch, tmp_path, capsys):

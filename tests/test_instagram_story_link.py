@@ -26,6 +26,7 @@ from PIL import Image
 from afiliado.channels import instagram_story_link as mod
 from afiliado.channels.instagram_story_link import (AVISO_DESARMADO,
                                                     InstagramStoryLinkChannel)
+from afiliado.errors import SourceError
 from tests.test_state import make_post
 
 SENHA = "S3nh4-D0-D0n0"
@@ -214,13 +215,60 @@ def test_weburi_diferente_do_pedido_e_tratado_como_ausente():
 def test_story_sem_o_atributo_links_tambem_e_ausencia():
     """Uma versão do instagrapi que devolve um story sem `links` não pode
     virar exceção — vira o estado "sem link"."""
-    class SemLinks(FakeClient):
+    res = _canal(_SemCampoLinks()).publish(make_post())
+    assert not res.ok and "SEM figurinha de link" in res.error
+
+
+class _SemCampoLinks(FakeClient):
+    """O `Story` do instagrapi sem o campo `links` — o que aconteceria se a
+    biblioteca renomeasse o campo."""
+
+    def story_info(self, pk, **kwargs):
+        self.chamadas.append(("story_info", pk, None))
+        return SimpleNamespace(pk=pk)
+
+
+def test_campo_ausente_e_figurinha_ausente_tem_mensagens_DIFERENTES():
+    """I4. As duas continuam sendo SEM_LINK (a direção segura), mas o ops
+    precisa saber qual é qual: `links` vazio é "o instagrapi quebrou de novo";
+    campo ausente é "a leitura mudou de formato" — e o contrato
+    `links[*].webUri` nunca foi observado aqui, veio da doc. A primeira
+    renomeação da biblioteca acusaria quebra com os stories saudáveis."""
+    post = make_post()
+    vazio = _canal(FakeClient(links_do_story=[])).publish(post)
+    ausente = _canal(_SemCampoLinks()).publish(post)
+
+    assert mod.LINKS_VAZIO in vazio.error
+    assert mod.SEM_CAMPO_LINKS in ausente.error
+    assert mod.SEM_CAMPO_LINKS not in vazio.error
+    assert mod.LINKS_VAZIO not in ausente.error
+    assert "SEM figurinha de link" in vazio.error and "SEM figurinha" in ausente.error
+
+
+def test_figurinha_em_dicionario_e_lida_como_figurinha():
+    """`links` como lista de dicionários (o que o instagrapi devolve quando a
+    resposta não vira modelo) era lido como ausência. É uma figurinha."""
+    post = make_post()
+    cliente = FakeClient(links_do_story=[{"webUri": post.affiliate_link}])
+    assert _canal(cliente).publish(post).ok
+
+
+def test_link_num_formato_que_nao_sei_ler_diz_isso():
+    post = make_post()
+    cliente = FakeClient(links_do_story=[{"url": post.affiliate_link}])
+    res = _canal(cliente).publish(post)
+    assert not res.ok and mod.FORMATO_DESCONHECIDO in res.error
+    assert "outro endereço" not in res.error       # não é isso que aconteceu
+
+
+def test_links_que_nem_lista_e_vira_formato_desconhecido():
+    class Estranho(FakeClient):
         def story_info(self, pk, **kwargs):
             self.chamadas.append(("story_info", pk, None))
-            return SimpleNamespace(pk=pk)
+            return SimpleNamespace(pk=pk, links=42)
 
-    res = _canal(SemLinks()).publish(make_post())
-    assert not res.ok and "SEM figurinha de link" in res.error
+    res = _canal(Estranho()).publish(make_post())
+    assert not res.ok and mod.FORMATO_DESCONHECIDO in res.error
 
 
 # -- 4. estado NÃO VERIFICADO --------------------------------------------------
@@ -599,6 +647,40 @@ def test_o_arquivo_temporario_e_apagado_ate_quando_o_upload_levanta():
 
     assert not res.ok and "timeout do upload" in res.error
     assert cliente.arte_existia is True and not caminho.exists()
+
+
+def test_o_temporario_nao_vaza_quando_a_gravacao_falha(monkeypatch, tmp_path):
+    """O arquivo era criado ANTES do `try/finally`: uma falha na gravação
+    deixava o .jpg para trás — 6 por dia, para sempre, no disco do dono."""
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(tmp_path))
+    with pytest.raises(TypeError):
+        mod._grava_temporario("isto não é bytes")
+    assert list(tmp_path.glob("*.jpg")) == []
+
+
+def test_falha_ao_gravar_a_arte_nao_levanta_para_o_pipeline(monkeypatch):
+    """...e `publish` NUNCA levanta. A conversão da arte ficava fora do
+    try/except: um disco cheio estourava para dentro do laço do pipeline."""
+    def disco_cheio(art):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(mod, "to_jpeg", disco_cheio)
+    canal = _canal(FakeClient())
+    res = canal.publish(make_post())
+
+    assert not res.ok and "disco cheio" in res.error
+    assert canal.client.chamadas == []
+
+
+def test_a_falha_da_arte_tambem_raspa_a_senha(monkeypatch):
+    """O docstring do módulo promete que TODA mensagem daqui passa pelo
+    `_sem_senha`. Esta era a única que não passava."""
+    def explode(*a, **k):
+        raise SourceError(f"não baixei a imagem (token {SENHA})")
+
+    monkeypatch.setattr(mod.creative, "render_story", explode)
+    res = _canal(FakeClient()).publish(make_post())
+    assert not res.ok and SENHA not in res.error and "***" in res.error
 
 
 def test_falha_ao_gerar_a_arte_nao_publica_nada():

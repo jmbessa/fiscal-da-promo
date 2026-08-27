@@ -601,10 +601,13 @@ def _doctor_story_link(cfg: dict) -> bool:
     sessao = ig_session_path(cfg)
     if sessao.is_file():
         idade = int((time.time() - sessao.stat().st_mtime) // 86400)
-        # Sessão VELHA é uma boa notícia, não um alerta: device estável e poucos
-        # logins é exatamente o que evita desafio. Só renove quando ela parar de
-        # funcionar (o canal avisa, com `afiliado ig-login` na mensagem).
-        print(f"✅ instagram_story_link: sessão de {idade} dia(s) em {sessao}")
+        # O que o mtime mede é a ÚLTIMA GRAVAÇÃO — e `_guarda_sessao` reescreve
+        # o arquivo a cada login bem-sucedido, então "sessão de N dias" era
+        # sempre ~0 e não dizia nada sobre a idade do device. O texto agora diz
+        # o que o número é. (Sessão velha é boa notícia, não alerta: device
+        # estável e poucos logins é o que evita desafio.)
+        print(f"✅ instagram_story_link: última sessão gravada há {idade} dia(s) "
+              f"em {sessao}")
     else:
         print(f"⚠️ instagram_story_link: sem sessão em {sessao} — rode `afiliado ig-login` "
               "(senão o primeiro story do run faz login com senha, e login novo é o que "

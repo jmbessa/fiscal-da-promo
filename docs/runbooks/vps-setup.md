@@ -90,30 +90,53 @@ nas raízes, contra 1.800 posts/mês), não do número de varreduras.
   (`client_credentials`, verificado ao vivo em 2026-08-26), então o runner
   efêmero nunca rotaciona refresh token e o workflow não precisa de PAT nem de
   `gh secret set` (detalhes e o plano B em `docs/runbooks/meli-setup.md`).
-- **Tamanho do repositório — o limite real desta montagem.** Cada run commita
-  `data/state.db`, e a fase 5C engordou esse arquivo: em regime ele mede
-  ~35 MB (medido com 12.000 candidatas no estoque, 630 mil linhas de
-  `price_log` = 90 dias × ~7.000 observações/dia, e 30 dias de `posted`; as
-  tabelas de linha curta já são `WITHOUT ROWID`, o que cortou o `price_log`
-  de 47 para 22 MB). Um binário de 35 MB que muda inteiro, commitado 32×/dia,
-  soma **alguns GB por mês** no histórico. O `checkout` do runner continua
-  rápido (clone raso, `fetch-depth: 1`), então o sintoma não é lentidão: é o
-  repositório crescendo até o GitHub reclamar. Acompanhe em Settings →
-  Repository e, quando incomodar, na ordem:
-  1. `selection.ref_window_days` de 90 → 30 dias (o `price_log` é ~2/3 do
-     arquivo). Custo: a mediana/p25 passam a olhar 30 dias — ainda muito acima
-     dos 14 dias distintos que a regra do quartil exige.
-  2. `shopee.candidate_max_age_days` de 3 → 1 (o estoque é ~10 MB). Custo:
-     candidata não publicada em 24 h precisa ser redescoberta; com o ciclo de
-     ~1,25 dia do Actions, isso reduz um pouco a fila.
-  3. Reescrever o histórico do `state.db` — branch órfã com um commit só e
-     force-push, ou `git gc` agressivo — ou mudar o estado para a Opção B, onde
-     ele nem é commitado.
 - **Desligar:** GitHub → Actions → publish → `...` → *Disable workflow*. O
   GitHub também desativa workflows agendados após 60 dias sem atividade no
   repositório — o heartbeat diário no chat de operações é o que denuncia isso.
 - **Disparo manual:** aba Actions → publish → Run workflow (com opção
   dry-run).
+
+### O `state.db` commitado — o que a medição disse
+
+A fase 5C deixou isto como "risco aberto: alguns GB por mês, o GitHub reclama
+em semanas". A revisão **mediu**, com o volume real da descoberta nova, e o
+susto era ~10× exagerado. **Veredito: o Actions serve como produção; observe o
+tamanho.**
+
+| cenário | `candidates` | `price_log` | total |
+|---|---:|---:|---:|
+| Actions, 32 runs/dia (cadência medida) | 29,8 MB | 47,7 MB | **77,9 MB** |
+| VPS, 192 runs/dia | 51,1 MB | 122,8 MB | **174,2 MB** |
+
+Nesta cadência de **16 jobs/dia** a entrada é metade da medida — espere
+**~40 MB** (extrapolação, não medição; a primeira semana de produção diz o
+número real).
+
+O que engana é achar que o git guarda 40 MB a cada commit. Não guarda: o
+crescimento medido é de **0,375 MB por commit**. A 16 commits/dia dá ~6 MB/dia
+≈ **0,18 GB/mês** — o limite de 5 GB do GitHub fica a **mais de dois anos**, e
+não a semanas. (O número por commit foi medido com o arquivo maior; com ~40 MB
+ele tende a ser menor ainda.)
+
+Então o motivo real para encolher o arquivo **não é o limite do GitHub**: é o
+tempo de `checkout` e a RAM do runner ao abrir o SQLite. Enquanto o job couber
+no `timeout-minutes: 20`, não há o que fazer. Quando incomodar, as alavancas,
+ranqueadas pelo **efeito medido** — nenhuma aplicada, e a primeira tem custo:
+
+1. `selection.ref_window_days` de 90 → 30 dias: **−32 MB**. Custo: mediana e
+   p25 passam a olhar 30 dias. Ainda acima dos 14 dias distintos que a regra do
+   quartil exige, mas **90 dias é o que sustenta a régua honesta** — é a última
+   coisa a mexer, não a primeira.
+2. `shopee.candidate_max_age_days` de 3 → 1: **−20 MB**. Custo: candidata não
+   publicada em 24 h precisa ser redescoberta; com o ciclo de ~2,5 dias do
+   Actions, isso reduz a fila.
+3. Reescrever o histórico do `state.db` — branch órfã com um commit só e
+   force-push, ou `git gc` agressivo — ou mudar o estado para a Opção B, onde
+   ele nem é commitado.
+
+Acompanhe em Settings → Repository. As tabelas de linha curta já são
+`WITHOUT ROWID` desde a fase 5C (o `price_log` caiu de 47 para 22 MB nos
+volumes de então) — esse ganho já está dentro dos números acima.
 
 ## Opção B — VPS gratuita (cadência de 5 min, opcional)
 

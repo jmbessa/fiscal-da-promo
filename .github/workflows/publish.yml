@@ -23,17 +23,21 @@
 # O passo "Duração do job" imprime a primeira medição real — com ela no
 # runbook, dá para subir a cadência com número, não com esperança.
 #
-# ATENÇÃO — o tamanho do repositório é o limite real desta montagem, não os
-# minutos. Cada run commita `data/state.db`, que em regime (estoque de
-# candidatas de 3 dias + 90 dias de price_log + 30 dias de posted) mede ~35 MB;
-# 32 commits/dia de um binário que muda inteiro somam alguns GB por mês. O
-# `checkout` continua rápido (clone raso), mas o repositório cresce sem parar.
-# Acompanhe em Settings → Repository e, quando incomodar, escolha um destes,
-# nesta ordem: (1) baixar `selection.ref_window_days` de 90 para 30 — o
-# price_log é ~2/3 do arquivo; (2) baixar `shopee.candidate_max_age_days` de 3
-# para 1; (3) reescrever o histórico do state.db (branch órfã com um commit
-# só, force-push) ou passar o estado para a VPS. Detalhes e as contas em
-# docs/runbooks/vps-setup.md.
+# Tamanho do state.db commitado — MEDIDO (a 5C tinha estimado 10× a mais).
+# Veredito: **o Actions serve como produção; observe o tamanho.** Com o volume
+# real da descoberta, o arquivo em regime fica em ~78 MB a 32 runs/dia (29,8 de
+# `candidates` + 47,7 de `price_log`) e ~174 MB na cadência de 5 min da VPS.
+# Nesta cadência de 16 jobs/dia a entrada é metade da medida: espere ~40 MB
+# (extrapolação, não medição). E o histórico do git cresce só
+# **0,375 MB por commit** — o git não guarda o binário inteiro a cada vez —,
+# ou seja ~6 MB/dia ≈ 0,18 GB/mês: o limite de 5 GB do GitHub fica a mais de
+# dois anos, não a semanas. O motivo real para encolher é checkout/RAM, não o
+# limite do GitHub. Alavancas, ranqueadas pelo efeito MEDIDO — documentadas, e
+# nenhuma aplicada: (1) `selection.ref_window_days` 90 → 30 tira ~32 MB, mas 90
+# dias é o que sustenta a régua honesta; (2) `shopee.candidate_max_age_days`
+# 3 → 1 tira ~20 MB; (3) reescrever o histórico do state.db (branch órfã,
+# force-push) ou passar o estado para a VPS, onde ele nem é commitado.
+# Acompanhe em Settings → Repository. Contas em docs/runbooks/vps-setup.md.
 name: publish
 on:
   schedule:

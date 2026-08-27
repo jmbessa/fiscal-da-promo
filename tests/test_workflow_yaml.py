@@ -82,6 +82,25 @@ def test_o_job_tem_timeout_curto():
     assert _workflow()["jobs"]["run"]["timeout-minutes"] == 20
 
 
+def test_o_veredito_do_tamanho_do_state_db_e_o_medido():
+    """I-1/I-2: a fase 5C deixou "alguns GB por mês, o GitHub reclama em
+    semanas" — estimativa, e 10× exagerada. A revisão mediu 77,9 MB de arquivo
+    a 32 runs/dia e **0,375 MB por commit** de crescimento do git. O runbook e
+    o workflow passam a dizer o número medido e o veredito que ele sustenta."""
+    with open("docs/runbooks/vps-setup.md", encoding="utf-8") as f:
+        runbook = f.read()
+    with open(WORKFLOW, encoding="utf-8") as f:
+        workflow = f.read()
+    for texto in (runbook, workflow):
+        assert "0,375 MB por commit" in texto
+        assert "Actions serve como produção" in texto
+    assert "77,9 MB" in runbook and "174,2 MB" in runbook
+    # As duas alavancas ficam DOCUMENTADAS, não aplicadas: 90 dias é o que
+    # sustenta a régua honesta.
+    assert _config()["selection"]["ref_window_days"] == 90
+    assert _config()["shopee"]["candidate_max_age_days"] == 3
+
+
 def test_publish_nao_roda_dois_ao_mesmo_tempo():
     concurrency = _workflow()["concurrency"]
     assert concurrency["group"] == "publish"

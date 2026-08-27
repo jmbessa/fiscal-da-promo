@@ -70,6 +70,9 @@ class DiscoveryStats:
     calls: int = 0
     nodes: int = 0
     eligible: int = 0
+    # Aviso de configuração (não de run): `calls_per_run` pequeno demais para o
+    # plano. Vazio = nada a dizer. Quem o leva ao chat de ops é o pipeline.
+    warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -174,11 +177,12 @@ class ShopeeSource:
         # transformaria o 0 explícito em 8 (A11).
         teto = int(_ou_padrao(sh, "calls_per_run", DEFAULT_CALLS_PER_RUN))
         plano = self._plano(sh)
+        cortadas = plano[teto:] if teto > 0 else []
         if teto > 0:
             plano = plano[:teto]
         offers: list[Offer] = []
         seen_ids: set[str] = set()
-        stats = DiscoveryStats()
+        stats = DiscoveryStats(warning=_aviso_de_plano_truncado(teto, plano, cortadas))
         for fatia in plano:
             nodes, tem_proxima = self._busca(sh, fatia)
             stats.calls += 1
@@ -336,6 +340,29 @@ class ShopeeSource:
             commission_pct=vivo.commission_pct,
             commission_brl=vivo.commission_brl,
         )
+
+
+def _aviso_de_plano_truncado(teto: int, plano: list[_Fatia],
+                             cortadas: list[_Fatia]) -> str:
+    """Aviso quando `calls_per_run` corta o plano (menor da revisão da 5C).
+
+    Com `len(category_ids) × len(sort_types) >= calls_per_run`, as fatias de
+    subcategoria e de palavra-chave ficam sempre depois do corte — e o índice
+    delas só avança pelas fatias que SOBREVIVERAM ao teto, então elas nunca
+    rodam. Silenciosamente: metade do espaço de descoberta desligada por um
+    número no config."""
+    if not cortadas:
+        return ""
+    grupos = [
+        ("raiz(es)", sum(1 for f in cortadas if f.cursor_key.startswith("shopee:root_page:"))),
+        ("subcategoria(s)", sum(1 for f in cortadas
+                                if f.cursor_key.startswith("shopee:subcat_page:"))),
+        ("keyword(s)", sum(1 for f in cortadas if f.keyword)),
+    ]
+    perdidas = ", ".join(f"{n} {nome}" for nome, n in grupos if n)
+    return (f"⚠️ shopee: calls_per_run={teto} corta o plano de "
+            f"{len(plano) + len(cortadas)} chamadas — {perdidas} nunca rodam "
+            "(o cursor delas só avança pelas fatias que couberam)")
 
 
 def _ou_padrao(sh: dict, chave: str, padrao):

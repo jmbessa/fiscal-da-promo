@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS posted (
     price_cents INTEGER NOT NULL,
     message_id TEXT NOT NULL DEFAULT '',
     posted_at TEXT NOT NULL,
+    -- 1 = canal MANUAL (story_dispatch): a arte foi ao chat de operações e
+    -- espera o dono postar. Conta para o teto do canal e para o dedupe, mas
+    -- não é publicação (A12).
+    manual INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (source, item_id, channel)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS runs (
@@ -78,10 +82,15 @@ def _now() -> datetime:
 @dataclass(frozen=True)
 class DayStats:
     """Contagem de um dia local: ofertas publicadas (distintas em `posted`),
-    descartes e runs (de `runs`). Alimenta o heartbeat da manhã."""
+    descartes e runs (de `runs`). Alimenta o heartbeat da manhã.
+
+    `dispatched` conta à parte as ofertas que foram só a canal MANUAL — arte no
+    chat de operações esperando o dono postar (A12). Somá-las a `published`
+    fazia o bom dia relatar um dia melhor do que o dia foi."""
     published: int
     discarded: int
     runs: int
+    dispatched: int = 0
 
 
 class StateDB:
@@ -90,7 +99,18 @@ class StateDB:
         self.tz = ZoneInfo(timezone)
         self.conn = sqlite3.connect(path)
         self.conn.executescript(_SCHEMA)
+        self._migra_posted_manual()
         self.conn.commit()
+
+    def _migra_posted_manual(self) -> None:
+        """`posted.manual` entrou depois (A12, rodada de correção da 5C): um
+        banco criado antes não tem a coluna, e `CREATE TABLE IF NOT EXISTS` não
+        a acrescenta. Linhas antigas ficam com 0 (publicação) — que era a
+        semântica delas."""
+        colunas = {r[1] for r in self.conn.execute("PRAGMA table_info(posted)")}
+        if "manual" not in colunas:
+            self.conn.execute(
+                "ALTER TABLE posted ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
 
     # -- relógio local ------------------------------------------------------
 
@@ -162,12 +182,17 @@ class StateDB:
         ).fetchall()
         return {r[0]: int(r[1]) for r in rows}
 
-    def record_post(self, post: Post, channel: str, message_id: str) -> None:
+    def record_post(self, post: Post, channel: str, message_id: str,
+                    manual: bool = False) -> None:
+        """Registra a entrega da oferta num canal. `manual=True` (story_dispatch)
+        marca a linha como DESPACHO: conta para o teto do canal e para o dedupe,
+        mas não para `day_stats().published` — a arte ainda espera o dono."""
         o = post.offer
         self.conn.execute(
-            "INSERT OR REPLACE INTO posted VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO posted (source, item_id, channel, title, "
+            "price_cents, message_id, posted_at, manual) VALUES (?,?,?,?,?,?,?,?)",
             (o.source, o.item_id, channel, o.title, o.price_current_cents,
-             message_id, _now().isoformat()),
+             message_id, _now().isoformat(), int(bool(manual))),
         )
         self.conn.commit()
 
@@ -332,15 +357,20 @@ class StateDB:
 
     def day_stats(self, day: date) -> DayStats:
         """Contagem de um dia local: ofertas distintas em `posted` (uma
-        oferta em 3 canais conta 1), descartes e número de runs em `runs`."""
+        oferta em 3 canais conta 1), descartes e número de runs em `runs`.
+
+        Publicada = a oferta chegou a pelo menos um canal AUTOMÁTICO;
+        despachada = chegou a pelo menos um canal manual. Uma oferta que foi
+        aos dois conta nos dois (é o que aconteceu com ela)."""
         inicio, fim = self._day_bounds_utc(day)
-        publicados = self.conn.execute(
-            "SELECT COUNT(DISTINCT source || '|' || item_id) FROM posted "
-            "WHERE posted_at>=? AND posted_at<?", (inicio, fim)).fetchone()[0]
+        publicados, despachados = self.conn.execute(
+            "SELECT COUNT(DISTINCT CASE WHEN manual=0 THEN source || '|' || item_id END), "
+            "       COUNT(DISTINCT CASE WHEN manual=1 THEN source || '|' || item_id END) "
+            "FROM posted WHERE posted_at>=? AND posted_at<?", (inicio, fim)).fetchone()
         runs, descartados = self.conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(discarded), 0) FROM runs "
             "WHERE finished_at>=? AND finished_at<?", (inicio, fim)).fetchone()
-        return DayStats(int(publicados), int(descartados), int(runs))
+        return DayStats(int(publicados), int(descartados), int(runs), int(despachados))
 
     def close(self) -> None:
         self.conn.close()

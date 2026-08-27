@@ -153,14 +153,35 @@ def source_targets(cfg: dict, sources: list[str]) -> dict[str, int]:
 
 def next_index_by_quota(fila: list[Offer], metas: dict[str, int],
                         publicados: dict[str, int]) -> int | None:
-    """Índice da próxima oferta a publicar: a primeira da fila cuja fonte
-    ainda está ABAIXO da meta do dia; se nenhuma dessas existe, a primeira da
-    fila (uma fonte completa a outra — a cota não pode deixar o teto ocioso).
-    Fila vazia -> None. Sem metas, é sempre a ordem do ranking."""
+    """Índice da próxima oferta a publicar: a melhor ranqueada da fonte que
+    está proporcionalmente MAIS ATRÁS da meta do dia (`publicados/meta`).
+
+    O desempate pela razão é o que INTERCALA as lojas (menor da revisão da 5C):
+    a versão anterior devolvia a primeira da fila cuja fonte estivesse abaixo da
+    meta — enquanto as duas estivessem, isso era sempre o índice 0, e a loja
+    mais bem ranqueada publicava as 30 dela seguidas antes de a outra aparecer
+    no canal. A razão (e não o número absoluto) é o que faz metas diferentes se
+    comportarem: 10 de 40 está mais adiantada que 4 de 20.
+
+    Nenhuma fonte abaixo da meta -> a primeira da fila (uma fonte completa a
+    outra: a cota reparte o teto, nunca o deixa ocioso). Fila vazia -> None.
+    Sem metas, é sempre a ordem do ranking."""
     if not fila:
         return None
+    atrasadas = {nome: publicados.get(nome, 0) / meta
+                 for nome, meta in metas.items()
+                 if meta > 0 and publicados.get(nome, 0) < meta}
+    if not atrasadas:
+        return 0
+    menor = min(atrasadas.values())
+    preferidas = {nome for nome, razao in atrasadas.items() if razao == menor}
     for i, offer in enumerate(fila):
-        if publicados.get(offer.source, 0) < metas.get(offer.source, 0):
+        if offer.source in preferidas:
+            return i
+    # A fonte preferida não tem candidata nesta fila: vale qualquer outra que
+    # ainda esteja abaixo da meta, e só então o topo do ranking.
+    for i, offer in enumerate(fila):
+        if offer.source in atrasadas:
             return i
     return 0
 

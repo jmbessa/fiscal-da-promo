@@ -1258,13 +1258,37 @@ class CanalManual(NamedFakeChannel):
 
 
 def test_so_canal_manual_e_despacho_nao_publicacao(tmp_path, monkeypatch):
+    """A12, agora inteiro: despacho manual sai da lista de PUBLICADOS — do
+    resumo e da contagem do dia. Antes `len(summary.published)` e
+    `day_stats().published` contavam a arte que ninguém postou ainda, e o
+    heartbeat da manhã dizia que o dia tinha publicado o que não publicou."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")
     ch = CanalManual("story_dispatch")
     summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
                            validator=no_network_validator)
-    assert summary.published == ["Tênis Nike SB — 📤 despachado p/ ops (postar no app)"]
+    assert summary.published == []
+    assert summary.dispatched == ["Tênis Nike SB"]
+    assert f"{pipeline.DESPACHO_MANUAL} (1):" in summary.text()
+    assert db.day_stats(db.local_today()).published == 0
+    assert db.day_stats(db.local_today()).dispatched == 1
     assert db.count_posts_today("story_dispatch") == 1     # continua contando p/ o teto
+    db.close()
+
+
+def test_heartbeat_separa_despachos_de_publicacoes(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 12, 0, dia=25)
+    canais = [NamedFakeChannel("telegram"), CanalManual("story_dispatch")]
+    pipeline.run(CFG, [FakeSource([make_offer(item_id="a"), make_offer(item_id="b")])],
+                 canais, db, validator=no_network_validator)
+    _congela(monkeypatch, 8, 0, dia=26)
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="c")])],
+                           [NamedFakeChannel("telegram")], db,
+                           validator=no_network_validator)
+    assert ("☀️ Bom dia — ontem: 2 publicados, 2 despachados, 0 descartados em 1 runs"
+            in summary.warnings)
     db.close()
 
 

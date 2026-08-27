@@ -114,7 +114,8 @@ def test_count_posts_today(tmp_path):
 
     ontem = date.today() - timedelta(days=1)
     db.conn.execute(
-        "INSERT OR REPLACE INTO posted VALUES (?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO posted (source, item_id, channel, title, price_cents, "
+        "message_id, posted_at) VALUES (?,?,?,?,?,?,?)",
         ("shopee", "999", "a", "Tênis de ontem", 1000, "9",
          f"{ontem.isoformat()}T12:00:00"),
     )
@@ -214,14 +215,57 @@ def test_day_stats_de_ontem(tmp_path, monkeypatch):
     db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
     _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
     db.record_post(make_post(item_id="a"), channel="telegram", message_id="1")
-    db.record_post(make_post(item_id="a"), channel="story_dispatch", message_id="2")  # mesma oferta
+    db.record_post(make_post(item_id="a"), channel="story_dispatch", message_id="2",
+                   manual=True)                                          # mesma oferta
     db.record_post(make_post(item_id="b"), channel="telegram", message_id="3")
     db.record_run(published=2, discarded=3)
     db.record_run(published=0, discarded=1)
     _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
     ontem = db.day_stats(db.local_today() - timedelta(days=1))
     assert (ontem.published, ontem.discarded, ontem.runs) == (2, 4, 2)
+    assert ontem.dispatched == 1
     assert db.day_stats(db.local_today()) == state.DayStats(0, 0, 0)
+    db.close()
+
+
+def test_banco_sem_a_coluna_manual_e_migrado(tmp_path):
+    """`CREATE TABLE IF NOT EXISTS` não acrescenta coluna: um `state.db` criado
+    antes desta rodada precisa do ALTER TABLE, e as linhas dele valem como
+    publicação (era a semântica que tinham)."""
+    import sqlite3
+    caminho = tmp_path / "velho.db"
+    velho = sqlite3.connect(caminho)
+    velho.executescript(
+        "CREATE TABLE posted (source TEXT NOT NULL, item_id TEXT NOT NULL, "
+        "channel TEXT NOT NULL, title TEXT NOT NULL, price_cents INTEGER NOT NULL, "
+        "message_id TEXT NOT NULL DEFAULT '', posted_at TEXT NOT NULL, "
+        "PRIMARY KEY (source, item_id, channel)) WITHOUT ROWID;")
+    velho.execute("INSERT INTO posted VALUES ('shopee','1','telegram','t',100,'1',?)",
+                  (datetime.now(timezone.utc).isoformat(),))
+    velho.commit()
+    velho.close()
+
+    db = StateDB(caminho, timezone="America/Sao_Paulo")
+    hoje = db.day_stats(db.local_today())
+    assert (hoje.published, hoje.dispatched) == (1, 0)
+    db.record_post(make_post(item_id="2"), channel="story_dispatch", message_id="2",
+                   manual=True)
+    assert db.day_stats(db.local_today()).dispatched == 1
+    db.close()
+
+
+def test_day_stats_nao_conta_despacho_manual_como_publicacao(tmp_path, monkeypatch):
+    """A12 (rodada de correção): a arte que foi só para o chat de operações
+    ainda não é um post — quem posta é o dono, à mão. Contá-la como publicada
+    fazia o heartbeat da manhã relatar um dia melhor do que o dia foi."""
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
+    db.record_post(make_post(item_id="so-arte"), channel="story_dispatch",
+                   message_id="1", manual=True)
+    hoje = db.day_stats(db.local_today())
+    assert (hoje.published, hoje.dispatched) == (0, 1)
+    # ...e o teto do canal continua contando a arte (é esforço manual do dia)
+    assert db.count_posts_today("story_dispatch") == 1
     db.close()
 
 

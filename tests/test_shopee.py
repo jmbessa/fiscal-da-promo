@@ -500,6 +500,28 @@ def test_calls_per_run_e_o_teto_de_chamadas(tmp_path):
     db.close()
 
 
+def test_plano_truncado_alem_das_raizes_avisa(tmp_path):
+    """Menor da revisão da 5C: com `calls_per_run` <= raízes × sort_types, as
+    subcategorias e as palavras-chave NUNCA rodam — e como o índice delas só
+    avança pelas fatias que sobreviveram ao teto, isso é permanente e
+    silencioso."""
+    chamadas = []
+    cfg = {"shopee": {**CFG_5C["shopee"], "calls_per_run": 5}}
+    src, db = _fonte_com_cursor(_api_falsa(chamadas), tmp_path)
+    src.fetch_offers(cfg)
+    aviso = src.discovery_stats.warning
+    assert "calls_per_run" in aviso and "subcategoria" in aviso and "keyword" in aviso
+    db.close()
+
+
+def test_plano_inteiro_nao_avisa(tmp_path):
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_falsa(chamadas), tmp_path)
+    src.fetch_offers(CFG_5C)                       # calls_per_run 8 = plano inteiro
+    assert src.discovery_stats.warning == ""
+    db.close()
+
+
 def test_estatisticas_da_descoberta(tmp_path):
     chamadas = []
     cfg = {"shopee": {**CFG_5C["shopee"], "subcategory_ids": [], "keywords": {}}}

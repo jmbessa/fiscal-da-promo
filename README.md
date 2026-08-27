@@ -49,8 +49,10 @@ Dois canais, dois níveis de automação:
   afiliado; quem posta é você: abrir o Telegram, salvar a arte, postar como
   story no Instagram e colar o link no sticker. Não depende de nenhuma
   credencial da Meta. O teto (`max_per_day: 6`) limita as artes ao que dá pra
-  postar à mão num dia, e no resumo do run essas ofertas aparecem como
-  **"📤 despachado p/ ops (postar no app)"**, não como publicadas.
+  postar à mão num dia, e no resumo do run essas ofertas aparecem numa seção
+  própria — **"📤 Despachados p/ ops — postar no app"** —, fora da contagem de
+  publicados (e fora do heartbeat da manhã: enquanto você não posta, ninguém
+  publicou nada).
 - **`instagram_feed` (100% automático via Graph API, teto de 2/dia)** —
   publica direto no feed (1080×1350) sem intervenção humana. Requer
   `IG_USER_ID` / `IG_ACCESS_TOKEN` (obtidos via `docs/runbooks/meta-setup.md`;

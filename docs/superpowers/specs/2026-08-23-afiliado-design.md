@@ -22,7 +22,7 @@ CTA e link curto de afiliado.
 | Afiliação | Usuário já cadastrado nos programas da Shopee e do Mercado Livre; hoje gera links manualmente |
 | Audiência | Começa do zero em todos os canais; construir audiência faz parte do projeto |
 | Nicho | "Achadinhos" geral com categorias fixas no config (ex.: casa, eletrônicos, beleza); nichar depois conforme dados de cliques |
-| Autonomia | Automático para Telegram e feed do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. **Stories NÃO são automáticos** (`story_dispatch`, fase 2A): o pipeline gera a arte e o link e os entrega ao chat de operações; publicar é um gesto manual do dono, e o resumo do run diz "📤 despachado p/ ops (postar no app)" (fase 5C, A12) |
+| Autonomia | Automático para Telegram e feed do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. **Stories NÃO são automáticos** (`story_dispatch`, fase 2A): o pipeline gera a arte e o link e os entrega ao chat de operações; publicar é um gesto manual do dono, e o resumo do run lista essas ofertas em "📤 Despachados p/ ops — postar no app", fora da contagem de publicados (fase 5C, A12) |
 | Volume | **60 ofertas/dia** somadas as duas lojas, cota 50/50 por fonte, dedupe de 30 dias (fase 5C; a conta está em `docs/superpowers/reviews/2026-08-26-descoberta-shopee.md`) |
 | Sinalização de publicidade | **Nenhuma** — decisão do dono na fase 5C. O risco regulatório está registrado em `2026-08-26-analise-adversarial.md` (A7) |
 | Infra | **GitHub Actions (cron) é a produção** desde a fase 5C — de hora em hora, 08:00–23:00 BRT (16 jobs/dia: o GitHub cobra cada job arredondado para o minuto seguinte, e a cadência de 30 min estourava a cota); a VPS (systemd, 5 min) fica opcional. O código não depende de nenhum dos dois |
@@ -59,8 +59,9 @@ um canal só publica enquanto o que já postou hoje está abaixo de
 fora da janela o orçamento é 0. Sem nenhum canal aberto o run termina antes
 do ranking — nenhuma oferta paga preço ao vivo, link, copy ou validação sem
 ter onde ser publicada. `story_dispatch` é **manual**: a arte e o link chegam
-prontos ao chat de operações e o dono posta o story à mão — o resumo do run
-diz "despachado", não "publicado".
+prontos ao chat de operações e o dono posta o story à mão — essas ofertas
+entram em `summary.dispatched` e em `day_stats().dispatched`, nunca em
+"publicados" (senão o heartbeat da manhã relata um dia melhor do que o dia foi).
 
 A descoberta deixou de ser refeita a cada run (fase 5C, C1). Cada run lê uma
 **fatia** do espaço da API (`shopee.calls_per_run`, cursor persistido em

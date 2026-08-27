@@ -44,8 +44,12 @@ DEFAULT_MAX_DESCARTES_POR_RUN = 50
 MAX_FALHAS_SEGUIDAS_POR_FONTE = 10
 # Fase 5C (A12): canal `manual` (story_dispatch) entrega a arte ao chat de
 # operações; quem posta no Instagram é o dono. Quando SÓ canais manuais
-# aceitaram a oferta, o resumo diz isto em vez de "publicado".
-DESPACHO_MANUAL = "📤 despachado p/ ops (postar no app)"
+# aceitaram a oferta, ela vai para `summary.dispatched` — uma SEÇÃO própria do
+# resumo — e não para `published`. A revisão pegou o A12 pela metade: o rótulo
+# dizia "despachado" mas `len(summary.published)` e `day_stats().published`
+# continuavam contando a arte como post, e o heartbeat da manhã relatava um dia
+# melhor do que o dia foi.
+DESPACHO_MANUAL = "📤 Despachados p/ ops — postar no app"
 
 
 def _motivo(motivo: str) -> str:
@@ -59,6 +63,9 @@ def _motivo(motivo: str) -> str:
 @dataclass
 class RunSummary:
     published: list[str] = field(default_factory=list)
+    # A12: ofertas que só foram para canais MANUAIS (arte no chat de ops).
+    # Ainda não são posts — quem posta é o dono, à mão.
+    dispatched: list[str] = field(default_factory=list)
     discarded: list[tuple[str, str]] = field(default_factory=list)   # (rótulo, motivo)
     warnings: list[str] = field(default_factory=list)
     # Fase 5C (M1): o que a fatia de descoberta deste run custou e rendeu.
@@ -81,6 +88,9 @@ class RunSummary:
     def text(self, header: str | None = None) -> str:
         linhas = [f"{header or '✅ Run concluído'} — Publicados ({len(self.published)}):"]
         linhas += [f"• {p}" for p in self.published] or ["• (nenhum)"]
+        if self.dispatched:
+            linhas.append(f"{DESPACHO_MANUAL} ({len(self.dispatched)}):")
+            linhas += [f"• {d}" for d in self.dispatched]
         linhas.append(f"Descartados ({len(self.discarded)}):")
         linhas += self._linhas_de_descarte() or ["• (nenhum)"]
         linhas += self.discovery
@@ -164,7 +174,7 @@ def candidate_max_age_days(cfg: dict, source: str) -> int:
 
 def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
                        frescas: dict[str, list], summary: RunSummary,
-                       dry_run: bool) -> list:
+                       dry_run: bool, warn: "_Warner") -> list:
     """Candidatas do run = ESTOQUE persistido ∪ a fatia recém descoberta
     (fase 5C, C1).
 
@@ -199,6 +209,11 @@ def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
                 f"🔎 {src.name}: {stats.calls} chamadas · {stats.nodes} nós · "
                 f"{stats.eligible} elegíveis · {novos} novos no estoque "
                 f"({len(conhecidos | {o.item_id for o in lote})} no total)")
+            # Erro de CONFIG da varredura (ex.: `calls_per_run` que corta o
+            # plano e desliga subcategorias/keywords em silêncio). É aviso, não
+            # número do run: passa pelo warn_once e notifica uma vez por dia.
+            if getattr(stats, "warning", ""):
+                warn(stats.warning)
     return list(resultado.values())
 
 
@@ -232,7 +247,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     # uma VPS morta deixa de ser indistinguível de "sem oferta boa".
     if not dry_run:
         ontem = db.day_stats(db.local_today() - timedelta(days=1))
-        warn(f"☀️ Bom dia — ontem: {ontem.published} publicados, "
+        # A12: "publicados" é só o que foi a canal automático; as artes que
+        # esperaram o dono postar aparecem como "despachados", e só quando
+        # houve alguma (não poluir o bom dia de quem não usa o story_dispatch).
+        despachos = f"{ontem.dispatched} despachados, " if ontem.dispatched else ""
+        warn(f"☀️ Bom dia — ontem: {ontem.published} publicados, {despachos}"
              f"{ontem.discarded} descartados em {ontem.runs} runs", key="heartbeat")
 
     # Avisos de quem montou fontes/canais (ex.: canal ligado sem env) — antes
@@ -297,7 +316,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             o for nome, lote in frescas.items() for o in lote
             if getattr(by_name.get(nome), "observes_price_on_discovery", True)])
 
-    offers = _candidatas_do_run(cfg, db, sources, frescas, summary, dry_run)
+    offers = _candidatas_do_run(cfg, db, sources, frescas, summary, dry_run, warn)
 
     # -- Fase 5A (C2/C3): há canal aberto para publicar? -----------------------
     # Orçamento por canal = teto diário distribuído pela janela (ritmo).
@@ -452,9 +471,10 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                 usados[ch.name] = usados.get(ch.name, 0) + 1
                 if orcamento[ch.name] is not None:
                     usados_dia[ch.name] = usados_dia.get(ch.name, 0) + 1
-                db.record_post(post, ch.name, res.message_id)
+                manual = bool(getattr(ch, "manual", False))
+                db.record_post(post, ch.name, res.message_id, manual=manual)
                 published_any = True
-                so_manuais = so_manuais and bool(getattr(ch, "manual", False))
+                so_manuais = so_manuais and manual
                 falhas_seguidas[ch.name] = 0
             else:
                 summary.discarded.append((rotulo, f"publicação falhou em {ch.name}: {res.error}"))
@@ -466,9 +486,9 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if published_any:
             # A12: quando os únicos canais que aceitaram a oferta são manuais
             # (story_dispatch), o que aconteceu foi um DESPACHO — a arte está
-            # no chat de ops esperando o dono postar. O resumo para de chamar
-            # isso de "publicado".
-            summary.published.append(f"{rotulo} — {DESPACHO_MANUAL}" if so_manuais else rotulo)
+            # no chat de ops esperando o dono postar. Não entra em `published`
+            # (nem no resumo, nem na contagem do dia, nem no heartbeat).
+            (summary.dispatched if so_manuais else summary.published).append(rotulo)
             publicados_hoje[offer.source] = publicados_hoje.get(offer.source, 0) + 1
             count += 1
 

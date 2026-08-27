@@ -410,6 +410,32 @@ def test_a_fila_prefere_a_fonte_abaixo_da_meta():
     assert selection.next_index_by_quota(fila, metas, {"shopee": 1, "meli": 1}) == 0
 
 
+def test_a_cota_intercala_as_lojas_em_vez_de_esvaziar_uma():
+    """Menor da revisão da 5C: enquanto as DUAS fontes estavam abaixo da meta,
+    a função devolvia sempre o índice 0 — a loja mais bem ranqueada publicava
+    as 30 dela seguidas e só então a outra aparecia no canal. O desempate passa
+    a ser a razão `publicados/meta`: quem está proporcionalmente mais atrás vai
+    primeiro; empate mantém a ordem do ranking."""
+    fila = [make_offer(item_id=f"s{i}") for i in range(5)] + [
+        make_offer(item_id=f"m{i}", source="meli") for i in range(5)]
+    metas = {"shopee": 30, "meli": 30}
+    publicados: dict[str, int] = {}
+    escolhidos = []
+    for _ in range(6):
+        offer = fila.pop(selection.next_index_by_quota(fila, metas, publicados))
+        publicados[offer.source] = publicados.get(offer.source, 0) + 1
+        escolhidos.append(offer.source)
+    assert escolhidos == ["shopee", "meli"] * 3
+
+
+def test_a_cota_desempata_pela_razao_e_nao_pelo_numero_absoluto():
+    """Metas diferentes (a Shopee com o dobro): 10 de 40 (25%) está mais
+    adiantada que 4 de 20 (20%), mesmo publicando mais em número absoluto."""
+    fila = [make_offer(item_id="s1"), make_offer(item_id="m1", source="meli")]
+    assert selection.next_index_by_quota(fila, {"shopee": 40, "meli": 20},
+                                         {"shopee": 10, "meli": 4}) == 1
+
+
 def test_uma_fonte_completa_a_outra_quando_a_preferida_nao_tem_candidata():
     fila = [make_offer(item_id="s1")]              # só Shopee na fila
     indice = selection.next_index_by_quota(fila, {"shopee": 30, "meli": 30},

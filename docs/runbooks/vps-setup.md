@@ -6,13 +6,20 @@ O `config.yaml` define **quanto** postar (`channels.telegram.max_per_day: 60`,
 distribuído ao longo dela); o agendador externo define **de quanto em quanto
 tempo checar**. Duas opções, ambas sem custo:
 
-| | GitHub Actions | VPS gratuita |
+> **Desde a fase 5C a produção é a Opção A (GitHub Actions).** Decisão do
+> dono: não depender de uma VPS que a Oracle Always Free recolhe quando fica
+> ociosa (e esta fica >95% do tempo). A Opção B continua documentada e
+> suportada — é para quem quiser a cadência de 5 min.
+
+| | GitHub Actions (**produção**) | VPS gratuita (opcional) |
 |---|---|---|
 | Custo | R$ 0 dentro da cota (2.000 min/mês em repo privado) | R$ 0 (Oracle Always Free) |
-| Cadência | a cada 45–90 min, em lotes (`posts_per_run: 4–8`) | a cada 5 min, 1 por vez |
+| Cadência | a cada 30 min, `--posts-per-run 4` | a cada 5 min, 1 por vez |
 | Pontualidade | atrasos de 5–30 min são normais | exata |
-| Ritmo no canal | rajadas | espaçado, parece humano |
+| Ritmo no canal | o `pacing_budget` da fase 5A espaça os 60/dia nos dois casos | idem |
+| Estoque de candidatas | 32 fatias de descoberta/dia | 192 fatias/dia (mais fresco) |
 | Setup | nenhum (já pronto) | ~20 min, pede cartão só para verificação |
+| Sobrevive sozinho | sim | a VM ociosa pode ser recolhida |
 
 Regra de ouro: **os dois nunca rodam ao mesmo tempo** — cada um tem seu
 `state.db`, e juntos publicariam a mesma oferta duas vezes. Ao ligar a VPS,
@@ -21,22 +28,33 @@ workflow*).
 
 ---
 
-## Opção A — GitHub Actions (sem infraestrutura nova)
+## Opção A — GitHub Actions (produção, já configurada)
 
-O workflow `.github/workflows/publish.yml` existe e funciona, mas hoje está
-configurado para a Opção B (`posts_per_run: 1`, cron de hora em hora). Para usar
-o Actions como produção, **é preciso editar dois arquivos**:
+Não é preciso editar nada: `.github/workflows/publish.yml` já roda a cada
+**30 min entre 08:00 e 23:30 BRT** (32 runs/dia) com `--posts-per-run 4`.
 
-- `.github/workflows/publish.yml`: trocar os crons por um a cada ~45 min na
-  janela 08h–23h BRT (ex.: `0,45 11-23 * * *` + `0,45 0-2 * * *`);
-- `config.yaml`: `selection.posts_per_run: 4`.
+- **Cota:** 32 runs × ~1,5 min (com cache de pip e do npm global) ≈ 48 min/dia
+  ≈ **1.440 min/mês**, dentro dos 2.000 do plano grátis para repositório
+  privado. Sem os caches o setup sozinho passava de 2,5 min/run (≈2.400
+  min/mês) e estouraria. Confira o consumo em GitHub → Settings → Billing; se
+  apertar, corte o cron das 12:00–18:00 BRT para 1×/hora antes de mexer em
+  qualquer outra coisa.
+- **Estado:** o passo "Commitar estado" faz `git pull --rebase` antes do push;
+  em conflito no binário do `state.db` o run ATUAL vence e o log registra um
+  `::warning::` — o pior caso é reesquecer os posts de um run, nunca perder o
+  run. A mensagem leva `[skip ci]`, então o commit de estado não roda a suíte.
+- **Segredos:** os 12 do README. `MELI_REFRESH_TOKEN` é só rede de segurança —
+  o `/products/{id}/items` do Mercado Livre aceita o token de aplicação
+  (`client_credentials`, verificado ao vivo em 2026-08-26), então o runner
+  efêmero nunca rotaciona refresh token e o workflow não precisa de PAT nem de
+  `gh secret set` (detalhes e o plano B em `docs/runbooks/meli-setup.md`).
+- **Desligar:** GitHub → Actions → publish → `...` → *Disable workflow*. O
+  GitHub também desativa workflows agendados após 60 dias sem atividade no
+  repositório — o heartbeat diário no chat de operações é o que denuncia isso.
+- **Disparo manual:** aba Actions → publish → Run workflow (com opção
+  dry-run).
 
-Resultado: ≈21 execuções/dia × 4 ≈ 84 ofertas/dia, ~50 min de runner/dia.
-- Cota: 2.000 min/mês. Cada execução leva ~2–3 min; acima de ~25 execuções/dia
-  o mês estoura — se precisar de mais volume ou de ritmo espaçado, use a
-  Opção B.
-
-## Opção B — VPS gratuita (cadência de 5 min)
+## Opção B — VPS gratuita (cadência de 5 min, opcional)
 
 ### B1. Provisionar de graça
 

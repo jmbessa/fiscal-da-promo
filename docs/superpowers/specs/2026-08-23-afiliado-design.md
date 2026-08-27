@@ -22,8 +22,10 @@ CTA e link curto de afiliado.
 | Afiliação | Usuário já cadastrado nos programas da Shopee e do Mercado Livre; hoje gera links manualmente |
 | Audiência | Começa do zero em todos os canais; construir audiência faz parte do projeto |
 | Nicho | "Achadinhos" geral com categorias fixas no config (ex.: casa, eletrônicos, beleza); nichar depois conforme dados de cliques |
-| Autonomia | Automático para Telegram e feed do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. Exceção: stories (`story_dispatch`, fase 2A) são semi-automáticos — a arte e o link chegam prontos ao chat de operações e o dono posta à mão |
-| Infra | GitHub Actions (cron) no início; design portátil para VPS (mesmo CLI via cron/systemd, sem dependência do Actions no código) |
+| Autonomia | Automático para Telegram e feed do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. **Stories NÃO são automáticos** (`story_dispatch`, fase 2A): o pipeline gera a arte e o link e os entrega ao chat de operações; publicar é um gesto manual do dono, e o resumo do run diz "📤 despachado p/ ops (postar no app)" (fase 5C, A12) |
+| Volume | **60 ofertas/dia** somadas as duas lojas, cota 50/50 por fonte, dedupe de 30 dias (fase 5C; a conta está em `docs/superpowers/reviews/2026-08-26-descoberta-shopee.md`) |
+| Sinalização de publicidade | **Nenhuma** — decisão do dono na fase 5C. O risco regulatório está registrado em `2026-08-26-analise-adversarial.md` (A7) |
+| Infra | **GitHub Actions (cron) é a produção** desde a fase 5C — a cada 30 min, 08:00–23:30 BRT; a VPS (systemd, 5 min) fica opcional. O código não depende de nenhum dos dois |
 | LLM | Cota da assinatura Claude Max via Claude Code headless (`claude -p`), token de CI gerado com `claude setup-token`; fallback para API key se `ANTHROPIC_API_KEY` estiver definida |
 | Stack | Python (3.12+), SQLite para estado, pacote único com CLI |
 
@@ -43,10 +45,12 @@ dificuldade de teste sem benefício num funil fixo) e no-code/n8n (limites em
 criativo, dedupe e portabilidade).
 
 Cada execução de `afiliado run` processa um ciclo completo e termina. O
-agendador externo define o ritmo — fase 1.8: produção no timer systemd da VPS
-a cada 5 min das 08:00 às 23:55 (192 execuções/dia, 1 oferta por run; ver
-`docs/runbooks/vps-setup.md`), com o cron do Actions (hora em hora,
-08h–23h BRT) como backup/disparo manual. Cada canal tem um teto diário
+agendador externo define o ritmo — desde a fase 5C a **produção é o GitHub
+Actions**: `publish.yml` a cada 30 min das 08:00 às 23:30 BRT (32 runs/dia,
+`--posts-per-run 4`), commitando `data/state.db` de volta com `pull --rebase`
+antes do push. A VPS (timer systemd a cada 5 min, 192 execuções/dia, 1 oferta
+por run; `docs/runbooks/vps-setup.md`) fica **opcional**, para quem quiser
+cadência mais fina — nunca as duas ao mesmo tempo. Cada canal tem um teto diário
 (`max_per_day`: `telegram` 60 — a meta do canal —, `story_dispatch` 6,
 `instagram_feed` 2), contado no **dia local** de `schedule.timezone` e, desde
 a fase 5A, **distribuído pela janela** `schedule.window_start`–`window_end`:
@@ -54,11 +58,19 @@ um canal só publica enquanto o que já postou hoje está abaixo de
 `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`;
 fora da janela o orçamento é 0. Sem nenhum canal aberto o run termina antes
 do ranking — nenhuma oferta paga preço ao vivo, link, copy ou validação sem
-ter onde ser publicada. `story_dispatch` é **semi-automático**: a arte e o
-link chegam prontos ao chat de operações e o dono posta o story à mão. Com
-dedupe de 30 dias e 192 checagens/dia, o estoque de boas ofertas esgota
-rápido — um piso de valor esperado (`selection.min_ev_brl`, fase 1.8) evita
-postar sobras quando isso acontece.
+ter onde ser publicada. `story_dispatch` é **manual**: a arte e o link chegam
+prontos ao chat de operações e o dono posta o story à mão — o resumo do run
+diz "despachado", não "publicado".
+
+A descoberta deixou de ser refeita a cada run (fase 5C, C1). Cada run lê uma
+**fatia** do espaço da API (`shopee.calls_per_run`, cursor persistido em
+`discovery_cursor`) e o resultado acumula num **estoque de candidatas** (tabela
+`candidates`, validade `candidate_max_age_days`); as candidatas de um run são o
+estoque ∪ a fatia da vez. Isso é o que sustenta 60/dia com dedupe de 30: a
+janela de cada listagem tem 2.000 itens e as 5 raízes dão ≈ 5.460 elegíveis por
+mês, contra 244 da leitura rasa anterior — medição em
+`docs/superpowers/reviews/2026-08-26-descoberta-shopee.md`. Um piso de valor
+esperado (`selection.min_ev_brl`, fase 1.8) segue cortando sobras.
 
 ## 4. Estrutura de componentes
 
@@ -185,13 +197,15 @@ Cada fase é um ciclo próprio de plano → implementação → validação.
   próprio pipeline no link curto (IP da VPS, User-Agent falso, segundos após
   a geração, em todo post e no dry-run) é um clique de afiliado artificial:
   assinatura de tráfego inválido para os programas e contaminação do teste de
-  atribuição. A vitalidade da oferta já foi provada na descoberta (minutos
-  antes) e no `refresh_price` (segundos antes); o link vem do gerador
-  oficial/painel. Inválido → descarta a oferta.
+  atribuição. A vitalidade da oferta é provada pelo `refresh_price` (segundos
+  antes de publicar — e desde a fase 5C a descoberta pode ter dias, porque a
+  candidata vem do estoque: item que saiu da listagem levanta `SourceError` e
+  é descartado ali); o link vem do gerador oficial/painel. Inválido →
+  descarta a oferta.
 - **Preço:** dentro da faixa do config e não acima da referência própria
   (`selection.max_above_ref`, ver fase 4); roda DEPOIS do `refresh_price`.
-  O desconto do vendedor não é mais critério — é rótulo, decidido por
-  `pricing.price_line`.
+  O desconto do vendedor não é mais critério — é rótulo, e quem o decide é
+  `pricing.verdict` (fase 5B), uma vez, para texto, arte, legendas e copy.
 - **Imagem:** URL responde, content-type de imagem, tamanho mínimo. É a única
   checagem que vai à rede; o `--dry-run` a pula.
 - **Copy:** JSON validado contra schema (campos obrigatórios, comprimentos

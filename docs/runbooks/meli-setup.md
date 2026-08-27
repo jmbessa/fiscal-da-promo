@@ -214,14 +214,34 @@ faixa de preço, 1 sem p25)`. Um pool no formato antigo é rejeitado inteiro
 ### Cota do JoomPulse (fato, para os dois skills)
 
 O plano tem limite de consultas por dia, compartilhado entre
-`query_cubejs_meli` e `query_cubejs_shopee`. **Teto real observado em
-2026-08-26: a 7ª consulta da sessão devolveu `MCP subscription request limit
-exceeded`** (6 haviam retornado dados) e as tentativas seguintes ficaram
-rejeitadas por ~15 min. Por isso `/meli-pool-refresh` e `/watchlist-refresh`
-têm a seção "Orçamento": `max_consultas` (padrão 35), resultado bruto salvo em
-`data/joompulse_raw/<skill>/<data>/` ANTES da próxima consulta, cursor em
-`data/joompulse_raw/<skill>/cursor.json`, e retomada sem repetir consulta.
-Registre aqui o próximo "limit exceeded" com data e número da consulta.
+`query_cubejs_meli` e `query_cubejs_shopee`; `read_resource` não conta.
+
+**Teto medido em 2026-08-26** (a cota renova todo dia, confirmado pelo dono):
+
+| Momento | Consultas com dado | Onde parou |
+|---|---|---|
+| antes da renovação | 6 | 7ª → `MCP subscription request limit exceeded` |
+| depois da renovação | **9** | 10ª → mesmo erro |
+
+Ou seja: **~9 consultas por dia**. Isso é pouco e tem consequência de projeto:
+
+| Tarefa | Consultas | Dias a 9/dia |
+|---|---|---|
+| Pool do ML (validade 30 dias) | ~33 | 4 |
+| Checagem semanal do buy box | 4 | menos de 1 |
+| Referências de preço da Shopee (~120 itens) | ~40 | 5 |
+
+Por isso o JoomPulse **não é** a fonte principal de referência de preço da
+Shopee — o histórico próprio do pipeline (`price_log`, custo zero, 14 dias de
+observação) é. O JoomPulse semeia os itens mais quentes e cuida do pool do ML,
+que a API pública não consegue fornecer.
+
+Os dois skills têm a seção "Orçamento": `max_consultas` (padrão **9**),
+trabalho em **ondas fechadas** (um lote levado do começo ao fim, para que
+parar por cota deixe um artefato válido e menor, nunca um pela metade),
+resultado bruto salvo em `data/joompulse_raw/<skill>/<data>/` ANTES da próxima
+consulta, cursor em `data/joompulse_raw/<skill>/cursor.json`, e retomada sem
+repetir consulta. Registre aqui o próximo "limit exceeded" com data e número.
 
 ## 4. Pool de links de afiliado (`data/meli_links.json`)
 

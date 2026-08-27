@@ -21,12 +21,22 @@ quando vencer.
 
 ## Orçamento (obrigatório)
 
-O plano do JoomPulse tem **limite de consultas por dia**, compartilhado entre
-`query_cubejs_shopee` e `query_cubejs_meli` (fato: em 2026-08-26 a 7ª consulta
-da sessão devolveu `MCP subscription request limit exceeded` e as seguintes
-continuaram rejeitadas por ~15 min). `read_resource` não conta.
+O plano do JoomPulse tem **limite de consultas por dia**, e ele é PEQUENO:
+medido em 2026-08-26, **9 consultas após a renovação diária** (a 10ª devolveu
+`MCP subscription request limit exceeded`); antes da renovação, 6. A cota é da
+assinatura e é compartilhada entre `query_cubejs_shopee` e `query_cubejs_meli`;
+`read_resource` não conta.
 
-- Parâmetro `max_consultas` por execução: **padrão 35**. Nunca ultrapasse.
+- Parâmetro `max_consultas` por execução: **padrão 9**. Nunca ultrapasse.
+- **Consequência de projeto**: com ~40 consultas necessárias para as
+  referências de preço da Shopee, este skill leva ~5 dias para cobrir ~120
+  itens. Ele NÃO é a fonte principal de referência da Shopee — o histórico
+  próprio do pipeline (`price_log`, custo zero, 14 dias) é. Este skill
+  **semeia** os itens mais quentes para que eles nasçam com referência; o
+  resto amadurece sozinho. Priorize por `sold30Days` e não tente cobrir tudo.
+- **Trabalhe em ONDAS fechadas**: um lote de itens levado do começo ao fim
+  (referência + piso gravados no arquivo) antes de começar o próximo, para que
+  parar por cota deixe um arquivo válido e menor, nunca um pela metade.
 - **Cada resultado bruto é salvo ANTES da próxima consulta** em
   `data/joompulse_raw/watchlist-refresh/<AAAA-MM-DD>/<passo>_<lote>_p<pagina>.json`
   (JSON exato devolvido; diretório no `.gitignore`).

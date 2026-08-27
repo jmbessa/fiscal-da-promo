@@ -24,15 +24,23 @@ passa mais.
 
 ## Orçamento (obrigatório)
 
-O plano do JoomPulse tem **limite de consultas por dia**. Fato: em 2026-08-26 a
-7ª consulta da sessão devolveu `MCP subscription request limit exceeded` (6
-tinham retornado dados) e as tentativas seguintes, nas DUAS ferramentas
-(`query_cubejs_meli` e `query_cubejs_shopee`), continuaram rejeitadas por
-~15 min — a cota é da assinatura, compartilhada entre os cubos.
-`read_resource` não conta.
+O plano do JoomPulse tem **limite de consultas por dia**, e ele é PEQUENO.
+Medido em 2026-08-26: 6 consultas antes da renovação diária e, depois dela,
+**9 consultas — a 10ª devolveu `MCP subscription request limit exceeded`**. A
+cota é da assinatura e é compartilhada entre `query_cubejs_meli` e
+`query_cubejs_shopee`; `read_resource` não conta. Reconfirme o teto a cada
+execução: ele pode mudar de plano.
 
-- Parâmetro `max_consultas` por execução: **padrão 35**. Aceite outro valor se
+- Parâmetro `max_consultas` por execução: **padrão 9**. Aceite outro valor se
   o usuário pedir; nunca ultrapasse.
+- **Trabalhe em ONDAS fechadas, não em fases.** Uma onda = um lote de ~28
+  produtos levado do começo ao fim (1 consulta de título + 4 de preço), de modo
+  que, ao parar em qualquer ponto, o que está em disco é um pool COMPLETO e
+  menor — nunca metade de um pool. Foi isso que salvou a execução de
+  2026-08-26 (a onda 0 já estava fechada quando a cota morreu). Nunca faça
+  "todos os títulos, depois todos os preços".
+- Um pool pequeno e válido é melhor que um grande pela metade: 40 ofertas
+  bastam para dias de publicação com dedupe de 30 dias.
 - **Cada resultado bruto é salvo ANTES da próxima consulta** em
   `data/joompulse_raw/meli-pool-refresh/<AAAA-MM-DD>/<passo>_<lote>.json`
   (o JSON exato devolvido; o diretório está no `.gitignore`).

@@ -12,13 +12,12 @@ Por isso este teste roda o `config.yaml` REAL ponta a ponta (fetch_offers ->
 enrich_offers -> filter_offers) e exige candidatas > 0. Se alguém
 reintroduzir um portão que zere uma fonte inteira, a suíte quebra aqui.
 
-Pool (fase 5B): o formato novo exige p25/janelas/buy box e o
-`data/meli_offers.json` atual ainda é o formato antigo (foto de um dia — C7),
-que o leitor rejeita de propósito. Até o agente de dados regenerar o pool
-(cota do JoomPulse estourou em 2026-08-26), este teste roda sobre
-`tests/fixtures/meli_offers_v2.json`: 3 entradas no formato novo com ids,
-títulos, imagens e buy boxes reais e números de preço SINTÉTICOS. Quando o
-pool real estiver no formato novo, troque `POOL` de volta para ele.
+Pool: as asserções da régua rodam sobre `tests/fixtures/meli_offers_v2.json`
+(3 entradas no formato da fase 5B, com ids/títulos/buy boxes reais e números
+de preço sintéticos), para que a suíte não dependa do conteúdo do pool de
+produção. O pool REAL (`data/meli_offers.json`) tem o seu próprio teste
+ponta a ponta mais abaixo — é ele que quebra se um refresh gerar um arquivo
+que o leitor rejeita em silêncio.
 """
 
 import json
@@ -116,17 +115,23 @@ def test_desconto_do_vendedor_zerado_nao_derruba_mais_ninguem(tmp_path, pool_no_
     db.close()
 
 
-def test_pool_real_antigo_e_rejeitado_com_motivo_e_nao_em_silencio(tmp_path, monkeypatch):
-    """O `data/meli_offers.json` do repo ainda é o formato antigo: nenhuma
-    entrada passa, e o motivo chega ao aviso (doctor/ops) — não é zero
-    silencioso. Quando o agente de dados regenerar o pool no formato novo,
-    este teste passa a exigir o contrário (troque para `offers` não vazio)."""
+def test_pool_real_produz_candidatas_com_o_config_real(tmp_path, monkeypatch):
+    """A rede que importa: o pool de PRODUÇÃO, lido pelo leitor de produção,
+    com o `config.yaml` de produção, tem de virar candidatas.
+
+    É aqui que um refresh malfeito aparece: entrada sem p25, mínima acima do
+    p25, preço fora da faixa, buy box não verificado — tudo isso faz o leitor
+    ignorar a entrada COM MOTIVO, e se ele ignorar todas o ML publica zero.
+    Sem este teste, esse zero seria indistinguível de "não havia oferta boa"
+    (foi assim nas quatro vezes anteriores).
+
+    O tempo é congelado na geração do pool: o teste protege a régua, não a
+    validade do arquivo — pool vencido é problema de operação, avisado no
+    resumo, e não deve quebrar a suíte."""
     real = RAIZ / "data/meli_offers.json"
     if not real.is_file():
         pytest.skip("sem data/meli_offers.json neste checkout")
     raw = json.loads(real.read_text(encoding="utf-8"))
-    if raw["offers"] and "price_p25_cents" in raw["offers"][0]:
-        pytest.skip("pool real já está no formato novo — atualize este teste")
     gerado = date.fromisoformat(raw["generated_at"])
 
     class _D(date):
@@ -138,9 +143,17 @@ def test_pool_real_antigo_e_rejeitado_com_motivo_e_nao_em_silencio(tmp_path, mon
     cfg = load_config(CONFIG_REAL)
     cfg["meli"]["offers_path"] = str(real)
     src = _meli_source(tmp_path)
-    assert src.fetch_offers(cfg) == []
-    assert src.pool_warning.startswith(f"{len(raw['offers'])} entrada(s) do pool ignorada(s)")
-    assert "sem p25" in src.pool_warning
+    offers = src.fetch_offers(cfg)
+
+    assert offers, f"pool real não produziu oferta alguma: {src.pool_warning}"
+    assert src.pool_warning is None, f"entradas ignoradas no pool real: {src.pool_warning}"
+    assert len(offers) == len(raw["offers"])
+
+    db = StateDB(tmp_path / "s.db")
+    candidatas = selection.filter_offers(
+        pricing.enrich_offers(offers, db, None, cfg), db, cfg)
+    assert candidatas, "pool real carregou mas nenhuma oferta virou candidata"
+    db.close()
 
 
 def test_config_real_nao_tem_mais_portao_de_desconto():

@@ -612,6 +612,28 @@ def _doctor_story_link(cfg: dict) -> bool:
         print(f"⚠️ instagram_story_link: sem sessão em {sessao} — rode `afiliado ig-login` "
               "(senão o primeiro story do run faz login com senha, e login novo é o que "
               "atrai desafio)")
+
+    # O desarme dura o DIA e vive no banco do `afiliado stories` (fase 5F, C2).
+    # Sem isto, um dia inteiro sem story parecia "não havia oferta boa" — e o
+    # único lugar que dizia a verdade era o resumo de operações daquele run,
+    # que a essa altura já rolou para cima no chat.
+    try:
+        db = _abre_estado(cfg, stories=True)
+    except Exception as exc:                      # banco ausente/ilegível não derruba o doctor
+        print(f"⚠️ instagram_story_link: não consegui ler o estado do canal ({exc})")
+        return ok
+    try:
+        aviso = db.day_flag(instagram_story_link.CHAVE_DESARMADO)
+        if aviso:
+            ok = False
+            print(f"❌ instagram_story_link: DESARMADO hoje — {aviso}")
+            print("   Rearma sozinho amanhã (dia local). Para rearmar agora: "
+                  "`afiliado ig-login` (se foi sessão) ou conserte a figurinha e "
+                  "espere uma verificação boa.")
+        else:
+            print("✅ instagram_story_link: armado hoje")
+    finally:
+        db.close()
     return ok
 
 

@@ -1574,3 +1574,33 @@ def test_doctor_sem_instagram_configurado_continua_so_avisando(monkeypatch, caps
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
     assert cli.doctor(cfg) == 0
     assert "ℹ️ Instagram: não configurado" in capsys.readouterr().out
+
+
+def test_doctor_diz_quando_o_story_link_esta_desarmado_hoje(monkeypatch, tmp_path, capsys):
+    """Rodada de correção da 5F: o desarme dura o dia e vive no banco do
+    `afiliado stories`. Sem isto, um dia inteiro sem story parecia "não havia
+    oferta boa" — e o único lugar que dizia a verdade era o resumo de operações
+    daquele run, que a essa altura já rolou para cima no chat."""
+    from afiliado.channels import instagram_story_link as mod
+    from afiliado.config import load_config
+    from afiliado.state import StateDB
+
+    _env_do_story_link(monkeypatch)
+    cfg = load_config(_config_com_story_link(tmp_path))
+    db = StateDB(tmp_path / "stories.db")
+    db.set_day_flag(mod.CHAVE_DESARMADO, mod.AVISO_SESSAO)
+    db.close()
+
+    assert cli._doctor_story_link(cfg) is False
+    out = capsys.readouterr().out
+    assert "DESARMADO hoje" in out and mod.AVISO_SESSAO in out
+    assert "afiliado ig-login" in out
+
+
+def test_doctor_diz_quando_o_story_link_esta_armado(monkeypatch, tmp_path, capsys):
+    from afiliado.config import load_config
+
+    _env_do_story_link(monkeypatch)
+    cfg = load_config(_config_com_story_link(tmp_path))
+    assert cli._doctor_story_link(cfg) is True
+    assert "armado hoje" in capsys.readouterr().out

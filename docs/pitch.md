@@ -33,9 +33,11 @@ publicada carrega prova de desconto real.
 4. **Produção** — copy gerada por IA dentro de guardrails (a IA nunca escreve
    preço ou link), arte de story e feed renderizada por template com identidade
    visual consistente.
-5. **Distribuição** — Telegram como motor de volume (50–100 ofertas/dia),
-   Instagram como motor de audiência (feed automático via API oficial; stories
-   com link de afiliado direto), com tetos diários por canal.
+5. **Distribuição** — Telegram como motor de volume (**60 ofertas/dia**,
+   somadas as duas lojas), Instagram como motor de audiência (feed automático
+   via API oficial; stories **semi-automáticos** — a arte e o link chegam
+   prontos ao chat de operações e o dono posta no app), com tetos diários por
+   canal.
 6. **Operação** — cada execução reporta publicados, descartados e alertas a um
    canal de operações; estado e histórico ficam versionados.
 

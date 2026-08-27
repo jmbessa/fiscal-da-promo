@@ -32,7 +32,7 @@ CFG = {
         "category_ids": {"shopee": ["100630", "100636"], "meli": []},
         "max_above_ref": 1.00, "require_price_ref": False,
         "min_real_discount_pct": 10, "ref_window_days": 90,
-        "ref_min_observations": 5, "seal_tolerance": 1.05,
+        "ref_min_observations": 14,
         "ev_weights": {"popularity": 0.3, "discount": 0.5},
         "min_ev_brl": 0.50,
     },

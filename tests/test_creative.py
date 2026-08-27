@@ -5,6 +5,7 @@ import httpx
 import pytest
 from PIL import Image, ImageChops, ImageDraw
 
+from afiliado import pricing
 from afiliado.creative import (
     FEED_TITLE_SIZE,
     FEED_TITLE_WIDTH,
@@ -25,15 +26,18 @@ from afiliado.creative import (
     _pill_left,
     _price_pill_dims,
     _wrap_title,
+    feed_plan,
     render_feed,
     render_story,
+    selo_label,
+    story_plan,
 )
 from afiliado.errors import SourceError
-from afiliado.models import CopyParts
-from afiliado.watchlist import PriceFloor
-from tests.test_models import make_offer
+from afiliado.models import NO_CLAIM, CopyParts, Verdict
+from tests.test_models import make_offer, make_offer_ref
 
 COPY = CopyParts(headline="Confira essa oferta", description="Aproveite agora", cta="Compre já")
+SELO_6M = Verdict("B", 0, "🏷️ Menor preço dos últimos 6 meses (verificado)", 180)
 
 
 def _product_png() -> bytes:
@@ -50,8 +54,12 @@ def _client_for(handler) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
+def _v(offer, minimo=10) -> Verdict:
+    return pricing.verdict(offer, minimo)
+
+
 def test_render_story_dimensions():
-    data = render_story(make_offer(), COPY, client=_client_for(_image_handler))
+    data = render_story(make_offer(), COPY, NO_CLAIM, client=_client_for(_image_handler))
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
     img = Image.open(io.BytesIO(data))
     assert img.size == (1080, 1920)
@@ -59,7 +67,7 @@ def test_render_story_dimensions():
 
 
 def test_render_feed_dimensions():
-    data = render_feed(make_offer(), COPY, client=_client_for(_image_handler))
+    data = render_feed(make_offer(), COPY, NO_CLAIM, client=_client_for(_image_handler))
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
     img = Image.open(io.BytesIO(data))
     assert img.size == (1080, 1350)
@@ -68,17 +76,18 @@ def test_render_feed_dimensions():
 
 def test_render_story_selo_changes_output():
     offer = make_offer(price_current_cents=24999)
-    without = render_story(offer, COPY, client=_client_for(_image_handler))
-    floor = PriceFloor(min_price_cents=30000, window_days=180)
-    with_selo = render_story(offer, COPY, price_floor=floor, client=_client_for(_image_handler))
+    without = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
+    with_selo = render_story(offer, COPY, SELO_6M, client=_client_for(_image_handler))
     assert without != with_selo
 
 
 def test_render_story_no_selo_when_price_above_floor():
-    offer = make_offer(price_current_cents=24999)
-    without = render_story(offer, COPY, client=_client_for(_image_handler))
-    floor = PriceFloor(min_price_cents=10000, window_days=180)  # 24999 > 10000: não dispara o selo
-    same = render_story(offer, COPY, price_floor=floor, client=_client_for(_image_handler))
+    # O veredito é estrito: 24999 > piso 10000 -> sem selo -> mesma arte.
+    offer = make_offer(price_current_cents=24999, price_floor_cents=10000, price_floor_window_days=180)
+    assert _v(offer).seal == ""
+    without = render_story(make_offer(price_current_cents=24999), COPY, NO_CLAIM,
+                           client=_client_for(_image_handler))
+    same = render_story(offer, COPY, _v(offer), client=_client_for(_image_handler))
     assert without == same
 
 
@@ -87,19 +96,19 @@ def test_render_raises_source_error_on_bad_image():
         return httpx.Response(404)
 
     with pytest.raises(SourceError):
-        render_story(make_offer(), COPY, client=_client_for(handler_404))
+        render_story(make_offer(), COPY, NO_CLAIM, client=_client_for(handler_404))
 
     def handler_html(request):
         return httpx.Response(200, content=b"<html></html>", headers={"content-type": "text/html"})
 
     with pytest.raises(SourceError):
-        render_story(make_offer(), COPY, client=_client_for(handler_html))
+        render_story(make_offer(), COPY, NO_CLAIM, client=_client_for(handler_html))
 
 
 def test_render_long_title_two_lines_max():
     title = " ".join(["palavra"] * 30)
     offer = make_offer(title=title)
-    data = render_story(offer, COPY, client=_client_for(_image_handler))
+    data = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     assert data[:4] == b"\x89PNG"
 
 
@@ -120,8 +129,7 @@ def test_render_feed_square_image_smoke():
         sales=50000,
         price_current_cents=24999,
     )
-    floor = PriceFloor(min_price_cents=30000, window_days=180)
-    data = render_feed(offer, COPY, price_floor=floor, client=_client_for(_image_handler))
+    data = render_feed(offer, COPY, SELO_6M, client=_client_for(_image_handler))
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
     img = Image.open(io.BytesIO(data))
     assert img.size == (1080, 1350)
@@ -148,18 +156,18 @@ def test_wrap_title_truncates_overlong_single_word():
 
 def test_render_overlong_single_word_title_smoke():
     offer = make_offer(title="a" * 200)
-    data = render_story(offer, COPY, client=_client_for(_image_handler))
+    data = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     assert data[:4] == b"\x89PNG"
 
 
 def test_render_handle_changes_output():
     client = _client_for(_image_handler)
-    sem = render_story(make_offer(), COPY, client=client)
-    com = render_story(make_offer(), COPY, client=client, handle="@promoprova")
+    sem = render_story(make_offer(), COPY, NO_CLAIM, client=client)
+    com = render_story(make_offer(), COPY, NO_CLAIM, client=client, handle="@promoprova")
     assert sem != com
     assert Image.open(io.BytesIO(com)).size == (1080, 1920)
-    feed_sem = render_feed(make_offer(), COPY, client=client)
-    feed_com = render_feed(make_offer(), COPY, client=client, handle="@promoprova")
+    feed_sem = render_feed(make_offer(), COPY, NO_CLAIM, client=client)
+    feed_com = render_feed(make_offer(), COPY, NO_CLAIM, client=client, handle="@promoprova")
     assert feed_sem != feed_com
 
 
@@ -190,16 +198,16 @@ def test_draw_mascot_paints_pixels():
 
 def test_brand_name_changes_output():
     client = _client_for(_image_handler)
-    a = render_story(make_offer(), COPY, client=client, brand_name="X")
-    b = render_story(make_offer(), COPY, client=client, brand_name="Y")
+    a = render_story(make_offer(), COPY, NO_CLAIM, client=client, brand_name="X")
+    b = render_story(make_offer(), COPY, NO_CLAIM, client=client, brand_name="Y")
     assert a != b
 
 
 def test_source_meli_cta():
     offer = make_offer(source="meli")
-    data = render_story(offer, COPY, client=_client_for(_image_handler))
+    data = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     assert data[:4] == b"\x89PNG"
-    data_feed = render_feed(offer, COPY, client=_client_for(_image_handler))
+    data_feed = render_feed(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     assert data_feed[:4] == b"\x89PNG"
 
 
@@ -214,11 +222,9 @@ def test_feed_title_size_and_width_constants_used_by_wrap():
 
 
 def test_feed_selo_survives_two_line_title():
-    # Título longo (2 linhas) + meta presente (sales>=1000) + selo aplicável:
-    # o selo é o diferenciador da marca e é o ÚLTIMO a cair na guarda de
-    # overflow (título 1 linha, depois meta, só então selo) — prova disso é
-    # que os bytes mudam com price_floor (selo desenhado), mesmo sob um
-    # título que antes forçava a guarda a descartar justamente o selo.
+    # Título longo (2 linhas) + meta presente (sales>=1000) + selo no
+    # veredito: o selo é o diferenciador da marca e é o ÚLTIMO a cair na
+    # guarda de overflow (título 1 linha, depois meta, só então selo).
     offer = make_offer(
         title=" ".join(["palavra"] * 30),
         sales=32000,
@@ -226,10 +232,11 @@ def test_feed_selo_survives_two_line_title():
         price_original_cents=12990,
     )
     client = _client_for(_image_handler)
-    without = render_feed(offer, COPY, client=client)
-    floor = PriceFloor(min_price_cents=7500, window_days=365)
-    with_selo = render_feed(offer, COPY, price_floor=floor, client=client)
+    without = render_feed(offer, COPY, NO_CLAIM, client=client)
+    selo = Verdict("B", 0, "🏷️ Menor preço dos últimos 12 meses (verificado)", 365)
+    with_selo = render_feed(offer, COPY, selo, client=client)
     assert without != with_selo
+    assert feed_plan(offer, selo)["selo"] == "MENOR PREÇO VERIFICADO · 12 MESES"
 
 
 def test_story_selo_survives_two_line_title():
@@ -240,17 +247,18 @@ def test_story_selo_survives_two_line_title():
         price_original_cents=12990,
     )
     client = _client_for(_image_handler)
-    without = render_story(offer, COPY, client=client)
-    floor = PriceFloor(min_price_cents=7500, window_days=365)
-    with_selo = render_story(offer, COPY, price_floor=floor, client=client)
+    without = render_story(offer, COPY, NO_CLAIM, client=client)
+    selo = Verdict("B", 0, "🏷️ Menor preço dos últimos 12 meses (verificado)", 365)
+    with_selo = render_story(offer, COPY, selo, client=client)
     assert without != with_selo
+    assert story_plan(offer, selo)["selo"] == "MENOR PREÇO VERIFICADO · 12 MESES"
 
 
 def test_render_no_sales_meta_omits_vendidos():
     # sales=0 (default de make_offer) não deve quebrar o render; a linha de
     # meta cai para só a fonte ("Shopee").
     offer = make_offer(sales=0)
-    data = render_story(offer, COPY, client=_client_for(_image_handler))
+    data = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     assert data[:4] == b"\x89PNG"
 
 
@@ -312,20 +320,19 @@ def test_draw_meta_devolve_a_largura_medida_e_pinta_a_estrela_na_cor_do_texto():
 
 def test_render_story_rating_changes_output():
     client = _client_for(_image_handler)
-    sem = render_story(make_offer(sales=30000), COPY, client=client)
-    com = render_story(make_offer(sales=30000, rating=4.9), COPY, client=client)
+    sem = render_story(make_offer(sales=30000), COPY, NO_CLAIM, client=client)
+    com = render_story(make_offer(sales=30000, rating=4.9), COPY, NO_CLAIM, client=client)
     assert sem != com
 
 
-# --- Os dois modos (fase 4: régua honesta) -----------------------------------
+# --- Os dois modos (fase 4/5B: a arte obedece ao veredito) ---------------------
 
 def _com_desconto(**kw):
-    return make_offer(price_original_cents=35000, price_ref_cents=2600,
-                      price_current_cents=1890, **kw)
+    return make_offer_ref(2600, price_original_cents=35000, price_current_cents=1890, **kw)
 
 
 def test_pill_left_modo_a_usa_a_nossa_referencia():
-    texto, riscado = _pill_left(_com_desconto(), 10)
+    texto, riscado = _pill_left(_com_desconto(), _v(_com_desconto()))
     assert texto == "R$ 26,00"      # a NOSSA referência, não os R$ 350 do vendedor
     assert riscado is True
 
@@ -333,15 +340,14 @@ def test_pill_left_modo_a_usa_a_nossa_referencia():
 def test_pill_left_modo_b_e_so_o_preco():
     # Modo B: a pill NÃO tem slot esquerdo — nota, vendas e loja ficam na
     # linha de meta logo abaixo (como no modo A), sem duplicar.
-    offer = make_offer(price_original_cents=35000, price_current_cents=4900,
-                       price_ref_cents=5200, rating=4.9, sales=30000)
-    assert _pill_left(offer, 10) == ("", False)   # 6% verificado < 10
+    offer = make_offer_ref(5200, price_original_cents=35000, price_current_cents=4900,
+                           rating=4.9, sales=30000)
+    assert _pill_left(offer, _v(offer)) == ("", False)   # 5% verificado < 10
 
 
-def test_pill_left_modo_b_vazio_quando_nada_e_conhecido():
-    offer = make_offer(price_original_cents=35000, price_current_cents=4900,
-                       rating=0.0, sales=0)
-    assert _pill_left(offer, 10) == ("", False)
+def test_pill_left_obedece_ao_veredito():
+    assert _pill_left(_com_desconto(), NO_CLAIM) == ("", False)
+    assert _pill_left(make_offer(price_ref_cents=2600), Verdict("A", 27, "")) == ("R$ 26,00", True)
 
 
 def _gold_bbox(png: bytes, box: tuple) -> tuple:
@@ -354,7 +360,7 @@ def _gold_bbox(png: bytes, box: tuple) -> tuple:
 def test_price_pill_modo_b_encolhe_para_o_preco_e_fica_a_esquerda():
     offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)   # sem referência
     draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-    dims = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, _pill_left(offer, 10),
+    dims = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, _pill_left(offer, NO_CLAIM),
                             STORY_TITLE_WIDTH)
     assert dims["orig_text"] == ""
     asc, desc = dims["cur_font"].getmetrics()
@@ -363,7 +369,7 @@ def test_price_pill_modo_b_encolhe_para_o_preco_e_fica_a_esquerda():
 
     # Na arte: a única coisa dourada no corpo é a pill, colada em STORY_PAD
     # à esquerda e exatamente com a largura medida.
-    png = render_story(offer, COPY, client=_client_for(_image_handler))
+    png = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     left, _, right, _ = _gold_bbox(png, (0, 1000, 1080, 1600))
     assert abs(left - STORY_PAD) <= 1
     assert abs((right - left) - dims["width"]) <= 3
@@ -386,34 +392,60 @@ def test_arte_ignora_o_de_inflado_do_vendedor():
     sem_de = make_offer(price_original_cents=4900, price_current_cents=4900,
                         rating=4.9, sales=30000)
     client = _client_for(_image_handler)
-    assert render_story(inflado, COPY, client=client) == render_story(
-        sem_de, COPY, client=client)
-    assert render_feed(inflado, COPY, client=client) == render_feed(
-        sem_de, COPY, client=client)
+    assert render_story(inflado, COPY, NO_CLAIM, client=client) == render_story(
+        sem_de, COPY, NO_CLAIM, client=client)
+    assert render_feed(inflado, COPY, NO_CLAIM, client=client) == render_feed(
+        sem_de, COPY, NO_CLAIM, client=client)
 
 
 def test_arte_modo_b_nao_desenha_selo_de_desconto_nem_riscado():
-    # Desconto verificado de 6% (abaixo do mínimo) tem que render exatamente
-    # como uma oferta sem referência nenhuma: sem selo de %, sem preço riscado.
-    quase = make_offer(price_current_cents=4900, price_ref_cents=5200,
-                       rating=4.9, sales=30000)
+    # Desconto verificado de 5% (abaixo do mínimo) tem que render exatamente
+    # como uma oferta sem referência nenhuma: sem badge de %, sem preço riscado.
+    quase = make_offer_ref(5200, price_current_cents=4900, rating=4.9, sales=30000)
     sem_ref = make_offer(price_current_cents=4900, rating=4.9, sales=30000)
     client = _client_for(_image_handler)
-    assert render_story(quase, COPY, client=client) == render_story(
-        sem_ref, COPY, client=client)
+    assert _v(quase) == NO_CLAIM
+    assert render_story(quase, COPY, _v(quase), client=client) == render_story(
+        sem_ref, COPY, NO_CLAIM, client=client)
 
 
 def test_arte_muda_entre_os_dois_modos():
     client = _client_for(_image_handler)
-    modo_a = render_story(_com_desconto(rating=4.9, sales=30000), COPY, client=client)
-    modo_b = render_story(make_offer(price_current_cents=1890, rating=4.9, sales=30000),
-                          COPY, client=client)
+    offer = _com_desconto(rating=4.9, sales=30000)
+    modo_a = render_story(offer, COPY, _v(offer), client=client)
+    modo_b = render_story(offer, COPY, NO_CLAIM, client=client)
     assert modo_a != modo_b
 
 
-def test_min_real_discount_pct_decide_o_modo():
+def test_min_real_discount_pct_decide_o_modo_via_veredito():
     client = _client_for(_image_handler)
-    offer = make_offer(price_current_cents=4900, price_ref_cents=5200,
-                       rating=4.9, sales=30000)   # 6% verificado
-    assert (render_story(offer, COPY, client=client, min_real_discount_pct=5)
-            != render_story(offer, COPY, client=client, min_real_discount_pct=10))
+    offer = make_offer_ref(5200, price_current_cents=4900, rating=4.9, sales=30000)   # 5%
+    assert (render_story(offer, COPY, _v(offer, 5), client=client)
+            != render_story(offer, COPY, _v(offer, 10), client=client))
+
+
+# --- Hook testável: o que a arte desenha ------------------------------------------
+
+def test_selo_label_segue_o_veredito():
+    assert selo_label(NO_CLAIM) == ""
+    assert selo_label(SELO_6M) == "MENOR PREÇO VERIFICADO · 6 MESES"
+    assert selo_label(Verdict("A", 27, "🏷️ Menor preço dos últimos 45 dias (verificado)", 45)) == (
+        "MENOR PREÇO VERIFICADO · 45 DIAS")
+
+
+def test_story_plan_e_feed_plan_expoem_selo_badge_e_riscado():
+    offer = _com_desconto(rating=4.9, sales=30000, price_floor_cents=1890,
+                          price_floor_window_days=90)
+    v = _v(offer)
+    assert v == Verdict("A", 27, "🏷️ Menor preço dos últimos 3 meses (verificado)", 90)
+    for plan in (story_plan(offer, v), feed_plan(offer, v)):
+        assert plan["selo"] == "MENOR PREÇO VERIFICADO · 3 MESES"
+        assert plan["badge_pct"] == 27
+        assert plan["riscado"] == "R$ 26,00"
+        assert plan["title_lines"] == ["Tênis Nike SB"]
+    # No story cabe tudo; no feed a guarda de overflow derruba a meta antes
+    # do selo (o selo é o último a cair — comportamento de layout já existente).
+    assert story_plan(offer, v)["meta"] is True
+    assert feed_plan(offer, v)["meta"] is False
+    for plan in (story_plan(offer, NO_CLAIM), feed_plan(offer, NO_CLAIM)):
+        assert plan["selo"] == "" and plan["badge_pct"] == 0 and plan["riscado"] == ""

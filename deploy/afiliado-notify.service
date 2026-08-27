@@ -1,0 +1,11 @@
+[Unit]
+Description=Fiscal da Promo — avisa o chat de operações quando afiliado.service falha
+Documentation=file:///opt/afiliado/docs/runbooks/vps-setup.md
+
+[Service]
+Type=oneshot
+User=afiliado
+WorkingDirectory=/opt/afiliado
+# O script lê TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID daqui; na falta, do .env.
+EnvironmentFile=-/opt/afiliado/.env
+ExecStart=/opt/afiliado/deploy/notify-failure.sh

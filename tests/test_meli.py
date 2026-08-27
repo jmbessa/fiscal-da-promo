@@ -7,6 +7,8 @@ import pytest
 from afiliado.errors import SourceError
 from afiliado.sources.meli import MeliSource
 
+SEL = {"price_min_brl": 20, "price_max_brl": 1000}
+
 
 def source_with(handler, tmp_path, refresh_token="", token_path=None, links_path=None) -> MeliSource:
     client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -26,17 +28,25 @@ def _authed_handler(request: httpx.Request) -> httpx.Response:
 
 
 def write_pool(path, offers, generated_at=None, valid_days=30):
-    """`price_historic_min_cents` é obrigatório em cada entrada (fase 4: sem
-    ele a entrada é pulada). Para não repetir a chave nos testes que não se
-    importam com o piso, o padrão aqui é o próprio price_ref_cents; passe a
-    chave explicitamente (inclusive ausente/inválida) para exercitar a
-    rejeição."""
+    """Formato novo do pool (fase 5B). Cada entrada precisa de
+    `buy_box_item_id` e dos cinco campos de preço inteiros > 0; para não
+    repetir tudo nos testes que não se importam, o padrão aqui preenche o
+    que falta a partir de `price_ref_cents` (p25 = mínima = ref, janelas 91 e
+    365, buy box "BB-<id>"). Passe a chave explicitamente (inclusive
+    ausente/inválida) para exercitar a rejeição."""
     generated_at = generated_at or date.today()
     entradas = []
     for offer in offers:
+        if not isinstance(offer, dict):          # entrada malformada de propósito
+            entradas.append(offer)
+            continue
         item = dict(offer)
         if "price_ref_cents" in item:
+            item.setdefault("price_p25_cents", item["price_ref_cents"])
             item.setdefault("price_historic_min_cents", item["price_ref_cents"])
+            item.setdefault("price_window_days", 91)
+            item.setdefault("price_min_window_days", 365)
+            item.setdefault("buy_box_item_id", f"BB-{item.get('product_id')}")
         entradas.append(item)
     path.write_text(json.dumps({
         "generated_at": generated_at.isoformat(),
@@ -144,7 +154,7 @@ def test_token_do_arquivo_tem_precedencia_sobre_env(tmp_path):
     assert captured["refresh_token"] == "do-arquivo"
 
 
-# -- fetch_offers (pool curado, fase 3B) -----------------------------------
+# -- fetch_offers (pool curado, formato novo da fase 5B) --------------------
 
 def _no_network_handler(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"fetch_offers não deveria chamar a rede: {request.url}")
@@ -155,28 +165,34 @@ def test_fetch_offers_le_pool_e_mapeia_campos(tmp_path):
     write_pool(pool_path, [
         {"product_id": "MLB18725310", "title": "Creatina 1kg Growth",
          "image_url": "https://http2.mlstatic.com/D_creatina.jpg", "category": "MLB264586",
-         "price_ref_cents": 6890, "price_historic_min_cents": 4792,
+         "buy_box_item_id": "MLB3928374651",
+         "price_ref_cents": 2590, "price_p25_cents": 2428, "price_window_days": 91,
+         "price_historic_min_cents": 1699, "price_min_window_days": 365,
          "sales": 13337, "rating": 4.8},
     ])
-    cfg = {"meli": {"offers_path": str(pool_path), "commission_pct": 4.0}}
+    cfg = {"meli": {"offers_path": str(pool_path), "commission_pct": 4.0}, "selection": SEL}
     src = source_with(_no_network_handler, tmp_path)
     offers = src.fetch_offers(cfg)
-    assert len(offers) == 1
+    assert len(offers) == 1 and src.pool_warning is None
     o = offers[0]
     assert o.source == "meli"
     assert o.item_id == "MLB18725310"
     assert o.title == "Creatina 1kg Growth"
     assert o.image_url == "https://http2.mlstatic.com/D_creatina.jpg"
     assert o.category == "MLB264586"
-    assert o.price_current_cents == 6890
-    assert o.price_original_cents == 6890  # sem desconto inflado (ver Mudança 3)
-    assert o.price_ref_cents == 6890       # a NOSSA referência vem do pool curado
-    assert o.price_floor_cents == 4792     # mínima histórica -> selo de menor preço
+    assert o.price_current_cents == 2590
+    assert o.price_original_cents == 2590  # sem desconto inflado (ver Mudança 3)
+    assert o.price_ref_cents == 2590       # mediana da janela, do pool curado
+    assert o.price_p25_cents == 2428
+    assert o.price_window_days == 91
+    assert o.price_floor_cents == 1699     # mínima histórica -> selo de menor preço
+    assert o.price_floor_window_days == 365
     assert o.real_discount_pct == 0        # no preço típico: nada a alegar
     assert o.sales == 13337
     assert o.rating == 4.8
     assert o.commission_pct == 4.0
     assert o.product_url == "https://www.mercadolivre.com.br/p/MLB18725310"
+    assert src._buy_box_ids == {"MLB18725310": "MLB3928374651"}
 
 
 def test_fetch_offers_nao_chama_rede(tmp_path):
@@ -217,9 +233,12 @@ def test_fetch_offers_pool_vencido_devolve_vazio(tmp_path):
 
 
 def test_fetch_offers_pool_dentro_da_validade(tmp_path):
+    # Pool de 29 dias (validade 30) com o buy box re-verificado esta semana:
+    # as duas validades são independentes (a do buy box é de 7 dias).
     pool_path = tmp_path / "meli_offers.json"
     write_pool(pool_path, [
-        {"product_id": "MLB1", "title": "X", "price_ref_cents": 1000},
+        {"product_id": "MLB1", "title": "X", "price_ref_cents": 1000,
+         "buy_box_checked_at": date.today().isoformat()},
     ], generated_at=date.today() - timedelta(days=29), valid_days=30)
     cfg = {"meli": {"offers_path": str(pool_path)}}
     src = source_with(_no_network_handler, tmp_path)
@@ -235,8 +254,10 @@ def test_fetch_offers_item_sem_price_ref_e_ignorado(tmp_path):
         {"product_id": "MLB2", "title": "Com preço", "price_ref_cents": 500},
     ])
     cfg = {"meli": {"offers_path": str(pool_path)}}
-    offers = source_with(_no_network_handler, tmp_path).fetch_offers(cfg)
+    src = source_with(_no_network_handler, tmp_path)
+    offers = src.fetch_offers(cfg)
     assert [o.item_id for o in offers] == ["MLB2"]
+    assert src.pool_warning == "1 entrada(s) do pool ignorada(s) (1 sem referência)"
 
 
 def test_fetch_offers_usa_commission_pct_do_config(tmp_path):
@@ -265,94 +286,295 @@ def test_fetch_offers_offers_path_default(tmp_path, monkeypatch):
     assert len(offers) == 1
 
 
-# -- refresh_price (preço ao vivo, imediatamente antes de publicar) --------
+# -- validação do pool na carga (C7d): cada regra pula a entrada certa -------
 
-def _make_offer_from_pool(tmp_path, product_id="MLB18725310", price_ref_cents=6890,
-                          price_historic_min_cents=4792, handler=None):
+def _pool_com(tmp_path, entradas):
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, entradas)
+    src = source_with(_no_network_handler, tmp_path)
+    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    return [o.item_id for o in offers], src.pool_warning
+
+
+def test_pool_pula_cada_campo_de_preco_ausente_ou_invalido(tmp_path):
+    ok = {"product_id": "OK", "title": "ok", "price_ref_cents": 5000}
+    ids, aviso = _pool_com(tmp_path, [
+        ok,
+        {**ok, "product_id": "P1", "price_p25_cents": None},
+        {**ok, "product_id": "P2", "price_p25_cents": 0},
+        {**ok, "product_id": "P3", "price_p25_cents": "R$ 45"},
+        {**ok, "product_id": "P5", "price_p25_cents": True},
+        {**ok, "product_id": "M1", "price_historic_min_cents": None},
+        {**ok, "product_id": "M2", "price_historic_min_cents": 0},
+        {**ok, "product_id": "J1", "price_window_days": 0},
+        {**ok, "product_id": "J2", "price_min_window_days": None},
+        {**ok, "product_id": "R1", "price_ref_cents": "R$ 50"},
+    ])
+    assert ids == ["OK"]
+    assert aviso == ("9 entrada(s) do pool ignorada(s) (4 sem p25, 2 sem mínima histórica, "
+                     "1 sem janela da mínima, 1 sem janela da referência, 1 sem referência)")
+
+
+def test_pool_aceita_centavos_em_float_integral(tmp_path):
+    # JSON não distingue 2590 de 2590.0 (planilha, dump de pandas, divisão em
+    # Python): o float INTEGRAL É o inteiro e a entrada não pode morrer por
+    # causa do ponto — antes ela caía como "sem referência", motivo que mandava
+    # a curadoria procurar um campo que estava lá.
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "F", "title": "t", "price_ref_cents": 5000.0,
+                            "price_p25_cents": 4500.0, "price_historic_min_cents": 4000.0,
+                            "price_window_days": 91.0, "price_min_window_days": 365.0}])
+    src = source_with(_no_network_handler, tmp_path)
+    (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    assert src.pool_warning is None
+    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (5000, 4500, 91)
+    assert (o.price_floor_cents, o.price_floor_window_days) == (4000, 365)
+    # inteiros de verdade: o resto do código faz aritmética de centavos
+    assert all(isinstance(v, int) for v in (o.price_ref_cents, o.price_p25_cents,
+                                            o.price_current_cents, o.price_window_days,
+                                            o.price_floor_cents, o.price_floor_window_days))
+
+
+def test_pool_centavos_fracionados_dizem_nao_inteiro(tmp_path):
+    # 4500,5 centavos não existe. O motivo tem de dizer isso — "sem p25" numa
+    # entrada que TEM p25 manda a curadoria caçar o campo errado.
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "OK", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "P4", "title": "t", "price_ref_cents": 5000, "price_p25_cents": 4500.5},
+        {"product_id": "M3", "title": "t", "price_ref_cents": 5000,
+         "price_historic_min_cents": 4792.5},
+        {"product_id": "R2", "title": "t", "price_ref_cents": 5000.7},
+    ])
+    assert ids == ["OK"]
+    assert aviso == "3 entrada(s) do pool ignorada(s) (3 não inteiro)"
+
+
+def test_pool_pula_referencia_fora_da_faixa_de_preco(tmp_path):
+    # O item a R$ 19,90 do pool antigo era descartado em silêncio em TODO run
+    # (price_min_brl: 20) — morto por construção. Agora a curadoria é
+    # validada contra o config na carga, com o motivo no aviso.
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "BARATO", "title": "t", "price_ref_cents": 1990},
+        {"product_id": "CARO", "title": "t", "price_ref_cents": 100001},
+        {"product_id": "MIN", "title": "t", "price_ref_cents": 2000},
+        {"product_id": "MAX", "title": "t", "price_ref_cents": 100000},
+    ])
+    assert ids == ["MIN", "MAX"]
+    assert aviso == "2 entrada(s) do pool ignorada(s) (2 fora da faixa de preço)"
+
+
+def test_pool_sem_selection_nao_checa_a_faixa(tmp_path):
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "B", "title": "t", "price_ref_cents": 500}])
+    src = source_with(_no_network_handler, tmp_path)
+    assert len(src.fetch_offers({"meli": {"offers_path": str(pool_path)}})) == 1
+
+
+def test_pool_pula_p25_acima_da_referencia_e_minima_acima_do_p25(tmp_path):
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "P25", "title": "t", "price_ref_cents": 5000, "price_p25_cents": 5001,
+         "price_historic_min_cents": 4000},
+        {"product_id": "MIN", "title": "t", "price_ref_cents": 5000, "price_p25_cents": 4500,
+         "price_historic_min_cents": 4501},
+        {"product_id": "IGUAIS", "title": "t", "price_ref_cents": 5000, "price_p25_cents": 5000,
+         "price_historic_min_cents": 5000},
+    ])
+    assert ids == ["IGUAIS"]
+    assert aviso == ("2 entrada(s) do pool ignorada(s) (1 mínima acima do p25, "
+                     "1 p25 acima da referência)")
+
+
+def test_pool_pula_entrada_sem_buy_box_e_id_repetido(tmp_path):
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "A", "title": "t", "price_ref_cents": 5000, "buy_box_item_id": ""},
+        {"product_id": "B", "title": "t", "price_ref_cents": 5000, "buy_box_item_id": None},
+        {"product_id": "C", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "C", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "", "title": "t", "price_ref_cents": 5000},
+        "não é objeto",
+    ])
+    assert ids == ["C"]
+    assert aviso == ("5 entrada(s) do pool ignorada(s) (2 sem buy box, 1 entrada não é objeto, "
+                     "1 id repetido, 1 sem id ou título)")
+
+
+def test_pool_aviso_no_formato_do_brief(tmp_path):
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "A", "title": "t", "price_ref_cents": 1000},
+        {"product_id": "B", "title": "t", "price_ref_cents": 999999},
+        {"product_id": "C", "title": "t", "price_ref_cents": 5000, "price_p25_cents": None},
+        {"product_id": "D", "title": "t", "price_ref_cents": 5000},
+    ])
+    assert ids == ["D"]
+    assert aviso == "3 entrada(s) do pool ignorada(s) (2 fora da faixa de preço, 1 sem p25)"
+
+
+def test_pool_antigo_sem_p25_e_rejeitado_inteiro(tmp_path):
+    # O formato anterior (foto de um dia, sem p25/janela/buy box) não passa.
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "MLB66637233", "title": "Creatina", "price_ref_cents": 7890,
+         "price_historic_min_cents": 3051, "price_p25_cents": None,
+         "price_window_days": None, "price_min_window_days": None, "buy_box_item_id": None},
+    ])
+    assert ids == []
+    assert aviso == "1 entrada(s) do pool ignorada(s) (1 sem p25)"
+
+
+# -- buy box que envelhece (rodada de correção da 5B, Fix 1 — caminho B) ----
+# Verificado ao vivo em 2026-08-26, 3 produtos: a ordem de /products/{id}/items
+# bateu com a página em 2 de 3 (no 3º a página mostrava results[1]) e o
+# anúncio do pool de um deles já tinha sumido da lista. Nem a API nem o pool
+# reproduzem a página com certeza; o que o loader garante é a IDADE da
+# verificação do buy box — 7 dias.
+
+def test_pool_buy_box_verificado_ha_mais_de_7_dias_e_ignorado_com_os_dias_no_motivo(tmp_path):
+    hoje = date.today()
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "FRESCO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (hoje - timedelta(days=7)).isoformat()},
+        {"product_id": "HOJE", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": hoje.isoformat()},
+        {"product_id": "VELHO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (hoje - timedelta(days=8)).isoformat()},
+        {"product_id": "MUITO-VELHO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (hoje - timedelta(days=30)).isoformat()},
+    ])
+    assert ids == ["FRESCO", "HOJE"]
+    assert aviso == ("2 entrada(s) do pool ignorada(s) (1 buy box não verificado há 30 dias, "
+                     "1 buy box não verificado há 8 dias)")
+
+
+def test_pool_sem_buy_box_checked_at_usa_a_data_de_geracao(tmp_path):
+    # Gerar o pool É uma verificação (o Passo 1 do skill devolve o buyBoxId):
+    # sem o campo, vale a data de geração — e envelhece junto com ela, mesmo
+    # com o pool dentro dos 30 dias de validade.
+    pool_path = tmp_path / "meli_offers.json"
+    cfg = {"meli": {"offers_path": str(pool_path)}, "selection": SEL}
+    write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
+               generated_at=date.today() - timedelta(days=8))
+    src = source_with(_no_network_handler, tmp_path)
+    assert src.fetch_offers(cfg) == []
+    assert src.pool_warning == "1 entrada(s) do pool ignorada(s) (1 buy box não verificado há 8 dias)"
+
+    write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
+               generated_at=date.today() - timedelta(days=7))
+    src = source_with(_no_network_handler, tmp_path)
+    assert len(src.fetch_offers(cfg)) == 1
+    assert src.pool_warning is None
+
+
+def test_pool_buy_box_checked_at_invalido_ou_no_futuro_e_ignorado(tmp_path):
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "A", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": "ontem"},
+        {"product_id": "B", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": 20260826},
+        {"product_id": "C", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": ""},
+        {"product_id": "D", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (date.today() + timedelta(days=1)).isoformat()},
+    ])
+    assert ids == []
+    assert aviso == "4 entrada(s) do pool ignorada(s) (4 data do buy box inválida)"
+
+
+def test_pool_validade_do_buy_box_e_de_7_dias():
+    from afiliado.sources.meli import BUY_BOX_MAX_AGE_DAYS
+    assert BUY_BOX_MAX_AGE_DAYS == 7
+
+
+# -- refresh_price: preço vivo = buy box (C7b) ------------------------------
+
+ITENS = [
+    {"item_id": "MLB7210468412", "price": 58.90, "original_price": None, "condition": "new"},
+    {"item_id": "MLB4555189589", "price": 78.90, "original_price": 104.9, "condition": "new"},
+    {"item_id": "MLB7125449388", "price": 104.90, "original_price": None, "condition": "new"},
+]
+
+
+def _make_offer_from_pool(tmp_path, product_id="MLB66637233", price_ref_cents=10490,
+                          price_historic_min_cents=9990, buy_box_item_id="MLB7125449388",
+                          handler=None):
     pool_path = tmp_path / "meli_offers.json"
     write_pool(pool_path, [
-        {"product_id": product_id, "title": "Creatina 1kg", "price_ref_cents": price_ref_cents,
-         "price_historic_min_cents": price_historic_min_cents},
+        {"product_id": product_id, "title": "Creatina 500g", "price_ref_cents": price_ref_cents,
+         "price_p25_cents": min(price_ref_cents, 9990),
+         "price_historic_min_cents": price_historic_min_cents,
+         "buy_box_item_id": buy_box_item_id},
     ])
     src = source_with(handler or _authed_handler, tmp_path)
     cfg = {"meli": {"offers_path": str(pool_path)}}
     offers = src.fetch_offers(cfg)
+    assert offers, src.pool_warning
     return src, offers[0]
 
 
-def test_refresh_price_usa_menor_preco_condicao_new(tmp_path):
+def _items_handler(results, paging=None):
     def handler(request: httpx.Request):
         if request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path == "/products/MLB18725310/items":
+        if request.url.path == "/products/MLB66637233/items":
             assert request.headers["authorization"] == "Bearer TOK"
-            return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 68.90, "original_price": None, "condition": "new"},
-                {"item_id": "B", "price": 62.50, "original_price": None, "condition": "new"},
-                {"item_id": "C", "price": 10.00, "original_price": None, "condition": "used"},
-            ]})
+            return httpx.Response(200, json={"results": results, "paging": paging or {
+                "total": len(results), "offset": 0, "limit": 100}})
         raise AssertionError(f"caminho inesperado: {request.url.path}")
+    return handler
 
-    src, offer = _make_offer_from_pool(tmp_path, price_historic_min_cents=100000, handler=handler)
+
+def test_refresh_price_usa_o_buy_box_nunca_o_menor_entre_vendedores(tmp_path):
+    # Teste obrigatório 9. Caso real (2026-08-26): 37 vendedores, o mais
+    # barato a R$ 58,90 e o buy box (MLB7125449388) a R$ 104,90 — o post
+    # dizia 58,90 e o clique mostrava 104,90.
+    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(ITENS))
     updated = src.refresh_price(offer)
-    assert updated.price_current_cents == 6250  # menor entre os "new" (62.50), ignora "used"
+    assert updated.price_current_cents == 10490
     assert updated is not offer  # dataclass frozen -> nova instância
-    assert offer.price_current_cents == 6890  # original não é mutado
+    assert offer.price_current_cents == 10490  # original não é mutado
+    assert updated.price_ref_cents == 10490 and updated.price_floor_cents == 9990
 
 
-def test_refresh_price_sem_preco_novo_levanta_source_error(tmp_path):
-    def handler(request: httpx.Request):
-        if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path.endswith("/items"):
-            return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 10.00, "condition": "used"},
-                {"item_id": "B", "price": None, "condition": "new"},
-            ]})
-        raise AssertionError(f"caminho inesperado: {request.url.path}")
-
-    src, offer = _make_offer_from_pool(tmp_path, handler=handler)
-    with pytest.raises(SourceError, match="sem preço ao vivo"):
+def test_refresh_price_sem_buy_box_na_lista_levanta_source_error(tmp_path):
+    # O anúncio vencedor do pool não está entre os vendedores: NUNCA cair
+    # para o mínimo (58,90) — a oferta é descartada.
+    sem_vencedor = [r for r in ITENS if r["item_id"] != "MLB7125449388"]
+    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(sem_vencedor))
+    with pytest.raises(SourceError, match="sem buy box"):
         src.refresh_price(offer)
 
 
-def test_refresh_price_nao_tem_mais_teto_proprio(tmp_path):
-    # Fase 4: o teto do ML (max_above_historic_min) saiu — era ele que segurava
-    # o volume do ML em ~11 de 38. Quem decide publicabilidade agora é
-    # selection.max_above_ref + validate.check_price, igual para as duas lojas.
+def test_refresh_price_buy_box_sem_preco_levanta_source_error(tmp_path):
+    itens = [{"item_id": "MLB7125449388", "price": None, "condition": "new"}, ITENS[0]]
+    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(itens))
+    with pytest.raises(SourceError, match="sem preço"):
+        src.refresh_price(offer)
+
+
+def test_refresh_price_lista_vazia_levanta_source_error(tmp_path):
+    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler([]))
+    with pytest.raises(SourceError, match="sem buy box"):
+        src.refresh_price(offer)
+
+
+def test_refresh_price_oferta_desconhecida_da_fonte_levanta_source_error(tmp_path):
+    from tests.test_models import make_offer
+    src = source_with(_authed_handler, tmp_path)
+    with pytest.raises(SourceError, match="sem buy box conhecido"):
+        src.refresh_price(make_offer(source="meli", item_id="MLB999"))
+
+
+def test_refresh_price_pagina_ate_achar_o_buy_box(tmp_path):
+    paginas = {0: [{"item_id": f"X{i}", "price": 10.0, "condition": "new"} for i in range(100)],
+               100: [ITENS[0], ITENS[2]]}
+    chamadas = []
+
     def handler(request: httpx.Request):
         if request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path.endswith("/items"):
-            # piso 4792; antes 68.90 estourava o teto de 1.10 e virava SourceError
-            return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 68.90, "condition": "new"},
-            ]})
-        raise AssertionError(f"caminho inesperado: {request.url.path}")
+        offset = int(request.url.params.get("offset", 0))
+        chamadas.append(offset)
+        return httpx.Response(200, json={"results": paginas[offset],
+                                         "paging": {"total": 102, "offset": offset, "limit": 100}})
 
-    src, offer = _make_offer_from_pool(
-        tmp_path, price_ref_cents=6890, price_historic_min_cents=4792, handler=handler)
-    updated = src.refresh_price(offer)
-    assert updated.price_current_cents == 6890
-
-
-def test_refresh_price_so_atualiza_o_preco_atual(tmp_path):
-    def handler(request: httpx.Request):
-        if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path.endswith("/items"):
-            return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 59.90, "condition": "new"},
-            ]})
-        raise AssertionError(f"caminho inesperado: {request.url.path}")
-
-    src, offer = _make_offer_from_pool(
-        tmp_path, price_ref_cents=6890, price_historic_min_cents=4792, handler=handler)
-    updated = src.refresh_price(offer)
-    assert updated.price_current_cents == 5990
-    assert updated.price_ref_cents == 6890     # a referência do pool sobrevive
-    assert updated.price_floor_cents == 4792   # e o piso também
-    assert updated.real_discount_pct == 13     # 68,90 -> 59,90
+    src, offer = _make_offer_from_pool(tmp_path, handler=handler)
+    assert src.refresh_price(offer).price_current_cents == 10490
+    assert chamadas == [0, 100]
 
 
 def test_refresh_price_preco_acima_da_referencia_e_barrado_depois(tmp_path):
@@ -361,40 +583,13 @@ def test_refresh_price_preco_acima_da_referencia_e_barrado_depois(tmp_path):
     from afiliado import validate
     from afiliado.errors import ValidationError
 
-    def handler(request: httpx.Request):
-        if request.url.path == "/oauth/token":
-            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path.endswith("/items"):
-            return httpx.Response(200, json={"results": [
-                {"item_id": "A", "price": 99.90, "condition": "new"},
-            ]})
-        raise AssertionError(f"caminho inesperado: {request.url.path}")
-
-    src, offer = _make_offer_from_pool(
-        tmp_path, price_ref_cents=6890, price_historic_min_cents=4792, handler=handler)
+    itens = [{"item_id": "MLB7125449388", "price": 129.90, "condition": "new"}]
+    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(itens))
     updated = src.refresh_price(offer)
+    assert updated.price_current_cents == 12990
     cfg = {"selection": {"max_above_ref": 1.00, "price_min_brl": 20, "price_max_brl": 1000}}
     with pytest.raises(ValidationError, match="acima da referência"):
         validate.check_price(updated, cfg)
-
-
-def test_fetch_offers_pula_entrada_sem_minima_historica(tmp_path):
-    # Antes essas entradas eram aceitas e desligavam o piso em silêncio.
-    pool_path = tmp_path / "meli_offers.json"
-    write_pool(pool_path, [
-        {"product_id": "MLB1", "title": "Sem piso", "price_ref_cents": 6890,
-         "price_historic_min_cents": None},
-        {"product_id": "MLB2", "title": "Piso zero", "price_ref_cents": 6890,
-         "price_historic_min_cents": 0},
-        {"product_id": "MLB3", "title": "Piso float", "price_ref_cents": 6890,
-         "price_historic_min_cents": 4792.5},
-        {"product_id": "MLB4", "title": "Piso ok", "price_ref_cents": 6890,
-         "price_historic_min_cents": 4792},
-    ])
-    src = source_with(_no_network_handler, tmp_path)
-    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}})
-    assert [o.item_id for o in offers] == ["MLB4"]
-    assert "3 entrada(s) do pool ignorada(s)" in src.pool_warning
 
 
 def test_refresh_price_erro_http_vira_source_error(tmp_path):
@@ -406,6 +601,12 @@ def test_refresh_price_erro_http_vira_source_error(tmp_path):
     src, offer = _make_offer_from_pool(tmp_path, handler=handler)
     with pytest.raises(SourceError):
         src.refresh_price(offer)
+
+
+def test_meli_nao_grava_o_preco_do_pool_como_observacao():
+    # C7c: o preço com que a oferta sai do pool é a mediana, não uma
+    # observação — o pipeline lê este atributo e só grava o preço vivo.
+    assert MeliSource.observes_price_on_discovery is False
 
 
 # -- resolve_affiliate_link (pool pré-gerado, inalterado) -------------------
@@ -436,3 +637,24 @@ def test_pool_ausente_nao_levanta_na_carga(tmp_path):
     offer = make_offer(source="meli", item_id="MLB1")
     with pytest.raises(SourceError, match="sem link de afiliado"):
         src.resolve_affiliate_link(offer)
+
+
+# -- Fase 5C (M5/A6): cobertura do pool de links ------------------------------
+
+def test_link_coverage_conta_quantos_produtos_tem_link(tmp_path):
+    from tests.test_models import make_offer
+    links = tmp_path / "links.json"
+    links.write_text(json.dumps({"MLB1": "https://meli.la/a", "MLB3": ""}),
+                     encoding="utf-8")
+    src = source_with(_authed_handler, tmp_path, links_path=links)
+    ofertas = [make_offer(source="meli", item_id=f"MLB{n}") for n in (1, 2, 3)]
+    assert src.links_file_exists
+    assert src.link_coverage(ofertas) == (1, 3)      # link vazio não conta
+    assert src.link_coverage([]) == (0, 0)
+
+
+def test_link_coverage_com_arquivo_ausente(tmp_path):
+    from tests.test_models import make_offer
+    src = source_with(_authed_handler, tmp_path, links_path=tmp_path / "nao-existe.json")
+    assert not src.links_file_exists
+    assert src.link_coverage([make_offer(source="meli", item_id="MLB1")]) == (0, 1)

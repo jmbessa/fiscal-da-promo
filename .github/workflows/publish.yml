@@ -1,57 +1,168 @@
-# Fase 1.8: a produção de alta cadência (a cada 5 min) roda via cron na VPS —
-# ver docs/runbooks/vps-setup.md. O Actions NÃO acompanha essa cadência (cron
-# do GitHub tem piso de 5 min, mas com atrasos típicos de 5–30 min, e custo de
-# minutos muito acima da cota gratuita rodando 288x/dia). Este workflow é
-# redundância/backup horário e disparo manual (workflow_dispatch), não a
-# fonte principal de execuções.
+# Fase 5C (M8): o Actions é a PRODUÇÃO. Decisão do dono — não depender de uma
+# VPS que a Oracle Always Free recolhe quando fica ociosa. A VPS vira opcional,
+# para quem quiser a cadência de 5 min (ver docs/runbooks/vps-setup.md).
+#
+# Cadência: DE HORA EM HORA entre 08:00 e 23:00 BRT = 16 jobs/dia. Com o ritmo
+# da fase 5A (`pacing_budget`), cada run publica só o orçamento acumulado desde
+# o anterior: com 60/dia e esta janela o maior salto entre dois runs é 4, e
+# `--posts-per-run 5` o cobre com uma vaga de folga para recuperar um disparo
+# perdido (atraso de cron é rotina no Actions).
+#
+# Custo — a conta REFEITA (o GitHub cobra cada JOB arredondado para o minuto
+# SEGUINTE; runner Linux = 1×; plano grátis de repo privado = 2.000 min/mês):
+#
+#   jobs/dia │ B=2 min/job │ B=3 min/job │ B=4 min/job   (× 31 dias)
+#   ─────────┼─────────────┼─────────────┼──────────────
+#     32     │ 1.984 (99%) │ 2.976 (149%)│ 3.968 (198%)   ← a cadência da 5C
+#     18     │ 1.116 (56%) │ 1.674 (84%) │ 2.232 (112%)
+#     16     │   992 (50%) │ 1.488 (74%) │ 1.984 (99%)    ← esta
+#
+# A duração do job NUNCA foi medida (o "1,5 min" da 5C era chute), então a
+# cadência tem de caber no pior caso plausível: 16 jobs/dia é a única que
+# sobrevive até a 4 min/job e ainda deixa ~500 min/mês para o `tests.yml`.
+# O passo "Duração do job" imprime a primeira medição real — com ela no
+# runbook, dá para subir a cadência com número, não com esperança.
+#
+# Tamanho do state.db commitado — MEDIDO (a 5C tinha estimado 10× a mais).
+# Veredito: **o Actions serve como produção; observe o tamanho.** Com o volume
+# real da descoberta, o arquivo em regime fica em ~78 MB a 32 runs/dia (29,8 de
+# `candidates` + 47,7 de `price_log`) e ~174 MB na cadência de 5 min da VPS.
+# Nesta cadência de 16 jobs/dia a entrada é metade da medida: espere ~40 MB
+# (extrapolação, não medição). E o histórico do git cresce só
+# **0,375 MB por commit** — o git não guarda o binário inteiro a cada vez —,
+# ou seja ~6 MB/dia ≈ 0,18 GB/mês: o limite de 5 GB do GitHub fica a mais de
+# dois anos, não a semanas. O motivo real para encolher é checkout/RAM, não o
+# limite do GitHub. Alavancas, ranqueadas pelo efeito MEDIDO — documentadas, e
+# nenhuma aplicada: (1) `selection.ref_window_days` 90 → 30 tira ~32 MB, mas 90
+# dias é o que sustenta a régua honesta; (2) `shopee.candidate_max_age_days`
+# 3 → 1 tira ~20 MB; (3) reescrever o histórico do state.db (branch órfã,
+# force-push) ou passar o estado para a VPS, onde ele nem é commitado.
+# Acompanhe em Settings → Repository. Contas em docs/runbooks/vps-setup.md.
 name: publish
 on:
   schedule:
-    - cron: "0 11-23 * * *"   # 08h–20h BRT
-    - cron: "0 0-2 * * *"     # 21h–23h BRT
+    - cron: "0 11-23 * * *"      # 08:00–20:00 BRT
+    - cron: "0 0-2 * * *"        # 21:00–23:00 BRT
   workflow_dispatch:
     inputs:
       dry_run:
         description: "dry-run (não publica)"
         type: boolean
         default: false
+# Dois runs simultâneos furariam o teto e o dedupe: o segundo espera.
 concurrency:
   group: publish
   cancel-in-progress: false
 permissions:
   contents: write
+env:
+  # Pin: `npm install -g @anthropic-ai/claude-code` sem versão instalava o que
+  # estivesse publicado no dia, com todos os segredos no ambiente.
+  CLAUDE_CODE_VERSION: "2.1.246"
 jobs:
   run:
     runs-on: ubuntu-latest
+    # Sem isto vale o padrão do GitHub: 6 h. Um run em martelo contra a API da
+    # loja (backoff de 0,5+1,5+4,0 s em cada chamada) queimaria 360 min — 18%
+    # da cota mensal — antes de alguém perceber. Um run saudável leva minutos.
+    timeout-minutes: 20
     steps:
+      - name: Marcar o início do job
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: npm install -g @anthropic-ai/claude-code
+      - name: Cache do Claude Code (npm global)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-claude-code-${{ env.CLAUDE_CODE_VERSION }}
+      - run: npm install -g @anthropic-ai/claude-code@${{ env.CLAUDE_CODE_VERSION }} --prefer-offline
       - run: pip install -e .
       - name: Executar pipeline
-        run: afiliado run ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: afiliado run --posts-per-run 5 ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           SHOPEE_APP_ID: ${{ secrets.SHOPEE_APP_ID }}
           SHOPEE_APP_SECRET: ${{ secrets.SHOPEE_APP_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           TELEGRAM_OPS_CHAT_ID: ${{ secrets.TELEGRAM_OPS_CHAT_ID }}
+          ART_HOST_BOT_TOKEN: ${{ secrets.ART_HOST_BOT_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          # Verificado ao vivo em 2026-08-26: `/products/{id}/items` ACEITA o
+          # token de aplicação (client_credentials, HTTP 200 em 3 produtos do
+          # pool). O `MeliSource` tenta client_credentials primeiro, então no
+          # runner efêmero ele NUNCA rotaciona refresh_token e não há nada a
+          # gravar de volta em secret. MELI_REFRESH_TOKEN fica só como rede de
+          # segurança; se um dia o client_credentials for recusado, ver
+          # "Token do ML no runner efêmero" em docs/runbooks/meli-setup.md.
           MELI_CLIENT_ID: ${{ secrets.MELI_CLIENT_ID }}
           MELI_CLIENT_SECRET: ${{ secrets.MELI_CLIENT_SECRET }}
           MELI_REFRESH_TOKEN: ${{ secrets.MELI_REFRESH_TOKEN }}
       - name: Commitar estado
         if: ${{ always() && !inputs.dry_run }}
+        # `git push` sem `pull --rebase` PERDIA o estado do run anterior (dedupe
+        # e teto furados). Em conflito no binário, o run ATUAL vence — e agora
+        # vence de verdade: a versão anterior terminava em
+        # `git rebase --continue || git rebase --skip`, e o `--skip` DESCARTA o
+        # commit deste run, o oposto do que o comentário prometia. Aqui o
+        # conflito é resolvido abortando o rebase, voltando exatamente ao que o
+        # remoto tem (nada do que os outros commitaram se perde) e recolocando
+        # por cima o `state.db` DESTE run.
         run: |
+          set -euo pipefail
           git config user.name "afiliado-bot"
           git config user.email "afiliado-bot@users.noreply.github.com"
+          # Primeiro run (ou run que morreu antes de abrir o banco): o arquivo
+          # não existe, e `git add` de caminho inexistente FALHA o passo inteiro
+          # com `set -e` — o run virava vermelho sem ter feito nada de errado.
+          if [ ! -f data/state.db ]; then
+            echo "data/state.db ainda não existe — nada a commitar"
+            exit 0
+          fi
           git add data/state.db
-          git diff --cached --quiet || git commit -m "chore: atualiza estado após run [skip ci]"
-          git push
+          if git diff --cached --quiet; then
+            echo "estado inalterado — nada a commitar"
+            exit 0
+          fi
+          git commit -m "chore: atualiza estado após run [skip ci]"
+          ESTADO_DO_RUN="${RUNNER_TEMP:-/tmp}/state-do-run.db"
+          for tentativa in 1 2 3; do
+            if ! git pull --rebase --no-edit; then
+              git rebase --abort || true
+              cp data/state.db "$ESTADO_DO_RUN"
+              git reset --hard "origin/${GITHUB_REF_NAME}"
+              cp "$ESTADO_DO_RUN" data/state.db
+              git add data/state.db
+              git commit -m "chore: atualiza estado após run [skip ci]"
+              echo "::warning::conflito binário em data/state.db — o estado deste run venceu"
+            fi
+            if git push; then
+              exit 0
+            fi
+            echo "push recusado (tentativa $tentativa) — refazendo o rebase"
+          done
+          echo "::error::não foi possível commitar data/state.db após 3 tentativas"
+          exit 1
+      - name: Duração do job
+        if: always()
+        # I-3: o GitHub cobra cada job arredondado para o minuto SEGUINTE, e a
+        # duração deste nunca foi medida — a cota inteira da 5C saiu de um
+        # "~1,5 min" chutado. Isto imprime a medição real e a joga no resumo do
+        # run (aba Actions → o run → Summary). "Set up job" e "Complete job"
+        # ficam fora dos passos e somam ~15 s: a estimativa já os inclui.
+        # Registre a PRIMEIRA medição em docs/runbooks/vps-setup.md.
+        run: |
+          segundos=$(( $(date +%s) - JOB_START ))
+          cobrados=$(( (segundos + 15 + 59) / 60 ))
+          mensal=$(( cobrados * 16 * 31 ))
+          echo "duração dos passos: ${segundos}s · ~${cobrados} min cobrados"
+          echo "job: ${segundos}s de passos → ~${cobrados} min cobrados · ${mensal} min/mês a 16 jobs/dia (cota 2000)" >> "$GITHUB_STEP_SUMMARY"

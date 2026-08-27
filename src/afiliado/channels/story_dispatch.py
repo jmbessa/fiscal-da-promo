@@ -6,7 +6,7 @@ o dono do projeto posta a arte no app e cola o sticker com o link recebido.
 
 import httpx
 
-from afiliado import creative, message, pricing
+from afiliado import creative, pricing
 from afiliado.channels.base import PublishResult
 from afiliado.channels.telegram import API, _post_api, send_photo_bytes
 from afiliado.errors import SourceError
@@ -15,11 +15,17 @@ from afiliado.models import Post
 
 class StoryDispatchChannel:
     name = "story_dispatch"
+    # Fase 5C (A12): o que este canal entrega é uma ARTE no chat de operações,
+    # não um post no Instagram — quem posta é o dono, à mão. O resultado
+    # continua contando para o teto (é o número de artes que dá para postar
+    # num dia), mas o run registra a oferta como DESPACHADA, não publicada.
+    # Este `manual = True` é a única coisa que o canal precisa declarar: o texto
+    # do despacho é do pipeline (`pipeline.DESPACHO_MANUAL`) — havia uma cópia
+    # dele aqui, `dispatch_note`, que ninguém lia (menor da revisão da 5C).
+    manual = True
 
     def __init__(self, bot_token: str, ops_chat_id: str, client: httpx.Client | None = None,
-                 brand_handle: str | None = None, brand_name: str = "Fiscal da Promo",
-                 min_real_discount_pct: int = pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT,
-                 seal_tolerance: float = message.DEFAULT_SEAL_TOLERANCE):
+                 brand_handle: str | None = None, brand_name: str = "Fiscal da Promo"):
         # .strip() mata o footgun clássico de token/chat_id colado com
         # espaço/quebra de linha nas pontas (env var, clipboard).
         self.bot_token = bot_token.strip()
@@ -27,28 +33,29 @@ class StoryDispatchChannel:
         self.client = client or httpx.Client(timeout=30)
         self.brand_handle = brand_handle
         self.brand_name = brand_name
-        # Régua honesta (selection.* do config, via cli._build_channels):
-        # min_real_discount_pct decide o modo da arte; seal_tolerance fica
-        # guardado para quando a arte ganhar o selo do histórico próprio —
-        # hoje o selo da arte é só o da watchlist (creative._selo_applicable).
-        self.min_real_discount_pct = min_real_discount_pct
-        self.seal_tolerance = seal_tolerance
+
+    @staticmethod
+    def _build_caption(post: Post) -> str:
+        """Legenda do despacho: o mesmo bloco de preço/selo que a arte
+        desenha e o Telegram publica — o dono vê o que o post alega."""
+        linha_preco, prova = pricing.price_line(post.offer, post.verdict)
+        bloco = "\n".join(p for p in (linha_preco, prova, post.verdict.seal) if p)
+        return (
+            "📲 STORY PRONTO — poste no app e cole o sticker de link\n\n"
+            f"{post.offer.title}\n{bloco}"
+        )
 
     def publish(self, post: Post) -> PublishResult:
+        # A arte recebe o veredito do post — não recalcula modo nem selo.
         try:
-            art = creative.render_story(post.offer, post.copy, price_floor=post.price_floor,
+            art = creative.render_story(post.offer, post.copy, post.verdict,
                                         client=self.client, handle=self.brand_handle,
-                                        brand_name=self.brand_name,
-                                        min_real_discount_pct=self.min_real_discount_pct)
+                                        brand_name=self.brand_name)
         except SourceError as exc:
             return PublishResult(False, error=f"falha ao gerar arte do story: {exc}")
 
-        caption = (
-            "📲 STORY PRONTO — poste no app e cole o sticker de link\n\n"
-            f"{post.offer.title}"
-        )
         photo_result = send_photo_bytes(self.bot_token, self.ops_chat_id, art,
-                                        caption=caption, client=self.client)
+                                        caption=self._build_caption(post), client=self.client)
         if not photo_result.get("ok"):
             return PublishResult(
                 False, error=str(photo_result.get("description") or "falha ao enviar story"))

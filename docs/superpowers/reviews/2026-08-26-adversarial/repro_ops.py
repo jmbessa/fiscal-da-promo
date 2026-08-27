@@ -3,11 +3,16 @@
 Rodar da raiz do worktree:
   PYTHONPATH="$PWD/src" python <este arquivo>
 Nao toca na rede: fontes/canais falsos, httpx.MockTransport para o Telegram.
+
+Ajustes da fase 5A (API mudou, o cenario e o mesmo): o relogio dos cenarios
+1-2 e congelado as 23:55 BRT (o ritmo diario fecharia os canais fora da
+janela por outro motivo); _build_channels/_build_sources devolvem (lista,
+avisos) no cenario 9.
 """
 import json
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -77,8 +82,17 @@ def sep(title):
     print("\n" + "=" * 78 + f"\n{title}\n" + "=" * 78)
 
 
+BRT = timezone(timedelta(hours=-3))
+_relogio_real = state._now
+
+
+def congela(hh, mm):
+    state._now = lambda: datetime(2026, 8, 26, hh, mm, tzinfo=BRT).astimezone(timezone.utc)
+
+
 # ---------------------------------------------------------------------------
 sep("1. TETO DIARIO ATINGIDO -> o loop varre a fila inteira gastando LLM/links")
+congela(23, 55)
 llm_calls = {"n": 0}
 orig_ask = llm.ask_json
 llm.ask_json = lambda *a, **k: llm_calls.__setitem__("n", llm_calls["n"] + 1) or None
@@ -121,9 +135,11 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"linhas descartadas: {len(summary.discarded)}")
     print(f"len(summary.text()) = {len(texto)} chars  (limite sendMessage do Telegram = 4096)")
     print("exemplo de linha:", repr(summary.discarded[0]))
+    print("avisos:", summary.warnings)
     db.close()
 
 llm.ask_json = orig_ask
+state._now = _relogio_real
 
 # ---------------------------------------------------------------------------
 sep("3. send_text IGNORA a resposta da API: 400 'message is too long' vira silencio")
@@ -141,8 +157,8 @@ def handler(request: httpx.Request) -> httpx.Response:
 
 client = httpx.Client(transport=httpx.MockTransport(handler))
 ret = send_text("123:ABC", "-100", "x" * 5000, client=client)
-print(f"texto enviado com {seen['len']} chars -> API respondeu 400; send_text devolveu {ret!r}, "
-      "sem excecao, sem log, sem retorno de erro -> ops nunca fica sabendo")
+print(f"ultima parte enviada com {seen['len']} chars (5000 no total); send_text devolveu {ret!r} "
+      "(antes: 5000 chars numa mensagem -> 400 'message is too long' -> None, sem log)")
 
 # ---------------------------------------------------------------------------
 sep("4. TELEGRAM 429: sem retry_after, 2 chamadas imediatas e falha")
@@ -251,9 +267,10 @@ os.environ["TELEGRAM_BOT_TOKEN"] = "1:x"; os.environ["TELEGRAM_CHANNEL_ID"] = "-
 os.environ["SHOPEE_APP_ID"] = "a"; os.environ["SHOPEE_APP_SECRET"] = "b"
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
-    chans = cli._build_channels(cfg_ch)
-    srcs = cli._build_sources(cfg_ch)
+    chans, avisos_ch = cli._build_channels(cfg_ch)
+    srcs, avisos_src = cli._build_sources(cfg_ch)
 print("stdout (journal):", buf.getvalue().strip().splitlines())
 print("canais construidos:", [c.name for c in chans], "| fontes:", [s.name for s in srcs])
+print("avisos devolvidos para o resumo de ops:", avisos_ch + avisos_src)
 print("-> instagram_feed e meli somem; pipeline.run nao recebe nada que gere warning; "
       "resumo de ops = '✅ Run concluído' normal")

@@ -8,8 +8,11 @@ Documentation=file:///opt/afiliado/docs/runbooks/vps-setup.md
 OnCalendar=*-*-* 08..23:00/5:00
 # Espalha o disparo em até 30 s para não bater sempre no mesmo segundo.
 RandomizedDelaySec=30
-# Se a VPS estiver desligada na hora marcada, roda uma vez ao voltar.
-Persistent=true
+# Disparo perdido NÃO é recuperado: com Persistent=true, uma VPS religada de
+# madrugada rodava (e publicava) fora da janela. O ritmo diário
+# (schedule: no config.yaml) devolve orçamento 0 fora da janela de qualquer
+# forma; isto evita até o run vazio.
+Persistent=false
 Unit=afiliado.service
 
 [Install]

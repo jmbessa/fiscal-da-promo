@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 import httpx
 
 from afiliado.errors import ValidationError
@@ -14,17 +16,38 @@ def _client(client: httpx.Client | None) -> httpx.Client:
     return client or httpx.Client(timeout=20, follow_redirects=True, headers=_UA)
 
 
-def check_link(url: str, cfg: dict, client: httpx.Client | None = None) -> None:
+def check_link(url: str, cfg: dict) -> None:
+    """Portão de link OFFLINE (fase 5A, C6): `https`, host igual a um dos
+    `validation.allowed_domains` ou subdomínio dele, sem espaço nem caractere
+    de controle. NENHUMA requisição HTTP.
+
+    Antes, este portão fazia GET no link curto de afiliado seguindo o redirect
+    de rastreamento, com User-Agent de navegador — isto é, um clique de
+    afiliado feito pelo próprio pipeline, do IP da VPS, segundos após o link
+    ser gerado, em todo post e também no --dry-run: assinatura de tráfego
+    inválido para os programas (risco de encerramento da conta) e
+    contaminação do teste de atribuição do ML. A vitalidade da oferta já foi
+    provada minutos antes (descoberta) ou segundos antes (`refresh_price`);
+    o link vem do gerador oficial/painel. Não há cliente HTTP na assinatura
+    de propósito: sem ele, ninguém reintroduz o GET por engano."""
     allowed = cfg["validation"]["allowed_domains"]
-    try:
-        r = _client(client).get(url)
-    except httpx.HTTPError as exc:
-        raise ValidationError(f"link inacessível: {exc}") from exc
-    host = r.url.host or ""
+    if not url or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise ValidationError("link vazio ou com espaço/caractere de controle")
+    # `https://evil.com\@meli.la/x`: urlsplit mantém a `\` no netloc e lê o
+    # host depois do `@` (meli.la); o navegador trata `\` como `/` e vai para
+    # evil.com. Barra invertida e qualquer userinfo são rejeitadas (5A, rev.).
+    if "\\" in url:
+        raise ValidationError(f"link com barra invertida: {url[:80]}")
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise ValidationError(f"link sem https: {url[:80]}")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise ValidationError(f"link com credenciais no host: {url[:80]}")
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise ValidationError(f"link sem host: {url[:80]}")
     if not any(host == d or host.endswith("." + d) for d in allowed):
-        raise ValidationError(f"link resolve para domínio inesperado: {host}")
-    if r.status_code >= 400 and r.status_code != 403:
-        raise ValidationError(f"link retornou status {r.status_code}")
+        raise ValidationError(f"link em domínio inesperado: {host}")
 
 
 def check_price(offer: Offer, cfg: dict) -> None:
@@ -69,8 +92,12 @@ def check_copy(copy: CopyParts) -> None:
             raise ValidationError(f"copy.{nome} contém URL")
 
 
-def validate_post(post: Post, cfg: dict, client: httpx.Client | None = None) -> None:
+def validate_post(post: Post, cfg: dict, client: httpx.Client | None = None,
+                  skip_image: bool = False) -> None:
+    """Portões na ordem barato → caro. `client` serve SÓ à imagem (o link é
+    checado offline); `skip_image=True` (dry-run, A10) não toca a rede."""
     check_copy(post.copy)
     check_price(post.offer, cfg)
-    check_link(post.affiliate_link, cfg, client=client)
-    check_image(post.offer.image_url, client=client)
+    check_link(post.affiliate_link, cfg)
+    if not skip_image:
+        check_image(post.offer.image_url, client=client)

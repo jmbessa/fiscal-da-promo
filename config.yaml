@@ -1,6 +1,23 @@
 state:
   path: data/state.db
 
+# Fase 5A: dia LOCAL e ritmo. O teto diário de cada canal, o price_log e a
+# deduplicação de avisos são contados no dia deste fuso (antes era UTC: a
+# fronteira caía às 21:00 BRT e o canal calava das 13:20 às 21:00). O teto é
+# distribuído ao longo da janela: um canal só publica enquanto
+# count_hoje < min(max_per_day, floor(max_per_day × fração_da_janela) + 1);
+# fora da janela o orçamento é 0 (um run de madrugada não publica). A janela
+# deve bater com deploy/afiliado.timer.
+# A janela termina 23:15, e não 23:55, por causa do ritmo: o último disparo do
+# Actions é 23:00 BRT e `pacing_budget` só devolve o teto INTEIRO no fim da
+# janela — com 23:55 o orçamento das 23:00 era 59 e a meta de 60/dia era
+# inalcançável por construção (menor da revisão da 5C). Ao mudar a cadência,
+# refaça a conta: o último disparo precisa cair a ≤ 1/60 do fim da janela.
+schedule:
+  timezone: America/Sao_Paulo
+  window_start: "08:00"
+  window_end: "23:15"
+
 llm:
   model: haiku
 
@@ -12,21 +29,43 @@ selection:
   price_min_brl: 20
   price_max_brl: 1000
   dedupe_days: 30
-  # Fase 4 — régua honesta de preço. O desconto do vendedor (o "de" inflado)
+  # Fase 4/5B — régua honesta de preço. O desconto do vendedor (o "de" inflado)
   # deixou de decidir SE publicamos e passa a decidir só O QUE o post alega:
   # o corte de preço aqui é apenas não anunciar item mais caro que o típico.
+  # Regra do quartil (5B): o post só alega desconto quando o preço de hoje
+  # está ESTRITAMENTE abaixo do quartil mais barato da janela (preço < p25 —
+  # um preço que ocupa 1/4 dos dias É o p25 e não é promoção), a janela tem
+  # >= 14 dias distintos e o desconto contra a mediana atinge
+  # min_real_discount_pct. O selo de menor preço é ESTRITO (preço <= mínima) e
+  # diz a janela medida — a margem de 5% que existia aqui saiu.
   max_above_ref: 1.00          # não anuncia item mais caro que o preço típico
   require_price_ref: false     # true = só publica com referência conhecida
   min_real_discount_pct: 10    # abaixo disso o post não alega desconto: mostra preço + prova social
   ref_window_days: 90          # janela do histórico próprio de preços
-  ref_min_observations: 5      # dias distintos mínimos para a mediana valer
-  seal_tolerance: 1.05         # margem sobre a mínima histórica para o selo
+  ref_min_observations: 14     # dias distintos mínimos para mediana/p25 valerem (regra do quartil)
   # Fase 1.8: piso de valor esperado (comissão em R$ ponderada por popularidade,
   # via ev_score, SEM boost de watchlist) por post — com dedupe de 30 dias e
-  # cadência de 5 min (288 checagens/dia), evita postar sobras quando o estoque
-  # de boas ofertas esgota. 0 ou ausente desliga o piso (todas as ofertas que
-  # passam os demais filtros seguem elegíveis).
+  # cadência de 5 min (184 checagens/dia, 08:00–23:15), evita postar sobras
+  # quando o estoque de boas ofertas esgota. 0 ou ausente desliga o piso (todas
+  # as ofertas que passam os demais filtros seguem elegíveis).
   min_ev_brl: 0.50
+  # Fase 5C (M2): fração do teto diário do Telegram (channels.telegram.max_per_day)
+  # que cada loja deve ocupar. Normalizada entre as fontes LIGADAS — com o ML
+  # desligado a Shopee fica com 100%, não com metade. Ao escolher a próxima
+  # oferta da fila, o pipeline prefere as fontes ainda abaixo da meta do dia;
+  # se nenhuma delas tem candidata, qualquer fonte serve (uma completa a
+  # outra — a cota reparte o teto, nunca o deixa ocioso).
+  source_quota: {shopee: 0.5, meli: 0.5}
+  # Rodada de correção da 5C (C1): teto de descartes de UM run. Com o estoque
+  # de candidatas, a fila de publicação é o estoque inteiro e cada descarte
+  # custou uma chamada de `refresh_price`: uma API que começa a recusar produzia
+  # 5.000 descartes e 5.000 chamadas num run só (medido), com 0,5+1,5+4,0 s de
+  # backoff em cada 429 — horas martelando a conta de afiliado. Atingido o teto,
+  # o run encerra com "⚠️ N descartes no run — fila interrompida". O outro freio
+  # não é configurável: 10 erros de FONTE seguidos da mesma loja tiram aquela
+  # loja da fila até o próximo run (pipeline.MAX_FALHAS_SEGUIDAS_POR_FONTE).
+  # 0 desliga o teto — não faça isso com o estoque ligado.
+  max_descartes_por_run: 50
   # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
   # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
   # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.
@@ -38,10 +77,27 @@ selection:
   category_ids:
     shopee: ["100630", "100636", "100001", "100637", "100632"]
     meli: []      # vazio: o pool curado (meli.offers_path) já vem pré-filtrado
-  # Pesos do score de valor esperado (fase 1.5): EV = comissão em R$ × (1 + popularity × log10(vendas+1))
+  # Pesos do score de valor esperado (fase 1.5):
+  #   EV = (comissão em R$ ** commission_exp) × (1 + popularity × log10(vendas+1))
+  #        × (1 + discount × desconto_alegável/100)
   ev_weights:
     popularity: 0.3
-    discount: 0.5     # bônus só por desconto VERIFICADO (real_discount_pct)
+    discount: 0.5     # bônus só por desconto que o VEREDITO autoriza alegar
+    # Fase 5C (A8): a comissão entra amortecida. Crua, o fator dela variava 50x
+    # (R$ 20 → R$ 1.000) contra 2,5x de popularidade e 1,5x de desconto, e o LLM
+    # só via os 30 itens mais caros. Com 0.7, 8x de comissão viram 4,3x de EV.
+    # 1.0 devolve o comportamento anterior.
+    # O que o expoente NÃO faz (corrigido na revisão da 5C, I-4): ele não
+    # inverte a câmera de R$ 800 a 3% com 100 vendas contra a creatina de R$ 30
+    # a 10% com 50 mil vendas — 14,81 x 5,20, a câmera segue ganhando, só que
+    # por 2,8x em vez de 5,3x. Ele move o CRUZAMENTO: contra essa creatina, um
+    # item de 100 vendas precisava valer mais de R$ 4,51 de comissão e agora
+    # precisa passar de R$ 5,38. A inversão aparece em pares próximos (R$ 12,50
+    # com 90 mil vendas passa a ganhar de R$ 30,00 com 2 vendas). Quem leva o
+    # campeão de vendas ao LLM é o recorte por vendas do slate, não isto aqui.
+    # O EV deixa de ser "reais por post" e vira um score — min_ev_brl acima é
+    # lido na MESMA escala (0,50 continua cortando comissão abaixo de ~R$ 0,38).
+    commission_exp: 0.7
 
 # Fase 3 (parte 1): fontes de ofertas habilitadas. Seção opcional — ausente,
 # equivale a só shopee (comportamento de antes desta fase). O Mercado Livre
@@ -49,17 +105,58 @@ selection:
 # afiliado (data/meli_links.json, ver docs/runbooks/meli-setup.md).
 sources:
   shopee: true
-  meli: false
+  meli: true
 
+# Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26
+# contra a API real (147 chamadas; docs/superpowers/reviews/2026-08-26-descoberta-shopee.md).
+# O que ela mostrou: cada (categoria, sortType) é uma janela de 40 páginas × 50
+# = 2.000 itens (`hasNextPage: false` na p40), 54,6% dos itens das raízes são
+# elegíveis (≈ 5.460/mês, único motivo de corte: preço < R$ 20) e a p1 muda
+# 1-2 itens em 50 a cada ~9 h. Ou seja: reler as mesmas 2 páginas a cada 5 min
+# dava 244 itens únicos/mês (8 posts/dia a dedupe 30); ler UMA FATIA por run e
+# acumular num estoque dá 60/dia com margem de 3x, sem afrouxar o dedupe.
 shopee:
-  sort_types: [2]           # a API praticamente ignora a ordenação; 2 = mais vendidos
-  list_type: 0
-  pages: 2
-  page_size: 50
+  sort_types: [2]           # 1 e 6 = mesmo conjunto; 3/4 = 0 elegíveis; 5 = 72% sem venda
+  list_type: 0              # 1 e 2 = mesmo conjunto que 0; 3/4 exigem matchId
+  page_size: 50             # máximo aceito pela API (limit=100 → erro 11001)
+  pages: 40                 # janela real por listagem; o cursor volta à p1 no fim
+  calls_per_run: 8          # 5 raízes + 2 subcategorias + 1 keyword: 128 chamadas/dia
+                            # no Actions (16 runs), ~1.500 na VPS (192 runs). Cortar
+                            # este número para <= 5 desliga subcategorias e keywords
+                            # em silêncio — o run avisa quando isso acontece.
+  candidate_max_age_days: 3 # por quantos dias a candidata descoberta segue na fila
   # Buscar POR categoria muda tudo: sem isso a API devolve majoritariamente a
   # categoria 100644 (fora da nossa lista). Medido em 2026-08-25: desconto médio
   # sobe de 19% para ~47% e a mediana de vendas de 282 para milhares.
+  # Uma página de raiz por run, por categoria: as 5 janelas inteiras a cada 40
+  # runs (~3h20).
   category_ids: ["100630", "100636", "100001", "100637", "100632"]
+  # Subcategorias de nível 2: cada uma tem a SUA janela de 2.000, disjunta da
+  # raiz nas páginas fundas (300/300 itens inéditos nas p10/p40 de 5 delas) —
+  # mas a p1 é quase o topo da raiz (0-1 inédito em 50), por isso a rotação
+  # começa na p2. As IDs são as que têm >= 25 itens no top-500 da própria raiz.
+  subcategories_per_run: 2
+  subcategory_first_page: 2
+  subcategory_ids: [
+    100663, 100659, 100662, 100664, 100658, 102002,                    # Beleza
+    100716, 100717, 100711, 100715, 100710, 100709, 100721, 100718,    # Casa
+    100018, 100002, 100019,                                            # Saúde
+    100727, 100725, 100726, 100728,                                    # Esportes
+    100684, 100678, 100675, 100679, 100683,                            # Mãe e Bebê
+  ]
+  # 40 termos × páginas 1-2 = 80 fatias, 1 por run. `keyword` funciona junto com
+  # `productCatId` mas NÃO é filtro estrito (8% dos nós vêm de outra categoria):
+  # quem descarta é o allowlist de selection.category_ids. Cada lista está
+  # ordenada por elegíveis inéditos medidos; os últimos de cada linha renderam
+  # 0-14 e são os primeiros a sair se a cota de chamadas apertar.
+  keywords_per_run: 1
+  keyword_pages: 2
+  keywords:
+    "100001": [creatina, whey, colágeno, massageador, vitamina, balança, termômetro, escova dental]
+    "100630": [sérum, protetor solar, shampoo, perfume, depilador, batom, hidratante, maquiagem]
+    "100636": [lixeira, panela, protetor colchão, mop, lençol, cortina, travesseiro, organizador]
+    "100637": [halteres, legging, guarda chuva, camisa térmica, tênis, conjunto fitness, bicicleta, dry fit]
+    "100632": [patinete, mamadeira, carrinho bebê, toalha umedecida, lençol berço, mordedor, brinquedo sensorial, fralda]
 
 # Fase 3B: descoberta no Mercado Livre lê um pool curado (offers_path) em vez
 # de buscar ao vivo — /sites/MLB/search e /items/{id} devolvem 403 na API real
@@ -79,6 +176,11 @@ meli:
   tag: "jmbessa"             # etiqueta cadastrada no painel de afiliados (linkbuilder)
 
 validation:
+  # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio
+  # link de afiliado (igual a um destes domínios ou subdomínio dele) + ausência
+  # de espaço/caractere de controle. Nenhuma requisição ao link: um GET do
+  # pipeline no link curto seria um clique de afiliado artificial (IP da VPS,
+  # segundos após a geração) e contaminaria a atribuição.
   # mercadolivre.com.br e mercadolivre.com precisam estar os dois: a checagem
   # casa host == d ou host.endswith("." + d), e um não cobre o outro.
   allowed_domains: ["shopee.com.br", "shope.ee",
@@ -106,22 +208,25 @@ instagram:
 
 # Fase 2A/1.7: canais habilitados. Seção opcional — ausente, equivale a só
 # telegram. Cada canal aceita bool (liga/desliga) ou dict com `enabled` e,
-# opcionalmente, `max_per_day` (teto diário contado no SQLite, para não
+# opcionalmente, `max_per_day` (teto diário contado no SQLite no dia LOCAL e
+# distribuído pela janela de `schedule:` — ver o ritmo lá; serve para não
 # saturar canais de esforço manual ou com limites de API/audiência).
 channels:
   telegram:
     enabled: true
-    max_per_day: 100         # meta do canal: 50-100 ofertas/dia (teto real da operação)
+    max_per_day: 60          # meta: 60 ofertas/dia, espalhadas das 08:00 às 23:15 (~1 a cada 15 min)
   story_dispatch:
-    enabled: true            # arte de story + link prontos no chat de operações
-    max_per_day: 6           # artes de story que chegam ao seu chat por dia
+    enabled: true            # SEMI-automático: arte de story + link prontos no chat de operações; você posta
+    max_per_day: 6           # artes de story por dia, ~uma a cada 2h40
   instagram_feed:
     enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
-    max_per_day: 2
+    max_per_day: 2           # 1 de manhã, a 2ª só a partir da metade da janela
 
 # Fase 1.8: chat de operações só recebe resumo quando o run publicou,
-# descartou ou gerou aviso — evita 288 mensagens/dia com a cadência de 5 min.
-# O caminho de exceção (run abortado) sempre notifica, independente disto.
+# descartou ou gerou aviso — evita 192 mensagens/dia com a cadência de 5 min.
+# Fase 5A: cada aviso entra UMA vez por dia local (tabela `warned`); o
+# heartbeat da manhã ("Bom dia — ontem: ...") é um aviso e sempre chega. O
+# caminho de exceção (run abortado/interrompido) sempre notifica.
 # Seção opcional; ausente = false (comportamento desta fase).
 ops:
   notify_empty_runs: false   # true = manda resumo mesmo quando nada aconteceu

@@ -2,15 +2,38 @@
 
 Checklist para habilitar o feed automático (`instagram_feed`). Existem **duas
 variantes** da API do Instagram; o pipeline suporta as duas (`instagram.api` no
-`config.yaml`). Use a **Variante A** — é a mais simples: o token sai direto do
-painel da Meta, sem Página do Facebook e sem Graph API Explorer.
+`config.yaml`).
+
+> **Este projeto roda a Variante B.** `config.yaml` traz
+> `instagram.api: facebook_login` desde 2026-08-25 (token de Página
+> permanente, já configurado). Vá direto para a **Variante B**, abaixo — a
+> Variante A fica documentada para quem estiver começando do zero e não quiser
+> criar Página do Facebook. Até a fase 5C este runbook recomendava a A
+> enquanto o config rodava a B, e quem seguisse o texto gerava um token que o
+> `graph.facebook.com` não aceita.
 
 Quando travar em qualquer passo, abra o Claude Code e peça ajuda citando o
 número do passo.
 
+## Hospedagem da arte: use um bot secundário (fase 5C, A5)
+
+A arte do feed é enviada ao chat de operações do Telegram e a URL de `getFile`
+é o `image_url` que a Meta busca. **Essa URL carrega o bot token** — e o que
+expira nela é o `file_path`, não o token.
+
+- [ ] Crie um **segundo bot** no @BotFather (ex.: `@fiscalarte_bot`).
+- [ ] Adicione-o SÓ ao chat de operações — ele não precisa (e não deve) ser
+      administrador do canal público.
+- [ ] `ART_HOST_BOT_TOKEN=<token do bot secundário>` no `.env` e nos GitHub
+      Secrets.
+
+Sem essa variável, quem hospeda a arte é o bot administrador do canal — e o
+token dele vai à Meta em todo post. O run avisa uma vez por dia:
+`⚠️ instagram_feed: arte hospedada pelo bot do canal — defina ART_HOST_BOT_TOKEN`.
+
 ---
 
-## Variante A (recomendada) — "API do Instagram com Login do Instagram"
+## Variante A (alternativa) — "API do Instagram com Login do Instagram"
 
 `config.yaml` → `instagram.api: instagram_login` (já é o padrão).
 
@@ -68,7 +91,7 @@ Retorna um token novo válido por mais 60 dias — atualize `.env` e o secret
 
 ---
 
-## Variante B — "API do Instagram com Login do Facebook"
+## Variante B (a que este projeto roda) — "API do Instagram com Login do Facebook"
 
 `config.yaml` → `instagram.api: facebook_login`. Exige conta business
 **vinculada a uma Página do Facebook**; escopos `instagram_basic`,

@@ -4,7 +4,10 @@ from urllib.parse import parse_qs
 import httpx
 from PIL import Image
 
+from afiliado import pricing
 from afiliado.channels.instagram_feed import InstagramFeedChannel
+from afiliado.models import NO_CLAIM, Verdict
+from tests.test_models import make_offer_ref
 from tests.test_state import make_post
 
 
@@ -48,6 +51,58 @@ def test_publish_happy_path():
 
 def test_max_per_run_class_attribute():
     assert InstagramFeedChannel.max_per_run == 1
+
+
+# -- Fase 5C (M4/A5): a arte não é hospedada pelo bot do CANAL -----------------
+
+def test_arte_hospedada_pelo_bot_secundario():
+    """A5: `api.telegram.org/file/bot{TOKEN}/...` vai como `image_url` para a
+    Meta — o que expira é o file_path, o token é o segredo PERMANENTE do
+    administrador do canal público. Com ART_HOST_BOT_TOKEN, quem aparece na
+    URL é um bot sem direitos no canal."""
+    urls = []
+
+    def handler(request):
+        if request.url.host == "graph.facebook.com" and request.url.path.endswith("/media"):
+            urls.append(parse_qs(request.content.decode())["image_url"][0])
+        return _happy_handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    ch = InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTDOCANAL", "OPSCHAT", client=client,
+                              art_host_bot_token="BOTDEARTE")
+    assert ch.publish(make_post()).ok
+    assert "/bot BOTDEARTE".replace(" ", "") in urls[0]
+    assert "BOTDOCANAL" not in urls[0]
+
+
+def test_sem_bot_secundario_a_arte_continua_saindo_pelo_bot_do_canal():
+    urls = []
+
+    def handler(request):
+        if request.url.host == "graph.facebook.com" and request.url.path.endswith("/media"):
+            urls.append(parse_qs(request.content.decode())["image_url"][0])
+        return _happy_handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    ch = InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTDOCANAL", "OPSCHAT", client=client)
+    assert ch.publish(make_post()).ok
+    assert "botBOTDOCANAL" in urls[0]     # comportamento atual, com aviso no cli
+
+
+def test_o_bot_secundario_so_hospeda_a_arte():
+    """A mensagem de hospedagem vai pelo bot secundário; o chat de operações é
+    o mesmo (é lá que o bot secundário precisa estar)."""
+    enviados = []
+
+    def handler(request):
+        if request.url.host == "api.telegram.org":
+            enviados.append(request.url.path)
+        return _happy_handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTDOCANAL", "OPSCHAT", client=client,
+                         art_host_bot_token="BOTDEARTE").publish(make_post())
+    assert all("BOTDEARTE" in p for p in enviados)
 
 
 def test_caption_sent_to_media_never_contains_link():
@@ -148,27 +203,34 @@ def test_art_is_hosted_as_jpeg():
     assert bytes.fromhex("ffd8ff") in body          # magic number do JPEG
 
 
-def _caption_for(min_real_discount_pct: int | None = None, **offer_kw) -> str:
-    extra = {} if min_real_discount_pct is None else {"min_real_discount_pct": min_real_discount_pct}
+def _caption_for(verdict: Verdict | None = None, minimo: int = 10, **offer_kw) -> str:
+    """Legenda para um post cujo veredito é `verdict` ou, se ausente, o que
+    `pricing.verdict(offer, minimo)` decide."""
     client = httpx.Client(transport=httpx.MockTransport(_happy_handler))
-    canal = InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTTOKEN", "OPSCHAT", client=client, **extra)
-    return canal._build_caption(make_post(**offer_kw))
+    canal = InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTTOKEN", "OPSCHAT", client=client)
+    post = make_post(**offer_kw)
+    post.verdict = verdict if verdict is not None else pricing.verdict(post.offer, minimo)
+    return canal._build_caption(post)
 
 
-def test_caption_respeita_o_min_real_discount_pct_do_canal():
-    # 20% verificado (26,00 -> 20,80): com o padrão (10) a legenda alega;
-    # com o mínimo 30 vindo do config, sai no modo B — sem "OFF".
-    assert "(20% OFF)" in _caption_for(price_ref_cents=2600, price_current_cents=2080)
-    caption = _caption_for(min_real_discount_pct=30, price_ref_cents=2600,
-                           price_current_cents=2080)
+def _ref(**kw):
+    return dict(price_ref_cents=2600, price_p25_cents=2600, price_window_days=90, **kw)
+
+
+def test_caption_respeita_o_veredito_do_post():
+    # 20% verificado (26,00 -> 20,80): com veredito A a legenda alega; com o
+    # veredito B (mínimo 30 no config) sai no modo B — sem "OFF". O canal
+    # não recalcula nada.
+    assert "(20% OFF)" in _caption_for(**_ref(price_current_cents=2080))
+    caption = _caption_for(minimo=30, **_ref(price_current_cents=2080))
     assert "OFF" not in caption
     assert "R$ 20,80" in caption
     assert "R$ 26,00" not in caption
+    assert "OFF" not in _caption_for(verdict=NO_CLAIM, **_ref(price_current_cents=2080))
 
 
 def test_caption_modo_a_usa_a_nossa_referencia():
-    caption = _caption_for(price_original_cents=35000, price_ref_cents=2600,
-                           price_current_cents=1890)
+    caption = _caption_for(**_ref(price_original_cents=35000, price_current_cents=1890))
     assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)" in caption
     assert "R$ 350,00" not in caption
 
@@ -180,3 +242,14 @@ def test_caption_modo_b_sem_referencia_nao_alega_desconto():
     assert "R$ 350,00" not in caption
     assert "OFF" not in caption
     assert "⭐ 4,9 · 30 mil vendidos" in caption
+
+
+def test_caption_traz_o_selo_do_veredito():
+    # C9: a legenda do IG nunca tinha selo enquanto o Telegram tinha.
+    offer_kw = _ref(price_current_cents=1890, price_floor_cents=1890, price_floor_window_days=191)
+    v = pricing.verdict(make_offer_ref(2600, **{k: v for k, v in offer_kw.items()
+                                                if k != "price_ref_cents"}), 10)
+    assert v.seal == "🏷️ Menor preço dos últimos 6 meses (verificado)"
+    caption = _caption_for(verdict=v, **offer_kw)
+    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)\n🏷️ Menor preço dos últimos 6 meses (verificado)" in caption
+    assert "Menor preço" not in _caption_for(verdict=NO_CLAIM, **offer_kw)

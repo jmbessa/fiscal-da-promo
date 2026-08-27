@@ -1,16 +1,17 @@
 import argparse
 import io
 import os
+import signal
 import sys
 from pathlib import Path
 
 import httpx
 
-from afiliado import config, llm, message, pipeline, pricing
+from afiliado import config, llm, pipeline
 from afiliado.channels.instagram_feed import GRAPH_HOSTS, InstagramFeedChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
-from afiliado.sources.meli import MeliSource
+from afiliado.sources.meli import DEFAULT_OFFERS_PATH, MeliSource
 from afiliado.sources.shopee import ShopeeSource
 from afiliado.state import StateDB
 from afiliado.watchlist import load_watchlist
@@ -23,41 +24,66 @@ def _build_parser() -> argparse.ArgumentParser:
     prun.add_argument("--dry-run", action="store_true",
                       help="APIs reais, mas imprime em vez de publicar")
     prun.add_argument("--config", default="config.yaml")
+    prun.add_argument("--posts-per-run", type=int, default=None,
+                      help="sobrepõe selection.posts_per_run (o Actions roda a cada "
+                           "30 min e precisa de mais que a VPS, que roda a cada 5)")
     pdoc = sub.add_parser("doctor", help="verifica credenciais e dependências")
     pdoc.add_argument("--config", default="config.yaml")
     return p
 
 
-def _shopee() -> ShopeeSource:
-    return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"])
+def _shopee(db: StateDB | None = None) -> ShopeeSource:
+    """`db` é o cursor da varredura rotativa (fase 5C, M1): sem ele a rotação
+    existe dentro do run mas não sobrevive ao processo — é o caso do `doctor`."""
+    return ShopeeSource(os.environ["SHOPEE_APP_ID"], os.environ["SHOPEE_APP_SECRET"], db=db)
 
 
-def _meli() -> MeliSource | None:
+MELI_ENV_AVISO = ("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
+                  "(ver docs/runbooks/meli-setup.md)")
+
+ART_HOST_AVISO = ("⚠️ instagram_feed: arte hospedada pelo bot do canal — "
+                  "defina ART_HOST_BOT_TOKEN")
+
+
+def _meli(cfg: dict | None = None) -> MeliSource | None:
     client_id = _env("MELI_CLIENT_ID")
     client_secret = _env("MELI_CLIENT_SECRET")
     if not (client_id and client_secret):
-        print("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
-              "(ver docs/runbooks/meli-setup.md)")
         return None
-    return MeliSource(client_id, client_secret, refresh_token=_env("MELI_REFRESH_TOKEN"))
+    me = (cfg or {}).get("meli") or {}
+    extra = {"links_path": me["links_path"]} if me.get("links_path") else {}
+    return MeliSource(client_id, client_secret, refresh_token=_env("MELI_REFRESH_TOKEN"),
+                      **extra)
 
 
-def _build_sources(cfg: dict) -> list:
-    """Monta as fontes habilitadas em `sources:` (config.yaml).
+def _aviso(avisos: list[str], texto: str) -> None:
+    """Aviso de montagem: vai ao stdout (journal) E à lista que o pipeline
+    injeta em `summary.warnings` — antes era só o print, e o chat de ops via
+    "✅ Run concluído" com o Instagram/ML mudos (C4b)."""
+    print(texto)
+    avisos.append(texto)
+
+
+def _build_sources(cfg: dict, db: StateDB | None = None) -> tuple[list, list[str]]:
+    """Monta as fontes habilitadas em `sources:` (config.yaml) e devolve
+    também os avisos de montagem.
 
     Seção ausente equivale a `{"shopee": True}` (comportamento de antes da
     fase 3) — o Mercado Livre nasce desligado. Fonte ligada sem env
-    necessária: aviso no stdout e segue sem ela, nunca derruba o run (mesmo
-    padrão de `_build_channels`)."""
+    necessária: aviso (stdout + resumo de ops) e segue sem ela, nunca
+    derruba o run (mesmo padrão de `_build_channels`)."""
     src_cfg = cfg.get("sources") or {"shopee": True}
     sources: list = []
+    avisos: list[str] = []
     if src_cfg.get("shopee", True):
-        sources.append(_shopee())
+        sources.append(_shopee(db))
     if src_cfg.get("meli", False):
-        meli = _meli()
-        if meli is not None:
+        meli = _meli(cfg)
+        if meli is None:
+            _aviso(avisos, MELI_ENV_AVISO)
+        else:
             sources.append(meli)
-    return sources
+    return sources, avisos
 
 
 def _env(name: str) -> str:
@@ -81,36 +107,23 @@ def _instagram_api(cfg: dict) -> str:
     return api if api in GRAPH_HOSTS else "instagram_login"
 
 
-def _regua(cfg: dict) -> dict:
-    """`selection.min_real_discount_pct` e `selection.seal_tolerance` como
-    kwargs para os canais que renderizam arte ou legenda — a mesma leitura
-    (e os mesmos defaults de `pricing`/`message`) que o pipeline usa para o
-    texto do Telegram, para os três concordarem quando o config muda."""
-    sel = cfg.get("selection") or {}
-    return {
-        "min_real_discount_pct": int(
-            sel.get("min_real_discount_pct") or pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT),
-        "seal_tolerance": float(
-            sel.get("seal_tolerance") or message.DEFAULT_SEAL_TOLERANCE),
-    }
-
-
-def _build_channels(cfg: dict) -> list:
-    """Monta os canais habilitados em config.yaml a partir das envs disponíveis.
+def _build_channels(cfg: dict) -> tuple[list, list[str]]:
+    """Monta os canais habilitados em config.yaml a partir das envs
+    disponíveis e devolve também os avisos de montagem.
 
     Seção `channels` ausente equivale a `{"telegram": True}` (comportamento da
     fase 1). Cada entrada aceita bool ou dict (`enabled`, `max_per_day` —
     fase 1.7); quando `max_per_day` está presente, vira atributo de instância
     no canal construído (`ch.max_per_day`), lido pelo pipeline via getattr.
-    Canal ligado sem env necessária: aviso no stdout e segue sem ele — nunca
-    derruba o run. Os canais que renderizam arte/legenda recebem a régua
-    (`_regua`) do config."""
+    Canal ligado sem env necessária: aviso (stdout + resumo de ops) e segue
+    sem ele — nunca derruba o run. Nenhum canal recebe a régua: o veredito
+    (modo + selo) já vem decidido no `Post` (fase 5B)."""
     ch_cfg = cfg.get("channels") or {"telegram": True}
     brand_cfg = cfg.get("brand") or {}
     brand_handle = brand_cfg.get("handle") or None
     brand_name = brand_cfg.get("name") or "Fiscal da Promo"
-    regua = _regua(cfg)
     channels: list = []
+    avisos: list[str] = []
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("telegram"))
     if enabled:
@@ -122,20 +135,21 @@ def _build_channels(cfg: dict) -> list:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
         else:
-            print("⚠️ canal telegram ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID ausente")
+            _aviso(avisos, "⚠️ canal telegram ignorado: variável "
+                           "TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID ausente")
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("story_dispatch"))
     if enabled:
         token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
         if token and ops:
-            ch = StoryDispatchChannel(token, ops, brand_handle=brand_handle, brand_name=brand_name,
-                                      **regua)
+            ch = StoryDispatchChannel(token, ops, brand_handle=brand_handle, brand_name=brand_name)
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
         else:
-            print("⚠️ canal story_dispatch ignorado: variável TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
+            _aviso(avisos, "⚠️ canal story_dispatch ignorado: variável "
+                           "TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("instagram_feed"))
     if enabled:
@@ -143,49 +157,109 @@ def _build_channels(cfg: dict) -> list:
         ig_token = _env("IG_ACCESS_TOKEN")
         bot_token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
+        art_host = _env("ART_HOST_BOT_TOKEN")
         if ig_user and ig_token and bot_token and ops:
             ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
-                                      brand_name=brand_name, api=_instagram_api(cfg), **regua)
+                                      brand_name=brand_name, api=_instagram_api(cfg),
+                                      art_host_bot_token=art_host)
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
+            if not art_host:
+                # A5: a URL de hospedagem da arte carrega o token do bot que a
+                # enviou, e é ela que vai à Meta. Sem um bot secundário, quem
+                # viaja é o token do ADMINISTRADOR do canal público.
+                _aviso(avisos, ART_HOST_AVISO)
         else:
-            print("⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
-                  "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
+            _aviso(avisos, "⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
+                           "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
 
-    return channels
+    return channels, avisos
+
+
+def _doctor_links_do_meli(meli: MeliSource, offers: list, cfg: dict) -> bool:
+    """Checa `data/meli_links.json` no doctor (fase 5C, M5/A6): existe? quantos
+    produtos do pool têm link? Devolve False (❌) só quando a fonte está
+    LIGADA e a cobertura é ZERO — nesse estado o ML não publica nada, e o
+    doctor precisa dizer isso e o que fazer.
+
+    Com o pool de OFERTAS vazio o veredito é o mesmo (o ML não publica), mas a
+    causa é outra: "0 de 0 produto(s) do pool com link" era verdade e não dizia
+    nada — mandava rodar /meli-links-refresh quando o que falta são PRODUTOS
+    (menor da revisão da 5C)."""
+    caminho = meli.links_path
+    ligado = bool((cfg.get("sources") or {}).get("meli", False))
+    com_link, total = meli.link_coverage(offers)
+    acao = "/meli-links-refresh"
+    if not total:
+        pool = (cfg.get("meli") or {}).get("offers_path") or DEFAULT_OFFERS_PATH
+        situacao = (f"pool de OFERTAS vazio ou inválido ({pool}) — "
+                    "sem produto não há link a gerar")
+        acao = "/meli-pool-refresh (o pool de links vem depois)"
+    elif not meli.links_file_exists:
+        situacao = f"pool de links ausente ({caminho})"
+    else:
+        situacao = f"{com_link} de {total} produto(s) do pool com link ({caminho})"
+    if ligado and com_link == 0:
+        print(f"❌ Mercado Livre: {situacao} — o ML não vai publicar nada. "
+              f"Rode {acao} (ver docs/runbooks/meli-setup.md)")
+        return False
+    if com_link < total or not total:
+        print(f"⚠️ Mercado Livre: {situacao} — rode {acao}")
+    else:
+        print(f"✅ Mercado Livre: {situacao}")
+    return True
 
 
 def doctor(cfg: dict) -> int:
     ok = True
     try:
-        offers = _shopee().fetch_offers({**cfg, "shopee": {**cfg["shopee"], "pages": 1}})
+        # Uma chamada só (a p1 de uma raiz): o doctor confere credencial e
+        # parsing, não faz varredura — e sem StateDB não mexe no cursor do run.
+        offers = _shopee().fetch_offers(
+            {**cfg, "shopee": {**cfg["shopee"], "calls_per_run": 1, "pages": 1}})
         print(f"✅ Shopee: {len(offers)} ofertas; primeira: "
               f"{offers[0] if offers else '(vazio — confira sort_types/list_type)'}")
     except Exception as exc:
         ok = False
         print(f"❌ Shopee: {exc}")
 
-    meli = _meli()  # reaproveita o helper de _build_sources: mesma leitura de
-                    # env (_env, já com .strip()) e a mesma construção; sem
-                    # credenciais, _meli() já imprime o aviso e não falha o doctor.
-    if meli is not None:
+    meli = _meli(cfg)  # reaproveita o helper de _build_sources: mesma leitura
+                    # de env (_env, já com .strip()) e a mesma construção; sem
+                    # credenciais, avisa e não falha o doctor.
+    if meli is None:
+        print(MELI_ENV_AVISO)
+    else:
         try:
             meli.ensure_token()  # só valida as credenciais OAuth
-            offers = meli.fetch_offers(cfg)  # leitura local do pool, sem rede
+            # Leitura local do pool, sem rede — a MESMA validação do run
+            # (C7d): quantas entradas valem e, por motivo, quantas caíram.
+            offers = meli.fetch_offers(cfg)
+            pool = f"{len(offers)} oferta(s) válida(s) no pool"
             if meli.pool_warning:
-                print(f"⚠️ Mercado Livre: token ok; {meli.pool_warning}")
+                print(f"⚠️ Mercado Livre: token ok; {pool}; {meli.pool_warning}")
             else:
-                print(f"✅ Mercado Livre: token ok; {len(offers)} ofertas no pool")
+                print(f"✅ Mercado Livre: token ok; {pool}")
         except Exception as exc:
             ok = False
             print(f"❌ Mercado Livre: {exc}")
+        else:
+            # A6: o pool de LINKS é o que decide se a fonte publica alguma
+            # coisa — sem ele todo item do ML vira descarte, e o doctor dizia
+            # ✅ assim mesmo.
+            if not _doctor_links_do_meli(meli, offers, cfg):
+                ok = False
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
     if token and ops:
-        send_text(token, ops, "🩺 doctor: bot funcionando")
-        print("✅ Telegram: mensagem de teste enviada ao chat de operações")
+        # `send_text` devolve False (e imprime o `description` da API) quando
+        # o bot foi removido/chat id errado — antes o doctor dizia ✅ mesmo assim.
+        if send_text(token, ops, "🩺 doctor: bot funcionando"):
+            print("✅ Telegram: mensagem de teste enviada ao chat de operações")
+        else:
+            ok = False
+            print("❌ Telegram: envio ao chat de operações falhou (token/chat id?)")
     else:
         ok = False
         print("❌ Telegram: TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausentes")
@@ -241,6 +315,26 @@ def load_dotenv(path: str | Path = ".env", override: bool = True) -> int:
     return n
 
 
+def _signal_handler(token: str, ops: str):
+    """SIGTERM (TimeoutStartSec do systemd) e SIGINT matavam o Python sem
+    exceção: sem resumo, sem "❌ Run abortado", ops em silêncio (fase 5A).
+    Avisa o chat de operações e sai com 128+n, como um processo morto por
+    sinal."""
+    def handler(signum, frame):
+        if token and ops:
+            send_text(token, ops, f"❌ Run interrompido (sinal {signum})")
+        raise SystemExit(128 + int(signum))
+    return handler
+
+
+def _install_signal_handlers(token: str, ops: str) -> None:
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _signal_handler(token, ops))
+        except (ValueError, OSError):
+            pass   # fora da thread principal (embutido/testes): segue sem handler
+
+
 def configure_stdout(stream=None) -> None:
     """Garante saída UTF-8 (emojis do doctor/resumos) mesmo em console Windows
     cp1252; sem efeito quando o stream já é UTF-8 ou não suporta reconfigure."""
@@ -260,20 +354,37 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load_config(args.config)
     if args.cmd == "doctor":
         return doctor(cfg)
+    if args.posts_per_run is not None:
+        # O teto diário e o RITMO continuam mandando (fase 5A): isto só diz
+        # quantas ofertas UM run pode chegar a publicar. Um agendador de 30 em
+        # 30 min precisa de mais folga por run que um de 5 em 5.
+        cfg = {**cfg, "selection": {**cfg["selection"],
+                                    "posts_per_run": int(args.posts_per_run)}}
 
-    db = StateDB(cfg["state"]["path"])
-    sources = _build_sources(cfg)
+    db = StateDB(cfg["state"]["path"], timezone=pipeline.schedule_settings(cfg)["timezone"])
+    sources, avisos = _build_sources(cfg, db)
     channels = []
     if not args.dry_run:
-        channels = _build_channels(cfg)
+        channels, avisos_canais = _build_channels(cfg)
+        avisos += avisos_canais
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")
+    _install_signal_handlers(token, "" if args.dry_run else ops)
     try:
         wl = load_watchlist((cfg.get("watchlist") or {}).get("path", "data/watchlist.json"))
     except Exception:
         wl = None
     try:
-        summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl)
+        summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
+                               warnings_iniciais=avisos)
+    except pipeline.RunAborted as exc:
+        # Todas as fontes falharam: a causa está no próprio motivo (os avisos
+        # por fonte podem já ter sido deduplicados hoje) e vai ao journal e
+        # ao ops; o run sai com erro.
+        print(f"❌ Run abortado: {exc}")
+        if not args.dry_run and token and ops:
+            send_text(token, ops, exc.summary.text(header=f"❌ Run abortado: {exc}"))
+        raise
     except Exception as exc:
         if not args.dry_run and token and ops:
             send_text(token, ops, f"❌ Run abortado: {exc}")
@@ -285,7 +396,11 @@ def main(argv: list[str] | None = None) -> int:
         print(summary.text())
     elif token and ops:
         notify_empty = bool((cfg.get("ops") or {}).get("notify_empty_runs", False))
-        houve_algo = summary.published or summary.discarded or summary.warnings
+        # `dispatched` entra aqui: um run que só despachou artes ao chat de ops
+        # aconteceu, e o resumo precisa chegar (A12 tirou o despacho de
+        # `published`, e sem esta linha ele sumiria do ops junto).
+        houve_algo = (summary.published or summary.dispatched
+                      or summary.discarded or summary.warnings)
         if houve_algo or notify_empty:
             send_text(token, ops, summary.text())
     return 0

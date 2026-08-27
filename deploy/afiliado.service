@@ -3,6 +3,10 @@ Description=Fiscal da Promo — um ciclo do pipeline de ofertas
 Documentation=file:///opt/afiliado/docs/runbooks/vps-setup.md
 After=network-online.target
 Wants=network-online.target
+# Fase 5A: a unidade morreu (SIGTERM do TimeoutStartSec, OOM, venv quebrado)
+# → afiliado-notify.service avisa o chat de operações. Sem isto uma VPS
+# quebrada era indistinguível de "sem oferta boa".
+OnFailure=afiliado-notify.service
 
 [Service]
 Type=oneshot
@@ -16,7 +20,9 @@ EnvironmentFile=/opt/afiliado/.env
 Environment=HOME=/home/afiliado
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/afiliado/.venv/bin/afiliado run
-# Um ciclo típico leva menos de 2 min; acima disso algo travou.
+# Um ciclo típico leva menos de 2 min; acima disso algo travou. O SIGTERM
+# daqui é tratado pelo CLI (avisa o ops e sai com 143) e, como a unidade
+# falha, OnFailure= dispara o segundo aviso.
 TimeoutStartSec=600
 # Endurecimento compatível com as necessidades do processo:
 # /usr, /boot e /etc ficam somente-leitura; /opt e /home seguem graváveis.

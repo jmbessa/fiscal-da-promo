@@ -17,7 +17,15 @@ procedimento para usá-la.
 **Os cookies da sessão nunca são commitados nem gravados em arquivo — ficam
 só na memória desta sessão do Claude Code**, usados apenas para autenticar as
 chamadas HTTP feitas agora. Só `data/meli_links.json` (links públicos, sem
-segredo) é gravado em disco e commitado.
+segredo) é gravado em disco.
+
+**Estado em 2026-08-26: `data/meli_links.json` NÃO EXISTE em nenhum checkout e
+nunca foi commitado.** Ele não vem com o repositório — é ESTE skill que o
+gera, e depois de gerado ele PRECISA ser commitado (`git add
+data/meli_links.json`), senão a VPS e o Actions continuam sem link e cada
+oferta do Mercado Livre vira um descarte. Enquanto a cobertura for zero e
+`sources.meli: true`, o `afiliado doctor` falha com ❌ apontando para cá
+(fase 5C, A6).
 
 ## Pré-requisitos
 

@@ -15,6 +15,12 @@ from afiliado.models import Post
 
 class StoryDispatchChannel:
     name = "story_dispatch"
+    # Fase 5C (A12): o que este canal entrega é uma ARTE no chat de operações,
+    # não um post no Instagram — quem posta é o dono, à mão. O resultado
+    # continua contando para o teto (é o número de artes que dá para postar
+    # num dia), mas o resumo do run diz "despachado", não "publicado".
+    manual = True
+    dispatch_note = "📤 despachado p/ ops (postar no app)"
 
     def __init__(self, bot_token: str, ops_chat_id: str, client: httpx.Client | None = None,
                  brand_handle: str | None = None, brand_name: str = "Fiscal da Promo"):

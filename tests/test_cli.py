@@ -382,8 +382,8 @@ def _doctor_base(monkeypatch):
         def fetch_offers(self, cfg):
             return []
 
-    monkeypatch.setattr(cli, "_shopee", lambda: _Shopee())
-    monkeypatch.setattr(cli, "_meli", lambda: None)
+    monkeypatch.setattr(cli, "_shopee", lambda db=None: _Shopee())
+    monkeypatch.setattr(cli, "_meli", lambda cfg=None: None)
     monkeypatch.setattr(cli.llm, "ask_json", lambda *a, **k: {"ok": True})
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
@@ -428,7 +428,7 @@ def test_doctor_imprime_a_validacao_do_pool_do_meli(monkeypatch, tmp_path, capsy
     meli = cli.MeliSource("cid", "sec", token_path=tmp_path / "t.json",
                           links_path=tmp_path / "l.json",
                           client=httpx.Client(transport=httpx.MockTransport(token_ok)))
-    monkeypatch.setattr(cli, "_meli", lambda: meli)
+    monkeypatch.setattr(cli, "_meli", lambda cfg=None: meli)
     assert cli.doctor(cfg) == 0
     out = capsys.readouterr().out
     assert ("⚠️ Mercado Livre: token ok; 1 oferta(s) válida(s) no pool; "
@@ -668,3 +668,88 @@ def test_build_channels_nao_carrega_regua(monkeypatch):
     for canal in channels.values():
         assert not hasattr(canal, "min_real_discount_pct")
     assert not hasattr(cli, "_regua")
+
+
+# --- Fase 5C (M4/A5): bot secundário para hospedar a arte do feed ------------
+
+def _env_do_feed(monkeypatch):
+    for k, v in {"TELEGRAM_BOT_TOKEN": "TOKDOCANAL", "TELEGRAM_OPS_CHAT_ID": "999",
+                 "IG_USER_ID": "178", "IG_ACCESS_TOKEN": "igtok"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("ART_HOST_BOT_TOKEN", raising=False)
+    return {"channels": {"instagram_feed": True}}
+
+
+def test_art_host_bot_token_chega_ao_canal(monkeypatch):
+    cfg = _env_do_feed(monkeypatch)
+    monkeypatch.setenv("ART_HOST_BOT_TOKEN", " TOKDEARTE ")     # com espaços: .strip()
+    canais, avisos = cli._build_channels(cfg)
+    assert canais[0].art_host_bot_token == "TOKDEARTE"
+    assert canais[0].bot_token == "TOKDOCANAL"
+    assert avisos == []
+
+
+def test_sem_art_host_bot_token_avisa_uma_vez_por_dia(monkeypatch):
+    cfg = _env_do_feed(monkeypatch)
+    canais, avisos = cli._build_channels(cfg)
+    assert canais[0].art_host_bot_token == "TOKDOCANAL"          # comportamento atual
+    assert avisos == ["⚠️ instagram_feed: arte hospedada pelo bot do canal — "
+                      "defina ART_HOST_BOT_TOKEN"]
+
+
+# --- Fase 5C (M5/A6): o doctor olha o pool de links do ML --------------------
+
+def _doctor_com_meli(monkeypatch, tmp_path, links: dict | None, ligado: bool):
+    import json
+
+    import httpx
+    from tests.test_meli import write_pool
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    pool = write_pool(tmp_path / "pool.json", [
+        {"product_id": "A", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "B", "title": "t", "price_ref_cents": 6000},
+    ])
+    cfg["meli"]["offers_path"] = str(pool)
+    cfg["sources"] = {"shopee": True, "meli": ligado}
+    links_path = tmp_path / "links.json"
+    if links is not None:
+        links_path.write_text(json.dumps(links), encoding="utf-8")
+    meli = cli.MeliSource("cid", "sec", token_path=tmp_path / "t.json",
+                          links_path=links_path,
+                          client=httpx.Client(transport=httpx.MockTransport(
+                              lambda r: httpx.Response(200, json={"access_token": "T",
+                                                                  "expires_in": 21600}))))
+    monkeypatch.setattr(cli, "_meli", lambda c=None: meli)
+    return cfg
+
+
+def test_doctor_falha_com_ml_ligado_e_nenhum_link(monkeypatch, tmp_path, capsys):
+    # A6: `data/meli_links.json` nunca foi commitado; com sources.meli: true
+    # num clone limpo o ML descartava tudo e o doctor dizia ✅.
+    cfg = _doctor_com_meli(monkeypatch, tmp_path, links=None, ligado=True)
+    assert cli.doctor(cfg) == 1
+    out = capsys.readouterr().out
+    assert "❌ Mercado Livre: pool de links ausente" in out
+    assert "/meli-links-refresh" in out
+
+
+def test_doctor_conta_quantos_produtos_do_pool_tem_link(monkeypatch, tmp_path, capsys):
+    cfg = _doctor_com_meli(monkeypatch, tmp_path, links={"A": "https://meli.la/a"},
+                           ligado=True)
+    assert cli.doctor(cfg) == 0
+    assert "⚠️ Mercado Livre: 1 de 2 produto(s) do pool com link" in capsys.readouterr().out
+
+
+def test_doctor_com_pool_de_links_completo(monkeypatch, tmp_path, capsys):
+    cfg = _doctor_com_meli(monkeypatch, tmp_path,
+                           links={"A": "https://meli.la/a", "B": "https://meli.la/b"},
+                           ligado=True)
+    assert cli.doctor(cfg) == 0
+    assert "✅ Mercado Livre: 2 de 2 produto(s) do pool com link" in capsys.readouterr().out
+
+
+def test_doctor_com_ml_desligado_nao_falha_por_falta_de_link(monkeypatch, tmp_path, capsys):
+    cfg = _doctor_com_meli(monkeypatch, tmp_path, links=None, ligado=False)
+    assert cli.doctor(cfg) == 0
+    assert "⚠️ Mercado Livre: pool de links ausente" in capsys.readouterr().out

@@ -38,13 +38,19 @@ def _shopee(db: StateDB | None = None) -> ShopeeSource:
 MELI_ENV_AVISO = ("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
                   "(ver docs/runbooks/meli-setup.md)")
 
+ART_HOST_AVISO = ("⚠️ instagram_feed: arte hospedada pelo bot do canal — "
+                  "defina ART_HOST_BOT_TOKEN")
 
-def _meli() -> MeliSource | None:
+
+def _meli(cfg: dict | None = None) -> MeliSource | None:
     client_id = _env("MELI_CLIENT_ID")
     client_secret = _env("MELI_CLIENT_SECRET")
     if not (client_id and client_secret):
         return None
-    return MeliSource(client_id, client_secret, refresh_token=_env("MELI_REFRESH_TOKEN"))
+    me = (cfg or {}).get("meli") or {}
+    extra = {"links_path": me["links_path"]} if me.get("links_path") else {}
+    return MeliSource(client_id, client_secret, refresh_token=_env("MELI_REFRESH_TOKEN"),
+                      **extra)
 
 
 def _aviso(avisos: list[str], texto: str) -> None:
@@ -69,7 +75,7 @@ def _build_sources(cfg: dict, db: StateDB | None = None) -> tuple[list, list[str
     if src_cfg.get("shopee", True):
         sources.append(_shopee(db))
     if src_cfg.get("meli", False):
-        meli = _meli()
+        meli = _meli(cfg)
         if meli is None:
             _aviso(avisos, MELI_ENV_AVISO)
         else:
@@ -148,17 +154,47 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
         ig_token = _env("IG_ACCESS_TOKEN")
         bot_token = _env("TELEGRAM_BOT_TOKEN")
         ops = _env("TELEGRAM_OPS_CHAT_ID")
+        art_host = _env("ART_HOST_BOT_TOKEN")
         if ig_user and ig_token and bot_token and ops:
             ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
-                                      brand_name=brand_name, api=_instagram_api(cfg))
+                                      brand_name=brand_name, api=_instagram_api(cfg),
+                                      art_host_bot_token=art_host)
             if max_per_day is not None:
                 ch.max_per_day = int(max_per_day)
             channels.append(ch)
+            if not art_host:
+                # A5: a URL de hospedagem da arte carrega o token do bot que a
+                # enviou, e é ela que vai à Meta. Sem um bot secundário, quem
+                # viaja é o token do ADMINISTRADOR do canal público.
+                _aviso(avisos, ART_HOST_AVISO)
         else:
             _aviso(avisos, "⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
                            "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
 
     return channels, avisos
+
+
+def _doctor_links_do_meli(meli: MeliSource, offers: list, cfg: dict) -> bool:
+    """Checa `data/meli_links.json` no doctor (fase 5C, M5/A6): existe? quantos
+    produtos do pool têm link? Devolve False (❌) só quando a fonte está
+    LIGADA e a cobertura é ZERO — nesse estado o ML não publica nada, e o
+    doctor precisa dizer isso e o que fazer."""
+    caminho = meli.links_path
+    ligado = bool((cfg.get("sources") or {}).get("meli", False))
+    com_link, total = meli.link_coverage(offers)
+    if not meli.links_file_exists:
+        situacao = f"pool de links ausente ({caminho})"
+    else:
+        situacao = f"{com_link} de {total} produto(s) do pool com link ({caminho})"
+    if ligado and com_link == 0:
+        print(f"❌ Mercado Livre: {situacao} — o ML não vai publicar nada. "
+              "Rode /meli-links-refresh (ver docs/runbooks/meli-setup.md)")
+        return False
+    if com_link < total:
+        print(f"⚠️ Mercado Livre: {situacao} — rode /meli-links-refresh")
+    else:
+        print(f"✅ Mercado Livre: {situacao}")
+    return True
 
 
 def doctor(cfg: dict) -> int:
@@ -174,8 +210,8 @@ def doctor(cfg: dict) -> int:
         ok = False
         print(f"❌ Shopee: {exc}")
 
-    meli = _meli()  # reaproveita o helper de _build_sources: mesma leitura de
-                    # env (_env, já com .strip()) e a mesma construção; sem
+    meli = _meli(cfg)  # reaproveita o helper de _build_sources: mesma leitura
+                    # de env (_env, já com .strip()) e a mesma construção; sem
                     # credenciais, avisa e não falha o doctor.
     if meli is None:
         print(MELI_ENV_AVISO)
@@ -193,6 +229,12 @@ def doctor(cfg: dict) -> int:
         except Exception as exc:
             ok = False
             print(f"❌ Mercado Livre: {exc}")
+        else:
+            # A6: o pool de LINKS é o que decide se a fonte publica alguma
+            # coisa — sem ele todo item do ML vira descarte, e o doctor dizia
+            # ✅ assim mesmo.
+            if not _doctor_links_do_meli(meli, offers, cfg):
+                ok = False
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")

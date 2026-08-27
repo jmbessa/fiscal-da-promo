@@ -310,6 +310,22 @@ class MeliSource:
             raise SourceError(f"sem link de afiliado no pool para {offer.item_id}")
         return link
 
+    def link_coverage(self, offers: list[Offer]) -> tuple[int, int]:
+        """(quantas das ofertas têm link no pool, total) — leitura local, sem
+        rede (fase 5C, M5/A6).
+
+        `data/meli_links.json` nunca foi commitado e não existe em nenhum
+        checkout: com `sources.meli: true` num clone limpo, TODA oferta do ML
+        virava um descarte "sem link de afiliado no pool" — e o `doctor` dizia
+        ✅ mesmo assim. Agora a cobertura é um número que o doctor e o resumo
+        do run mostram."""
+        pool = self._load_links_pool()
+        return sum(1 for o in offers if pool.get(o.item_id)), len(offers)
+
+    @property
+    def links_file_exists(self) -> bool:
+        return self.links_path.is_file()
+
     def _load_links_pool(self) -> dict[str, str]:
         if self._links_pool is None:
             pool: dict[str, str] = {}

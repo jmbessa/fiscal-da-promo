@@ -1217,6 +1217,68 @@ def test_fonte_sem_candidate_max_age_days_nao_usa_estoque(tmp_path, monkeypatch)
 
 
 # =============================================================================
+# Fase 5C (M5/A6 e M6/A12)
+# =============================================================================
+
+def test_pool_de_links_do_meli_pela_metade_vira_aviso(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class MeliComPoucosLinks(FakeSource):
+        name = "meli"
+
+        def link_coverage(self, offers):
+            return 1, 10
+
+    summary = pipeline.run(CFG, [MeliComPoucosLinks([make_offer(item_id="x", source="meli")])],
+                           [FakeChannel()], db, validator=no_network_validator)
+    assert ("⚠️ meli: só 1 de 10 produtos têm link — rode /meli-links-refresh"
+            in summary.warnings)
+    db.close()
+
+
+def test_pool_de_links_completo_nao_avisa(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class MeliCompleto(FakeSource):
+        name = "meli"
+
+        def link_coverage(self, offers):
+            return 10, 10
+
+    summary = pipeline.run(CFG, [MeliCompleto([make_offer(item_id="x", source="meli")])],
+                           [FakeChannel()], db, validator=no_network_validator)
+    assert not any("meli-links-refresh" in w for w in summary.warnings)
+    db.close()
+
+
+class CanalManual(NamedFakeChannel):
+    manual = True
+
+
+def test_so_canal_manual_e_despacho_nao_publicacao(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = CanalManual("story_dispatch")
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
+                           validator=no_network_validator)
+    assert summary.published == ["Tênis Nike SB — 📤 despachado p/ ops (postar no app)"]
+    assert db.count_posts_today("story_dispatch") == 1     # continua contando p/ o teto
+    db.close()
+
+
+def test_com_canal_automatico_junto_o_resumo_diz_publicado(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    canais = [NamedFakeChannel("telegram"), CanalManual("story_dispatch")]
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], canais, db,
+                           validator=no_network_validator)
+    assert summary.published == ["Tênis Nike SB"]
+    db.close()
+
+
+# =============================================================================
 # Fase 5C (M2) — cota por fonte
 # =============================================================================
 

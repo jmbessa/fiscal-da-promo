@@ -3,11 +3,16 @@ Graph API. Desligado por padrão em config.yaml até `docs/runbooks/meta-setup.m
 ser concluído (conta business + página vinculada + token de acesso).
 
 A arte gerada por `creative.render_feed` precisa de uma URL pública para a
-Meta buscar; como o pipeline não tem hospedagem própria, reaproveitamos o bot
+Meta buscar; como o pipeline não tem hospedagem própria, reaproveitamos um bot
 do Telegram como "CDN temporária": enviamos a foto ao chat de operações e
-usamos a URL de `getFile`. Essa URL contém o bot token e expira em ~1h, mas a
-Meta baixa a imagem na hora da chamada a `/media` — trade-off aceito para não
-exigir infraestrutura de hospedagem extra.
+usamos a URL de `getFile`.
+
+Essa URL carrega o bot token (`api.telegram.org/file/bot{TOKEN}/...`) — e o
+que expira nela é o `file_path`, não o token. Fase 5C (A5): quem hospeda a
+arte passa a ser um **bot secundário** (`ART_HOST_BOT_TOKEN`), que só precisa
+estar no chat de operações; assim o token do bot ADMINISTRADOR do canal
+público nunca é entregue à Meta. Sem essa variável o comportamento é o de
+antes — com um aviso diário no resumo de operações (ver `cli._build_channels`).
 """
 
 import io
@@ -45,7 +50,8 @@ class InstagramFeedChannel:
 
     def __init__(self, ig_user_id: str, access_token: str, bot_token: str, ops_chat_id: str,
                  client: httpx.Client | None = None, brand_handle: str | None = None,
-                 brand_name: str = "Fiscal da Promo", api: str = "facebook_login"):
+                 brand_name: str = "Fiscal da Promo", api: str = "facebook_login",
+                 art_host_bot_token: str = ""):
         # .strip() mata o footgun clássico de segredo colado com espaço/quebra
         # de linha nas pontas (env var, clipboard); não cobre caractere de
         # controle NO MEIO da string — para isso, ver o try/except amplo em
@@ -53,6 +59,9 @@ class InstagramFeedChannel:
         self.ig_user_id = ig_user_id.strip()
         self.access_token = access_token.strip()
         self.bot_token = bot_token.strip()
+        # Bot que hospeda a arte (A5): o do canal só é usado como último
+        # recurso, e nesse caso o cli avisa uma vez por dia.
+        self.art_host_bot_token = (art_host_bot_token or "").strip() or self.bot_token
         self.ops_chat_id = ops_chat_id.strip()
         self.client = client or httpx.Client(timeout=30)
         self.brand_handle = brand_handle
@@ -95,7 +104,11 @@ class InstagramFeedChannel:
         return PublishResult(True, str(post_id))
 
     def _host_art(self, art: bytes) -> str | None:
-        photo_result = send_photo_bytes(self.bot_token, self.ops_chat_id, art,
+        """URL pública temporária da arte. O token que aparece nela é o do bot
+        de hospedagem — nunca o do bot administrador do canal, quando há um
+        secundário configurado (A5)."""
+        token = self.art_host_bot_token
+        photo_result = send_photo_bytes(token, self.ops_chat_id, art,
                                         caption="hospedagem temporária (feed IG)",
                                         client=self.client, filename="art.jpg", mime="image/jpeg")
         if not photo_result.get("ok"):
@@ -106,7 +119,7 @@ class InstagramFeedChannel:
         file_id = photos[-1].get("file_id")
         if not file_id:
             return None
-        return get_file_url(self.bot_token, file_id, client=self.client)
+        return get_file_url(token, file_id, client=self.client)
 
     @staticmethod
     def _sanitize_title(title: str) -> str:

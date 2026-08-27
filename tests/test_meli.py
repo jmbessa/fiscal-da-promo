@@ -637,3 +637,24 @@ def test_pool_ausente_nao_levanta_na_carga(tmp_path):
     offer = make_offer(source="meli", item_id="MLB1")
     with pytest.raises(SourceError, match="sem link de afiliado"):
         src.resolve_affiliate_link(offer)
+
+
+# -- Fase 5C (M5/A6): cobertura do pool de links ------------------------------
+
+def test_link_coverage_conta_quantos_produtos_tem_link(tmp_path):
+    from tests.test_models import make_offer
+    links = tmp_path / "links.json"
+    links.write_text(json.dumps({"MLB1": "https://meli.la/a", "MLB3": ""}),
+                     encoding="utf-8")
+    src = source_with(_authed_handler, tmp_path, links_path=links)
+    ofertas = [make_offer(source="meli", item_id=f"MLB{n}") for n in (1, 2, 3)]
+    assert src.links_file_exists
+    assert src.link_coverage(ofertas) == (1, 3)      # link vazio não conta
+    assert src.link_coverage([]) == (0, 0)
+
+
+def test_link_coverage_com_arquivo_ausente(tmp_path):
+    from tests.test_models import make_offer
+    src = source_with(_authed_handler, tmp_path, links_path=tmp_path / "nao-existe.json")
+    assert not src.links_file_exists
+    assert src.link_coverage([make_offer(source="meli", item_id="MLB1")]) == (0, 1)

@@ -53,6 +53,58 @@ def test_max_per_run_class_attribute():
     assert InstagramFeedChannel.max_per_run == 1
 
 
+# -- Fase 5C (M4/A5): a arte não é hospedada pelo bot do CANAL -----------------
+
+def test_arte_hospedada_pelo_bot_secundario():
+    """A5: `api.telegram.org/file/bot{TOKEN}/...` vai como `image_url` para a
+    Meta — o que expira é o file_path, o token é o segredo PERMANENTE do
+    administrador do canal público. Com ART_HOST_BOT_TOKEN, quem aparece na
+    URL é um bot sem direitos no canal."""
+    urls = []
+
+    def handler(request):
+        if request.url.host == "graph.facebook.com" and request.url.path.endswith("/media"):
+            urls.append(parse_qs(request.content.decode())["image_url"][0])
+        return _happy_handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    ch = InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTDOCANAL", "OPSCHAT", client=client,
+                              art_host_bot_token="BOTDEARTE")
+    assert ch.publish(make_post()).ok
+    assert "/bot BOTDEARTE".replace(" ", "") in urls[0]
+    assert "BOTDOCANAL" not in urls[0]
+
+
+def test_sem_bot_secundario_a_arte_continua_saindo_pelo_bot_do_canal():
+    urls = []
+
+    def handler(request):
+        if request.url.host == "graph.facebook.com" and request.url.path.endswith("/media"):
+            urls.append(parse_qs(request.content.decode())["image_url"][0])
+        return _happy_handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    ch = InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTDOCANAL", "OPSCHAT", client=client)
+    assert ch.publish(make_post()).ok
+    assert "botBOTDOCANAL" in urls[0]     # comportamento atual, com aviso no cli
+
+
+def test_o_bot_secundario_so_hospeda_a_arte():
+    """A mensagem de hospedagem vai pelo bot secundário; o chat de operações é
+    o mesmo (é lá que o bot secundário precisa estar)."""
+    enviados = []
+
+    def handler(request):
+        if request.url.host == "api.telegram.org":
+            enviados.append(request.url.path)
+        return _happy_handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTDOCANAL", "OPSCHAT", client=client,
+                         art_host_bot_token="BOTDEARTE").publish(make_post())
+    assert all("BOTDEARTE" in p for p in enviados)
+
+
 def test_caption_sent_to_media_never_contains_link():
     captured = {}
 

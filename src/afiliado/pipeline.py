@@ -29,6 +29,10 @@ AGRUPA_DESCARTES_A_PARTIR_DE = 4
 # errado) fecha até o próximo run — a variante "canal falhando" do C2: sem
 # isto cada oferta da fila pagava LLM + link para uma publicação que ia falhar.
 MAX_FALHAS_SEGUIDAS_POR_CANAL = 3
+# Fase 5C (A12): canal `manual` (story_dispatch) entrega a arte ao chat de
+# operações; quem posta no Instagram é o dono. Quando SÓ canais manuais
+# aceitaram a oferta, o resumo diz isto em vez de "publicado".
+DESPACHO_MANUAL = "📤 despachado p/ ops (postar no app)"
 
 
 def _motivo(motivo: str) -> str:
@@ -253,6 +257,14 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                 warn(f"⚠️ {src.name}: 0 ofertas buscadas")
         elif pool_warning:
             warn(f"ℹ️ meli: {pool_warning}")
+        # A6: pool de links vazio/incompleto é o que faz o ML descartar tudo
+        # em silêncio. Aviso uma vez por dia, com o número.
+        cobertura = getattr(src, "link_coverage", None)
+        if cobertura is not None and src_offers:
+            com_link, total = cobertura(src_offers)
+            if com_link * 2 < total:
+                warn(f"⚠️ {src.name}: só {com_link} de {total} produtos têm link — "
+                     "rode /meli-links-refresh")
 
     if sources and len(erros_de_fonte) == len(sources):
         # Só aqui o run aborta — e mesmo assim o resumo vai ao ops, via cli,
@@ -388,6 +400,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             continue
 
         published_any = False
+        so_manuais = True
         for ch in channels:
             if not aberto(ch):
                 if no_teto(ch):
@@ -400,6 +413,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                     usados_dia[ch.name] = usados_dia.get(ch.name, 0) + 1
                 db.record_post(post, ch.name, res.message_id)
                 published_any = True
+                so_manuais = so_manuais and bool(getattr(ch, "manual", False))
                 falhas_seguidas[ch.name] = 0
             else:
                 summary.discarded.append((rotulo, f"publicação falhou em {ch.name}: {res.error}"))
@@ -409,7 +423,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                     warn(f"⚠️ {ch.name}: {MAX_FALHAS_SEGUIDAS_POR_CANAL} falhas seguidas — "
                          "canal fechado neste run")
         if published_any:
-            summary.published.append(rotulo)
+            # A12: quando os únicos canais que aceitaram a oferta são manuais
+            # (story_dispatch), o que aconteceu foi um DESPACHO — a arte está
+            # no chat de ops esperando o dono postar. O resumo para de chamar
+            # isso de "publicado".
+            summary.published.append(f"{rotulo} — {DESPACHO_MANUAL}" if so_manuais else rotulo)
             publicados_hoje[offer.source] = publicados_hoje.get(offer.source, 0) + 1
             count += 1
         if not any(aberto(ch) for ch in channels):

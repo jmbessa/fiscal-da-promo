@@ -249,9 +249,19 @@ autentica por **sessão via cookies do navegador**, não por OAuth.
 - [ ] Item sem entrada no pool de links é descartado silenciosamente pelo
       pipeline (comportamento já existente: promove a próxima oferta da
       fila) — não é um erro que derruba o run.
-- [ ] `data/meli_links.json` é público (links de afiliado, não segredo) e é
-      commitado — só os **cookies da sessão** nunca são gravados em arquivo
-      nem commitados (ver o skill).
+- [ ] **O arquivo não vem com o repositório.** Em 2026-08-26 ele não existia
+      em nenhum checkout e nunca tinha sido commitado, enquanto este runbook
+      dizia "é commitado" — resultado: com `sources.meli: true` num clone
+      limpo, TODA oferta do ML virava descarte e o `doctor` imprimia ✅
+      (fase 5C, A6). Ele PRECISA ser **gerado** (`/meli-links-refresh`) e
+      depois **commitado** (`git add data/meli_links.json`): é público (links
+      de afiliado, não segredo), e sem o commit a VPS e o Actions continuam
+      sem link nenhum. Só os **cookies da sessão** nunca são gravados em
+      arquivo nem commitados (ver o skill).
+- [ ] O que o `doctor` mostra desde a fase 5C: `X de Y produto(s) do pool com
+      link`. Cobertura ZERO com a fonte ligada é ❌ (o ML não publicaria
+      nada); cobertura parcial é ⚠️. E o run avisa uma vez por dia no chat de
+      operações quando menos da metade do pool tem link.
 
 ## 5. Configurar e ligar
 

@@ -199,6 +199,11 @@ def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
     monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    # Fase 5E: o canal de story do config.yaml real é o `instagram_story` (o
+    # `story_dispatch` ficou desligado como fallback manual), e ele pede as
+    # envs do Instagram.
+    monkeypatch.setenv("IG_USER_ID", "178")
+    monkeypatch.setenv("IG_ACCESS_TOKEN", "igtok")
     cfg_file = tmp_path / "config.yaml"
     cfg_text = (open("config.yaml", encoding="utf-8").read()
                .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
@@ -214,7 +219,7 @@ def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pipeline, "run", fake_run)
     assert cli.main(["run", "--config", str(cfg_file)]) == 0
-    story = next(c for c in chamado["channels"] if c.name == "story_dispatch")
+    story = next(c for c in chamado["channels"] if c.name == "instagram_story")
     assert story.brand_name == "Fiscal da Promo"
 
 
@@ -852,3 +857,106 @@ def test_posts_per_run_da_linha_de_comando_sobrepoe_o_config(monkeypatch, tmp_pa
     assert visto["n"] == 1                                    # o do config.yaml
     cli.main(["run", "--dry-run", "--posts-per-run", "4", "--config", str(cfg_file)])
     assert visto["n"] == 4
+
+
+# --- Fase 5E: o story deixa de ser gesto manual ------------------------------
+
+def _env_do_instagram(monkeypatch):
+    for k, v in {"TELEGRAM_BOT_TOKEN": "TOKDOCANAL", "TELEGRAM_OPS_CHAT_ID": "999",
+                 "IG_USER_ID": "178", "IG_ACCESS_TOKEN": "igtok"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("ART_HOST_BOT_TOKEN", raising=False)
+
+
+def test_build_channels_monta_o_instagram_story(monkeypatch):
+    _env_do_instagram(monkeypatch)
+    monkeypatch.setenv("ART_HOST_BOT_TOKEN", " TOKDEARTE ")      # com espaços: .strip()
+    canais, avisos = cli._build_channels({
+        "channels": {"instagram_story": {"enabled": True, "max_per_day": 6}},
+        "instagram": {"api": "facebook_login"},
+        "brand": {"handle": "@ofiscaldapromo", "name": "Fiscal da Promo"},
+    })
+    assert [c.name for c in canais] == ["instagram_story"]
+    canal = canais[0]
+    assert canal.max_per_day == 6
+    assert canal.max_per_run == 1
+    assert canal.ig_user_id == "178" and canal.access_token == "igtok"
+    assert canal.art_host_bot_token == "TOKDEARTE"
+    assert canal.bot_token == "TOKDOCANAL" and canal.ops_chat_id == "999"
+    assert canal.graph.startswith("https://graph.facebook.com")
+    assert canal.brand_handle == "@ofiscaldapromo"
+    assert canal.brand_name == "Fiscal da Promo"
+    # Publicação de verdade: não cai na trilha de despacho manual (A12).
+    assert not getattr(canal, "manual", False)
+    assert avisos == []
+
+
+def test_build_channels_avisa_quando_falta_env_do_instagram_story(monkeypatch, capsys):
+    _env_do_instagram(monkeypatch)
+    monkeypatch.delenv("IG_ACCESS_TOKEN", raising=False)
+    canais, avisos = cli._build_channels({"channels": {"instagram_story": True}})
+    assert canais == []
+    assert [a.split(" ")[2] for a in avisos] == ["instagram_story"]
+    assert avisos[0].startswith("⚠️ canal instagram_story ignorado")
+    assert avisos[0] in capsys.readouterr().out
+
+
+def test_o_story_tambem_avisa_quando_falta_o_bot_de_hospedagem(monkeypatch):
+    _env_do_instagram(monkeypatch)
+    canais, avisos = cli._build_channels({"channels": {"instagram_story": True}})
+    assert canais[0].art_host_bot_token == "TOKDOCANAL"          # comportamento atual
+    assert avisos == [cli.ART_HOST_AVISO_STORY]
+    assert "instagram_story" in cli.ART_HOST_AVISO_STORY
+    # Os dois avisos precisam ser textos DIFERENTES: o warn_once do pipeline
+    # deduplica pela mensagem (sem dígitos), e um engoliria o outro no dia.
+    assert cli.ART_HOST_AVISO_STORY != cli.ART_HOST_AVISO
+
+
+def test_build_channels_monta_feed_e_story_juntos(monkeypatch):
+    _env_do_instagram(monkeypatch)
+    canais, avisos = cli._build_channels(
+        {"channels": {"instagram_feed": True, "instagram_story": True}})
+    assert [c.name for c in canais] == ["instagram_feed", "instagram_story"]
+    assert avisos == [cli.ART_HOST_AVISO, cli.ART_HOST_AVISO_STORY]
+
+
+def test_config_yaml_liga_o_story_automatico_e_desliga_o_despacho_manual():
+    """Mudança 3: `instagram_story` é o caminho normal (6/dia, o teto que era do
+    despacho) e `story_dispatch` vira fallback manual — para quando a conta
+    perder a permissão de publicação."""
+    from afiliado import config
+    canais = config.load_config("config.yaml")["channels"]
+    assert canais["instagram_story"]["enabled"] is True
+    assert canais["instagram_story"]["max_per_day"] == 6
+    assert canais["story_dispatch"]["enabled"] is False
+
+
+def test_run_monta_o_story_a_partir_do_config_yaml(monkeypatch, tmp_path):
+    """O config.yaml real, sem sobrescrever `channels:` — é ele que decide."""
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_instagram(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        (open("config.yaml", encoding="utf-8").read()
+         .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+         .replace("data/watchlist.json",
+                  str(tmp_path / "sem-watchlist.json").replace("\\", "/"))),
+        encoding="utf-8")
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        chamado["channels"] = channels
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    nomes = [c.name for c in chamado["channels"]]
+    assert "instagram_story" in nomes
+    assert "story_dispatch" not in nomes            # fallback manual, desligado
+    story = next(c for c in chamado["channels"] if c.name == "instagram_story")
+    assert story.max_per_day == 6
+    assert story.brand_name == "Fiscal da Promo"

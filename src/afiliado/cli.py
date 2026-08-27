@@ -8,7 +8,9 @@ from pathlib import Path
 import httpx
 
 from afiliado import config, llm, pipeline
-from afiliado.channels.instagram_feed import GRAPH_HOSTS, InstagramFeedChannel
+from afiliado.channels.instagram_common import GRAPH_HOSTS
+from afiliado.channels.instagram_feed import InstagramFeedChannel
+from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
 from afiliado.sources.meli import DEFAULT_OFFERS_PATH, MeliSource
@@ -41,8 +43,12 @@ def _shopee(db: StateDB | None = None) -> ShopeeSource:
 MELI_ENV_AVISO = ("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLIENT_SECRET ausente "
                   "(ver docs/runbooks/meli-setup.md)")
 
-ART_HOST_AVISO = ("⚠️ instagram_feed: arte hospedada pelo bot do canal — "
-                  "defina ART_HOST_BOT_TOKEN")
+# Um aviso por CANAL: o `warn_once` do pipeline deduplica pelo texto (sem os
+# dígitos), então uma mensagem única faria o feed engolir o aviso do story.
+ART_HOST_AVISO_TMPL = ("⚠️ {canal}: arte hospedada pelo bot do canal — "
+                       "defina ART_HOST_BOT_TOKEN")
+ART_HOST_AVISO = ART_HOST_AVISO_TMPL.format(canal="instagram_feed")
+ART_HOST_AVISO_STORY = ART_HOST_AVISO_TMPL.format(canal="instagram_story")
 
 
 def _meli(cfg: dict | None = None) -> MeliSource | None:
@@ -107,6 +113,38 @@ def _instagram_api(cfg: dict) -> str:
     return api if api in GRAPH_HOSTS else "instagram_login"
 
 
+def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[str],
+                     brand_handle: str | None, brand_name: str) -> None:
+    """Monta um canal do Instagram (`instagram_feed` ou `instagram_story`).
+
+    Fase 5E: os dois pedem exatamente as mesmas envs (IG_USER_ID,
+    IG_ACCESS_TOKEN e o par do Telegram que hospeda a arte), o mesmo construtor
+    e o mesmo aviso diário de `ART_HOST_BOT_TOKEN` — o que muda é a classe e a
+    chave em `channels:`. Canal ligado sem env: aviso e segue sem ele."""
+    enabled, max_per_day = _channel_settings(ch_cfg.get(cls.name))
+    if not enabled:
+        return
+    ig_user = _env("IG_USER_ID")
+    ig_token = _env("IG_ACCESS_TOKEN")
+    bot_token = _env("TELEGRAM_BOT_TOKEN")
+    ops = _env("TELEGRAM_OPS_CHAT_ID")
+    art_host = _env("ART_HOST_BOT_TOKEN")
+    if not (ig_user and ig_token and bot_token and ops):
+        _aviso(avisos, f"⚠️ canal {cls.name} ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
+                       "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
+        return
+    ch = cls(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
+             brand_name=brand_name, api=_instagram_api(cfg), art_host_bot_token=art_host)
+    if max_per_day is not None:
+        ch.max_per_day = int(max_per_day)
+    channels.append(ch)
+    if not art_host:
+        # A5: a URL de hospedagem da arte carrega o token do bot que a
+        # enviou, e é ela que vai à Meta. Sem um bot secundário, quem
+        # viaja é o token do ADMINISTRADOR do canal público.
+        _aviso(avisos, ART_HOST_AVISO_TMPL.format(canal=cls.name))
+
+
 def _build_channels(cfg: dict) -> tuple[list, list[str]]:
     """Monta os canais habilitados em config.yaml a partir das envs
     disponíveis e devolve também os avisos de montagem.
@@ -151,28 +189,13 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
             _aviso(avisos, "⚠️ canal story_dispatch ignorado: variável "
                            "TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausente")
 
-    enabled, max_per_day = _channel_settings(ch_cfg.get("instagram_feed"))
-    if enabled:
-        ig_user = _env("IG_USER_ID")
-        ig_token = _env("IG_ACCESS_TOKEN")
-        bot_token = _env("TELEGRAM_BOT_TOKEN")
-        ops = _env("TELEGRAM_OPS_CHAT_ID")
-        art_host = _env("ART_HOST_BOT_TOKEN")
-        if ig_user and ig_token and bot_token and ops:
-            ch = InstagramFeedChannel(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
-                                      brand_name=brand_name, api=_instagram_api(cfg),
-                                      art_host_bot_token=art_host)
-            if max_per_day is not None:
-                ch.max_per_day = int(max_per_day)
-            channels.append(ch)
-            if not art_host:
-                # A5: a URL de hospedagem da arte carrega o token do bot que a
-                # enviou, e é ela que vai à Meta. Sem um bot secundário, quem
-                # viaja é o token do ADMINISTRADOR do canal público.
-                _aviso(avisos, ART_HOST_AVISO)
-        else:
-            _aviso(avisos, "⚠️ canal instagram_feed ignorado: variável IG_USER_ID/IG_ACCESS_TOKEN "
-                           "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
+    # Fase 5E: o story virou publicação de verdade e entra aqui do lado do
+    # feed. Ele NÃO declara `manual` — quem continua na trilha de despacho
+    # (`summary.dispatched`, `posted.manual`) é só o `story_dispatch`, agora
+    # desligado no config.yaml como fallback manual.
+    for cls in (InstagramFeedChannel, InstagramStoryChannel):
+        _monta_instagram(cls, ch_cfg, cfg, channels, avisos,
+                         brand_handle=brand_handle, brand_name=brand_name)
 
     return channels, avisos
 

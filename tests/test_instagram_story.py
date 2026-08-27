@@ -309,6 +309,38 @@ def test_hospedagem_falha_sem_publicar():
 
 # -- variante da API -----------------------------------------------------------
 
+def test_o_story_conta_como_publicacao_e_nao_como_despacho(tmp_path, monkeypatch):
+    """A12 ao contrário. O `story_dispatch` é `manual = True`: a arte fica no
+    chat de ops esperando o dono, entra em `summary.dispatched` e NÃO conta em
+    `day_stats().published`. Este canal publica de verdade — não declara
+    `manual`, e o pipeline o trata como o Telegram e o feed."""
+    from afiliado import llm, pipeline
+    from afiliado.state import StateDB
+    from tests.test_models import make_offer
+    from tests.test_pipeline import CFG, FakeSource, no_network_validator
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = _canal(_handler())
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
+                           validator=no_network_validator)
+
+    assert summary.published == ["Tênis Nike SB"]
+    assert summary.dispatched == []
+    assert pipeline.DESPACHO_MANUAL not in summary.text()
+    assert db.day_stats(db.local_today()).published == 1
+    assert db.day_stats(db.local_today()).dispatched == 0
+    assert db.count_posts_today("instagram_story") == 1
+    # `posted.manual` é a coluna que separa as duas trilhas; o story novo é 0.
+    assert db.conn.execute(
+        "SELECT manual FROM posted WHERE channel='instagram_story'").fetchall() == [(0,)]
+    db.close()
+
+
+def test_o_canal_nao_declara_manual():
+    assert not getattr(InstagramStoryChannel, "manual", False)
+
+
 def test_variante_instagram_login_usa_o_outro_host():
     vistos = []
 

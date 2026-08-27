@@ -215,12 +215,25 @@ channels:
   telegram:
     enabled: true
     max_per_day: 60          # meta: 60 ofertas/dia, espalhadas das 08:00 às 23:15 (~1 a cada 15 min)
+  # Fase 5E: DESLIGADO. Este canal só entrega a arte no chat de operações para
+  # o dono postar à mão — 6 gestos por dia. Ele existia porque o projeto
+  # acreditava que a API não publicava story; ela publica (medido ao vivo em
+  # 2026-08-27, ver docs/runbooks/meta-setup.md) e quem faz isso agora é o
+  # `instagram_story` abaixo. Continua aqui como FALLBACK MANUAL: se a conta
+  # perder a permissão de publicação (instagram_content_publish), ligue este e
+  # desligue o outro — o dia volta a sair, só que na mão.
   story_dispatch:
-    enabled: true            # SEMI-automático: arte de story + link prontos no chat de operações; você posta
+    enabled: false           # SEMI-automático: arte de story + link prontos no chat de operações; você posta
     max_per_day: 6           # artes de story por dia, ~uma a cada 2h40
   instagram_feed:
     enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
     max_per_day: 2           # 1 de manhã, a 2ª só a partir da metade da janela
+  # Fase 5E: story publicado pela API oficial (media_type=STORIES, sem legenda
+  # e sem sticker de link — a API não tem um). A cota de publicação da Meta é
+  # COMPARTILHADA com o feed: 100 por 24 h; 2 + 6 usam 8.
+  instagram_story:
+    enabled: true
+    max_per_day: 6           # stories por dia, ~um a cada 2h40 (o teto que era do despacho manual)
 
 # Fase 1.8: chat de operações só recebe resumo quando o run publicou,
 # descartou ou gerou aviso — evita 192 mensagens/dia com a cadência de 5 min.

@@ -182,12 +182,23 @@ def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> flo
     """Retorno esperado por post: comissão em R$ (AMORTECIDA) ponderada pela
     popularidade.
 
-    A8: com a comissão crua, o fator dela variava 50× (R$ 20 → R$ 1.000)
-    contra 2,5× de popularidade e 1,5× de desconto — uma câmera de R$ 800 a 3%
-    com 100 vendas ganhava de uma creatina de R$ 30 a 10% com 50 mil vendas, e
-    o LLM só via os 30 itens mais caros. `commission_brl ** commission_exp`
-    (0,7) põe os três fatores na mesma ordem de grandeza sem inverter a
-    ordem de nada: expoente 1,0 devolve o comportamento anterior."""
+    A8: com a comissão crua, o fator dela variava 50× (R$ 20 → R$ 1.000) contra
+    2,5× de popularidade e 1,5× de desconto, e o LLM via só os 30 itens mais
+    caros. `commission_brl ** commission_exp` (0,7) põe os três fatores na mesma
+    ordem de grandeza; expoente 1,0 devolve o comportamento anterior.
+
+    O que o expoente FAZ, medido (I-4 da revisão da 5C — a versão anterior
+    deste comentário prometia o que ele não entrega): ele ENCURTA a distância e
+    move o cruzamento, não inverte pares distantes. A câmera de R$ 800 a 3% com
+    100 vendas continua ganhando da creatina de R$ 30 a 10% com 50 mil vendas
+    (14,81 × 5,20) — só que por 2,8× em vez de 5,3×. Contra essa creatina, o
+    item de 100 vendas precisava passar de R$ 4,51 de comissão para ganhar;
+    com 0,7 precisa passar de R$ 5,38. A inversão só aparece em pares mais
+    próximos: R$ 12,50 com 90 mil vendas × R$ 30,00 com 2 vendas vira 14,57 ×
+    12,36 (com a comissão crua era 31,08 × 34,29, e o de 2 vendas ganhava).
+    Quem garante que o campeão de VENDAS chega ao LLM é o recorte por vendas do
+    `build_slate`, não este expoente. Os três casos estão em
+    `tests/test_selection.py`."""
     w = cfg["selection"].get("ev_weights") or {}
     wp = float(w.get("popularity", 0.3))
     expoente = float(pricing.setting(w, "commission_exp", DEFAULT_COMMISSION_EXP))

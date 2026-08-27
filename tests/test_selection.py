@@ -442,6 +442,53 @@ def test_ev_amortece_a_comissao():
     assert selection.ev_score(caro, cfg1) == pytest.approx(24.0)
 
 
+CFG_EXP1 = {**CFG, "selection": {**CFG["selection"],
+                                 "ev_weights": {"popularity": 0.3, "discount": 0.5,
+                                                "commission_exp": 1.0}}}
+
+
+def test_o_expoente_nao_inverte_a_camera_e_a_creatina():
+    """I-4 da revisão: o comentário do `commission_exp` (e o do config)
+    afirmavam que 0.7 inverte "câmera de R$ 800 a 3% com 100 vendas × creatina
+    de R$ 30 a 10% com 50 mil vendas". **Não inverte**: 14,81 × 5,20 — a câmera
+    continua ganhando, só que por 2,8× em vez de 5,3×. Quem põe a creatina
+    diante do LLM é o recorte por VENDAS do `build_slate`, não o expoente."""
+    camera = make_offer(item_id="cam", commission_brl=24.0, sales=100)
+    creatina = make_offer(item_id="cre", commission_brl=3.0, sales=50000)
+    assert selection.ev_score(camera, CFG) == pytest.approx(14.81, abs=0.01)
+    assert selection.ev_score(creatina, CFG) == pytest.approx(5.20, abs=0.01)
+    assert selection.ev_score(camera, CFG) > selection.ev_score(creatina, CFG)
+    razao = selection.ev_score(camera, CFG) / selection.ev_score(creatina, CFG)
+    razao_crua = selection.ev_score(camera, CFG_EXP1) / selection.ev_score(creatina, CFG_EXP1)
+    assert razao == pytest.approx(2.85, abs=0.01)
+    assert razao_crua == pytest.approx(5.32, abs=0.01)
+
+
+def test_o_expoente_move_o_cruzamento_da_comissao():
+    """O que o expoente faz DE FATO: contra a creatina (R$ 3,00 e 50 mil
+    vendas), um item de 100 vendas precisava valer mais de R$ 4,51 de comissão
+    para ganhar; com 0.7 precisa passar de R$ 5,38. É esse deslocamento — não
+    uma inversão — que o comentário do config descreve."""
+    creatina = make_offer(item_id="cre", commission_brl=3.0, sales=50000)
+    for cfg, cruzamento in ((CFG_EXP1, 4.51), (CFG, 5.38)):
+        abaixo = make_offer(item_id="a", commission_brl=cruzamento - 0.05, sales=100)
+        acima = make_offer(item_id="b", commission_brl=cruzamento + 0.05, sales=100)
+        assert selection.ev_score(abaixo, cfg) < selection.ev_score(creatina, cfg)
+        assert selection.ev_score(acima, cfg) > selection.ev_score(creatina, cfg)
+
+
+def test_o_expoente_inverte_de_verdade_um_par_mais_proximo():
+    """A inversão REAL que o 0.7 produz: R$ 12,50 de comissão com 90 mil vendas
+    contra R$ 30,00 com 2 vendas. Com a comissão crua ganha o de 2 vendas
+    (34,29 × 31,08); com o expoente, o campeão de vendas passa na frente
+    (14,57 × 12,36)."""
+    popular = make_offer(item_id="pop", commission_brl=12.50, sales=90000)
+    caro = make_offer(item_id="caro", commission_brl=30.0, sales=2)
+    assert selection.ev_score(caro, CFG_EXP1) > selection.ev_score(popular, CFG_EXP1)
+    assert selection.ev_score(popular, CFG) > selection.ev_score(caro, CFG)
+    assert [o.item_id for o in selection.order_by_ev([caro, popular], CFG)] == ["pop", "caro"]
+
+
 def test_ev_com_comissao_zero_nao_explode():
     assert selection.ev_score(make_offer(commission_brl=0.0, commission_pct=0.0), CFG) == 0.0
 

@@ -84,10 +84,17 @@ selection:
     popularity: 0.3
     discount: 0.5     # bônus só por desconto que o VEREDITO autoriza alegar
     # Fase 5C (A8): a comissão entra amortecida. Crua, o fator dela variava 50x
-    # (R$ 20 → R$ 1.000) contra 2,5x de popularidade e 1,5x de desconto: uma
-    # câmera de R$ 800 a 3% com 100 vendas ganhava de uma creatina de R$ 30 a
-    # 10% com 50 mil vendas, e o LLM só via os 30 itens mais caros. Com 0.7,
-    # 8x de comissão viram 4,3x de EV. 1.0 devolve o comportamento anterior.
+    # (R$ 20 → R$ 1.000) contra 2,5x de popularidade e 1,5x de desconto, e o LLM
+    # só via os 30 itens mais caros. Com 0.7, 8x de comissão viram 4,3x de EV.
+    # 1.0 devolve o comportamento anterior.
+    # O que o expoente NÃO faz (corrigido na revisão da 5C, I-4): ele não
+    # inverte a câmera de R$ 800 a 3% com 100 vendas contra a creatina de R$ 30
+    # a 10% com 50 mil vendas — 14,81 x 5,20, a câmera segue ganhando, só que
+    # por 2,8x em vez de 5,3x. Ele move o CRUZAMENTO: contra essa creatina, um
+    # item de 100 vendas precisava valer mais de R$ 4,51 de comissão e agora
+    # precisa passar de R$ 5,38. A inversão aparece em pares próximos (R$ 12,50
+    # com 90 mil vendas passa a ganhar de R$ 30,00 com 2 vendas). Quem leva o
+    # campeão de vendas ao LLM é o recorte por vendas do slate, não isto aqui.
     # O EV deixa de ser "reais por post" e vira um score — min_ev_brl acima é
     # lido na MESMA escala (0,50 continua cortando comissão abaixo de ~R$ 0,38).
     commission_exp: 0.7

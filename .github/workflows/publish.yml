@@ -2,16 +2,26 @@
 # VPS que a Oracle Always Free recolhe quando fica ociosa. A VPS vira opcional,
 # para quem quiser a cadência de 5 min (ver docs/runbooks/vps-setup.md).
 #
-# Cadência: a cada 30 min entre 08:00 e 23:30 BRT = 32 runs/dia. Com o ritmo da
-# fase 5A (`pacing_budget`), cada run publica só o orçamento acumulado desde o
-# anterior, então `--posts-per-run 4` cobre os ~2 posts que 30 min de janela
-# liberam (60/dia ÷ 32 runs ≈ 1,9) com folga para recuperar um run perdido.
+# Cadência: DE HORA EM HORA entre 08:00 e 23:00 BRT = 16 jobs/dia. Com o ritmo
+# da fase 5A (`pacing_budget`), cada run publica só o orçamento acumulado desde
+# o anterior: com 60/dia e esta janela o maior salto entre dois runs é 4, e
+# `--posts-per-run 5` o cobre com uma vaga de folga para recuperar um disparo
+# perdido (atraso de cron é rotina no Actions).
 #
-# Custo: 32 runs × ~1,5 min (com cache de pip e npm) ≈ 48 min/dia ≈ 1.440
-# min/mês, dentro dos 2.000 min/mês do plano grátis para repositório privado.
-# Sem os caches o setup sozinho passava de 2,5 min/run (2.400 min/mês) e
-# estouraria a cota — se algum dia estourar, corte o cron das 12:00-18:00 BRT
-# para 1×/hora antes de mexer no resto.
+# Custo — a conta REFEITA (o GitHub cobra cada JOB arredondado para o minuto
+# SEGUINTE; runner Linux = 1×; plano grátis de repo privado = 2.000 min/mês):
+#
+#   jobs/dia │ B=2 min/job │ B=3 min/job │ B=4 min/job   (× 31 dias)
+#   ─────────┼─────────────┼─────────────┼──────────────
+#     32     │ 1.984 (99%) │ 2.976 (149%)│ 3.968 (198%)   ← a cadência da 5C
+#     18     │ 1.116 (56%) │ 1.674 (84%) │ 2.232 (112%)
+#     16     │   992 (50%) │ 1.488 (74%) │ 1.984 (99%)    ← esta
+#
+# A duração do job NUNCA foi medida (o "1,5 min" da 5C era chute), então a
+# cadência tem de caber no pior caso plausível: 16 jobs/dia é a única que
+# sobrevive até a 4 min/job e ainda deixa ~500 min/mês para o `tests.yml`.
+# O passo "Duração do job" imprime a primeira medição real — com ela no
+# runbook, dá para subir a cadência com número, não com esperança.
 #
 # ATENÇÃO — o tamanho do repositório é o limite real desta montagem, não os
 # minutos. Cada run commita `data/state.db`, que em regime (estoque de
@@ -27,8 +37,8 @@
 name: publish
 on:
   schedule:
-    - cron: "0,30 11-23 * * *"   # 08:00–20:30 BRT
-    - cron: "0,30 0-2 * * *"     # 21:00–23:30 BRT
+    - cron: "0 11-23 * * *"      # 08:00–20:00 BRT
+    - cron: "0 0-2 * * *"        # 21:00–23:00 BRT
   workflow_dispatch:
     inputs:
       dry_run:
@@ -53,6 +63,8 @@ jobs:
     # da cota mensal — antes de alguém perceber. Um run saudável leva minutos.
     timeout-minutes: 20
     steps:
+      - name: Marcar o início do job
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -70,7 +82,7 @@ jobs:
       - run: npm install -g @anthropic-ai/claude-code@${{ env.CLAUDE_CODE_VERSION }} --prefer-offline
       - run: pip install -e .
       - name: Executar pipeline
-        run: afiliado run --posts-per-run 4 ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: afiliado run --posts-per-run 5 ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           SHOPEE_APP_ID: ${{ secrets.SHOPEE_APP_ID }}
           SHOPEE_APP_SECRET: ${{ secrets.SHOPEE_APP_SECRET }}
@@ -122,3 +134,17 @@ jobs:
           done
           echo "::error::não foi possível commitar data/state.db após 3 tentativas"
           exit 1
+      - name: Duração do job
+        if: always()
+        # I-3: o GitHub cobra cada job arredondado para o minuto SEGUINTE, e a
+        # duração deste nunca foi medida — a cota inteira da 5C saiu de um
+        # "~1,5 min" chutado. Isto imprime a medição real e a joga no resumo do
+        # run (aba Actions → o run → Summary). "Set up job" e "Complete job"
+        # ficam fora dos passos e somam ~15 s: a estimativa já os inclui.
+        # Registre a PRIMEIRA medição em docs/runbooks/vps-setup.md.
+        run: |
+          segundos=$(( $(date +%s) - JOB_START ))
+          cobrados=$(( (segundos + 15 + 59) / 60 ))
+          mensal=$(( cobrados * 16 * 31 ))
+          echo "duração dos passos: ${segundos}s · ~${cobrados} min cobrados"
+          echo "job: ${segundos}s de passos → ~${cobrados} min cobrados · ${mensal} min/mês a 16 jobs/dia (cota 2000)" >> "$GITHUB_STEP_SUMMARY"

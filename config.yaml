@@ -8,10 +8,15 @@ state:
 # count_hoje < min(max_per_day, floor(max_per_day × fração_da_janela) + 1);
 # fora da janela o orçamento é 0 (um run de madrugada não publica). A janela
 # deve bater com deploy/afiliado.timer.
+# A janela termina 23:15, e não 23:55, por causa do ritmo: o último disparo do
+# Actions é 23:00 BRT e `pacing_budget` só devolve o teto INTEIRO no fim da
+# janela — com 23:55 o orçamento das 23:00 era 59 e a meta de 60/dia era
+# inalcançável por construção (menor da revisão da 5C). Ao mudar a cadência,
+# refaça a conta: o último disparo precisa cair a ≤ 1/60 do fim da janela.
 schedule:
   timezone: America/Sao_Paulo
   window_start: "08:00"
-  window_end: "23:55"
+  window_end: "23:15"
 
 llm:
   model: haiku
@@ -40,7 +45,7 @@ selection:
   ref_min_observations: 14     # dias distintos mínimos para mediana/p25 valerem (regra do quartil)
   # Fase 1.8: piso de valor esperado (comissão em R$ ponderada por popularidade,
   # via ev_score, SEM boost de watchlist) por post — com dedupe de 30 dias e
-  # cadência de 5 min (192 checagens/dia, 08:00–23:55), evita postar sobras
+  # cadência de 5 min (184 checagens/dia, 08:00–23:15), evita postar sobras
   # quando o estoque de boas ofertas esgota. 0 ou ausente desliga o piso (todas
   # as ofertas que passam os demais filtros seguem elegíveis).
   min_ev_brl: 0.50
@@ -199,7 +204,7 @@ instagram:
 channels:
   telegram:
     enabled: true
-    max_per_day: 60          # meta: 60 ofertas/dia, espalhadas das 08:00 às 23:55 (~1 a cada 16 min)
+    max_per_day: 60          # meta: 60 ofertas/dia, espalhadas das 08:00 às 23:15 (~1 a cada 15 min)
   story_dispatch:
     enabled: true            # SEMI-automático: arte de story + link prontos no chat de operações; você posta
     max_per_day: 6           # artes de story por dia, ~uma a cada 2h40

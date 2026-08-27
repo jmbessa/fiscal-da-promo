@@ -181,13 +181,16 @@ categoria — antes o LLM só via os 30 itens mais caros.
 
 ## Agendamento
 
-- **GitHub Actions (produção)** — `.github/workflows/publish.yml` roda a cada
-  **30 min entre 08:00 e 23:30 BRT** (32 runs/dia, `--posts-per-run 4`) e
+- **GitHub Actions (produção)** — `.github/workflows/publish.yml` roda **de
+  hora em hora entre 08:00 e 23:00 BRT** (16 jobs/dia, `--posts-per-run 5`) e
   commita `data/state.db` de volta com `git pull --rebase` antes do push. Em
   conflito no binário o run atual vence e o log registra um `::warning::` —
-  nunca se perde um run. Com cache de pip e do npm, ~1.440 min/mês, dentro dos
-  2.000 do plano grátis para repositório privado. Disparo manual: aba Actions
-  → publish → Run workflow (com opção dry-run).
+  nunca se perde um run. O GitHub cobra **cada job arredondado para o minuto
+  seguinte**: 16 jobs × 31 dias × 3 min = 1.488 dos 2.000 min/mês do plano
+  grátis para repositório privado, com folga até 4 min/job. A duração real
+  ainda não foi medida — o job a imprime no *Summary*; a conta inteira está em
+  `docs/runbooks/vps-setup.md`. Disparo manual: aba Actions → publish → Run
+  workflow (com opção dry-run).
 - **VPS a cada 5 min (opcional)** — o timer systemd chama `afiliado run` a
   cada 5 minutos das 08:00 às 23:55 (192 execuções/dia, 1 oferta por run),
   para quem quiser cadência mais fina e um estoque de candidatas mais fresco;
@@ -212,7 +215,7 @@ nenhum canal pode publicar, o run termina antes de chamar o LLM (nenhuma
 oferta paga preço, link ou copy sem ter onde ser publicada); um canal que
 bate o teto de verdade aparece como aviso no resumo, não como falha.
 
-Com 32 runs/dia no Actions (ou 192 na VPS), mandar um resumo a cada execução
+Com 16 runs/dia no Actions (ou 192 na VPS), mandar um resumo a cada execução
 inundaria o chat de operações. O resumo só é enviado quando o run publicou,
 descartou algo ou gerou aviso — e cada aviso entra **uma vez por dia** (tabela
 `warned`), então uma watchlist vencida não vira uma mensagem por run. O

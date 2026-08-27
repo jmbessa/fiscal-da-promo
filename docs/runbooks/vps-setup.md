@@ -14,10 +14,10 @@ tempo checar**. Duas opções, ambas sem custo:
 | | GitHub Actions (**produção**) | VPS gratuita (opcional) |
 |---|---|---|
 | Custo | R$ 0 dentro da cota (2.000 min/mês em repo privado) | R$ 0 (Oracle Always Free) |
-| Cadência | a cada 30 min, `--posts-per-run 4` | a cada 5 min, 1 por vez |
+| Cadência | de hora em hora, `--posts-per-run 5` | a cada 5 min, 1 por vez |
 | Pontualidade | atrasos de 5–30 min são normais | exata |
 | Ritmo no canal | o `pacing_budget` da fase 5A espaça os 60/dia nos dois casos | idem |
-| Estoque de candidatas | 32 fatias de descoberta/dia | 192 fatias/dia (mais fresco) |
+| Estoque de candidatas | 16 fatias de descoberta/dia | 192 fatias/dia (mais fresco) |
 | Setup | nenhum (já pronto) | ~20 min, pede cartão só para verificação |
 | Sobrevive sozinho | sim | a VM ociosa pode ser recolhida |
 
@@ -30,15 +30,57 @@ workflow*).
 
 ## Opção A — GitHub Actions (produção, já configurada)
 
-Não é preciso editar nada: `.github/workflows/publish.yml` já roda a cada
-**30 min entre 08:00 e 23:30 BRT** (32 runs/dia) com `--posts-per-run 4`.
+Não é preciso editar nada: `.github/workflows/publish.yml` já roda **de hora em
+hora entre 08:00 e 23:00 BRT** (16 jobs/dia) com `--posts-per-run 5`.
 
-- **Cota:** 32 runs × ~1,5 min (com cache de pip e do npm global) ≈ 48 min/dia
-  ≈ **1.440 min/mês**, dentro dos 2.000 do plano grátis para repositório
-  privado. Sem os caches o setup sozinho passava de 2,5 min/run (≈2.400
-  min/mês) e estouraria. Confira o consumo em GitHub → Settings → Billing; se
-  apertar, corte o cron das 12:00–18:00 BRT para 1×/hora antes de mexer em
-  qualquer outra coisa.
+### A cota de minutos — a conta, refeita
+
+A regra de cobrança que a revisão da fase 5C encontrou: **o GitHub arredonda a
+duração de cada JOB para o minuto seguinte** (runner Linux, multiplicador 1×), e
+o plano grátis de repositório **privado** dá **2.000 min/mês**. Um job de 1 min
+e 1 s custa 2 min. A conta é `jobs/dia × dias do mês × minutos COBRADOS por
+job`, com o mês mais longo (31 dias):
+
+| jobs/dia | cadência | 2 min/job | 3 min/job | 4 min/job |
+|---:|---|---:|---:|---:|
+| 32 | 30 min, 08:00–23:30 | 1.984 (99%) | 2.976 (**149%**) | 3.968 (**198%**) |
+| 18 | 45 min no pico, 90 fora | 1.116 (56%) | 1.674 (84%) | 2.232 (**112%**) |
+| **16** | **1 h, 08:00–23:00** | **992 (50%)** | **1.488 (74%)** | **1.984 (99%)** |
+
+A duração real do job **nunca foi medida** — o "~1,5 min" da fase 5C era uma
+estimativa, e a 1,5 min o GitHub cobra 2. Enquanto não há medição, a cadência
+tem de caber no pior caso plausível: **16 jobs/dia é a única linha que
+sobrevive até 4 min/job**, e ainda deixa ~500 min/mês para o `tests.yml` (que
+roda a cada push e também consome a mesma cota; o commit de estado leva
+`[skip ci]` e não conta).
+
+Por que 1 h e não "45 min no pico": o campo de minuto do cron se repete a cada
+hora, então `*/45` dispara aos minutos 0 e 45 — intervalos de 45 e **15** min,
+não uma cadência de 45. Cadências honestas são divisores de 60.
+
+**Posts por run.** 60/dia ÷ 16 runs = 3,75. Pelo ritmo real (`pacing_budget`
+com 60/dia e a janela 08:00–23:15), os orçamentos dos 16 disparos são
+1, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, **60** — o maior salto
+entre dois runs consecutivos é **4**, e `--posts-per-run 5` o cobre com uma
+vaga de folga para recuperar um disparo perdido. `schedule.window_end` é
+**23:15** justamente para o último disparo (23:00) alcançar os 60: com 23:55 o
+orçamento das 23:00 seria 59 e a meta era inalcançável por construção. Se
+mudar a cadência, refaça as duas contas — há testes que travam as duas
+(`tests/test_workflow_yaml.py`).
+
+**Descoberta.** 8 chamadas/run × 16 runs = 128 chamadas/dia (eram 256). A
+varredura completa das 5 raízes passa de ~1,25 para **~2,5 dias**; a margem do
+dedupe não muda, porque ela vem do TAMANHO do espaço (≈5.460 itens elegíveis
+nas raízes, contra 1.800 posts/mês), não do número de varreduras.
+
+- **Meça, depois decida.** O passo final do job ("Duração do job") imprime a
+  duração real e a joga no *Summary* do run. Anote aqui a primeira medição:
+  `duração dos passos: ___ s → ___ min cobrados → ___ min/mês`. Com o número
+  na mão, a tabela acima diz se dá para voltar a 30 min. Confira o consumo em
+  GitHub → Settings → Billing.
+- **Trava de segurança:** `timeout-minutes: 20` no job. Sem ela vale o padrão
+  do GitHub (6 h): um run em martelo contra a API da loja queimaria 360 min —
+  18% da cota mensal — antes de alguém perceber.
 - **Estado:** o passo "Commitar estado" faz `git pull --rebase` antes do push;
   em conflito no binário do `state.db` o run ATUAL vence e o log registra um
   `::warning::` — o pior caso é reesquecer os posts de um run, nunca perder o
@@ -146,7 +188,11 @@ journalctl -u afiliado.service -f         # acompanhar
 
 `deploy/afiliado.timer` dispara **a cada 5 min das 08:00 às 23:55** (192
 runs/dia, `OnCalendar=*-*-* 08..23:00/5:00`, `Persistent=false`: um disparo
-perdido não é recuperado de madrugada). Para mudar janela ou intervalo, edite
+perdido não é recuperado de madrugada). A janela do `config.yaml` termina
+**23:15** (ver a conta na Opção A), então os disparos de 23:20 em diante já
+recebem orçamento 0 e terminam sem publicar — inofensivo, mas se quiser o
+timer exatamente alinhado, mude o `OnCalendar` para `08..23:15/5:00`. Para
+mudar janela ou intervalo, edite
 `/etc/systemd/system/afiliado.timer` **e** `schedule.window_start/window_end`
 no `config.yaml` (o ritmo diário usa a mesma janela; fora dela o orçamento é
 0), depois `systemctl daemon-reload && systemctl restart afiliado.timer`.

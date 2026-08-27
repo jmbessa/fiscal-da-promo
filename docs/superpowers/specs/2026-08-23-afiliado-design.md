@@ -25,7 +25,7 @@ CTA e link curto de afiliado.
 | Autonomia | Automático para Telegram e feed do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. **Stories NÃO são automáticos** (`story_dispatch`, fase 2A): o pipeline gera a arte e o link e os entrega ao chat de operações; publicar é um gesto manual do dono, e o resumo do run diz "📤 despachado p/ ops (postar no app)" (fase 5C, A12) |
 | Volume | **60 ofertas/dia** somadas as duas lojas, cota 50/50 por fonte, dedupe de 30 dias (fase 5C; a conta está em `docs/superpowers/reviews/2026-08-26-descoberta-shopee.md`) |
 | Sinalização de publicidade | **Nenhuma** — decisão do dono na fase 5C. O risco regulatório está registrado em `2026-08-26-analise-adversarial.md` (A7) |
-| Infra | **GitHub Actions (cron) é a produção** desde a fase 5C — a cada 30 min, 08:00–23:30 BRT; a VPS (systemd, 5 min) fica opcional. O código não depende de nenhum dos dois |
+| Infra | **GitHub Actions (cron) é a produção** desde a fase 5C — de hora em hora, 08:00–23:00 BRT (16 jobs/dia: o GitHub cobra cada job arredondado para o minuto seguinte, e a cadência de 30 min estourava a cota); a VPS (systemd, 5 min) fica opcional. O código não depende de nenhum dos dois |
 | LLM | Cota da assinatura Claude Max via Claude Code headless (`claude -p`), token de CI gerado com `claude setup-token`; fallback para API key se `ANTHROPIC_API_KEY` estiver definida |
 | Stack | Python (3.12+), SQLite para estado, pacote único com CLI |
 
@@ -46,8 +46,8 @@ criativo, dedupe e portabilidade).
 
 Cada execução de `afiliado run` processa um ciclo completo e termina. O
 agendador externo define o ritmo — desde a fase 5C a **produção é o GitHub
-Actions**: `publish.yml` a cada 30 min das 08:00 às 23:30 BRT (32 runs/dia,
-`--posts-per-run 4`), commitando `data/state.db` de volta com `pull --rebase`
+Actions**: `publish.yml` de hora em hora das 08:00 às 23:00 BRT (16 jobs/dia,
+`--posts-per-run 5`), commitando `data/state.db` de volta com `pull --rebase`
 antes do push. A VPS (timer systemd a cada 5 min, 192 execuções/dia, 1 oferta
 por run; `docs/runbooks/vps-setup.md`) fica **opcional**, para quem quiser
 cadência mais fina — nunca as duas ao mesmo tempo. Cada canal tem um teto diário

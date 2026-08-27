@@ -2,13 +2,30 @@
 (cadência, cota de minutos, estado que não se perde, segredos) precisa bater
 com o que o código e os runbooks dizem."""
 
+import re
+from datetime import datetime
+
 import yaml
 
+from afiliado import pipeline
+
 WORKFLOW = ".github/workflows/publish.yml"
+
+# Cota do plano grátis para repositório PRIVADO, e a regra de cobrança que a
+# revisão da 5C encontrou: o GitHub arredonda a duração de CADA JOB para o
+# minuto seguinte (runner Linux, multiplicador 1×).
+COTA_MENSAL_MIN = 2000
+MINUTOS_COBRADOS_POR_JOB = 3      # pessimista, enquanto não há medição real
+DIAS_DO_MES_MAIS_LONGO = 31
 
 
 def _workflow() -> dict:
     with open(WORKFLOW, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _config() -> dict:
+    with open("config.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -17,16 +34,44 @@ def _passo(nome: str) -> dict:
     return next(s for s in steps if s.get("name") == nome)
 
 
-def test_publish_roda_a_cada_30_min_das_08_as_2330_brt():
-    # 32 runs/dia: 0,30 de 11h a 23h UTC (08:00–20:30 BRT) + 0,30 de 0h a 2h
-    # UTC (21:00–23:30 BRT). Antes eram 16 crons de hora em hora, apresentados
-    # como "backup" — 16 posts/dia contra uma meta de 60 (A9).
+def _disparos_brt() -> list[datetime]:
+    """Todos os horários de disparo do cron, convertidos de UTC para BRT
+    (UTC−3, sem horário de verão no Brasil desde 2019)."""
     on_section = _workflow().get("on", _workflow().get(True))  # PyYAML: "on:" é True
-    crons = [entry["cron"] for entry in on_section["schedule"]]
-    assert crons == ["0,30 11-23 * * *", "0,30 0-2 * * *"]
-    horas = sum(len(range(*(int(p) for p in c.split()[1].split("-"))) ) + 1
-                for c in crons)
-    assert horas * 2 == 32                       # 2 disparos por hora
+    horarios: list[datetime] = []
+    for entry in on_section["schedule"]:
+        minutos, horas = entry["cron"].split()[0], entry["cron"].split()[1]
+        inicio, _, fim = horas.partition("-")
+        for h in range(int(inicio), int(fim or inicio) + 1):
+            for m in (int(x) for x in minutos.split(",")):
+                horarios.append(datetime(2026, 8, 26, (h - 3) % 24, m))
+    return sorted(horarios)
+
+
+def _posts_per_run() -> int:
+    return int(re.search(r"--posts-per-run (\d+)", _passo("Executar pipeline")["run"]).group(1))
+
+
+def test_publish_roda_de_hora_em_hora_das_08_as_23_brt():
+    # 16 jobs/dia: minuto 0 de 11h a 23h UTC (08:00–20:00 BRT) + 0h a 2h UTC
+    # (21:00–23:00 BRT). Eram 32 (de 30 em 30 min) até a revisão da 5C mostrar
+    # que o GitHub cobra cada job arredondado para cima — ver
+    # test_a_cadencia_cabe_na_cota_mensal_de_minutos.
+    crons = [entry["cron"] for entry in
+             _workflow().get("on", _workflow().get(True))["schedule"]]
+    assert crons == ["0 11-23 * * *", "0 0-2 * * *"]
+    assert len(_disparos_brt()) == 16
+    assert _disparos_brt()[0].hour == 8 and _disparos_brt()[-1].hour == 23
+
+
+def test_a_cadencia_cabe_na_cota_mensal_de_minutos():
+    """I-3 da revisão: o GitHub cobra cada JOB arredondado para o minuto
+    seguinte. 32 runs/dia × 30 dias = 960 jobs/mês; a 2 min cobrados dariam
+    1.920 de 2.000 (96%, sem folga) e a 3 min, 2.880 (44% acima). O número de
+    1,5 min/run nunca foi medido — enquanto não for, a cadência precisa caber
+    no pior caso plausível."""
+    jobs_por_mes = len(_disparos_brt()) * DIAS_DO_MES_MAIS_LONGO
+    assert jobs_por_mes * MINUTOS_COBRADOS_POR_JOB <= COTA_MENSAL_MIN * 0.8
 
 
 def test_o_job_tem_timeout_curto():
@@ -43,9 +88,45 @@ def test_publish_nao_roda_dois_ao_mesmo_tempo():
     assert concurrency["cancel-in-progress"] is False
 
 
-def test_publish_usa_posts_per_run_maior_que_o_da_vps():
-    # A VPS roda a cada 5 min com posts_per_run 1; o Actions roda a cada 30.
-    assert "--posts-per-run 4" in _passo("Executar pipeline")["run"]
+def test_posts_per_run_cobre_o_maior_salto_do_ritmo():
+    """A VPS roda a cada 5 min com `posts_per_run: 1`; o Actions roda de hora
+    em hora e precisa publicar tudo que o ritmo (`pacing_budget`) liberou desde
+    o run anterior. Com 60/dia e 16 runs, o maior salto entre dois runs
+    consecutivos é 4 — `--posts-per-run` tem de cobri-lo, com folga para
+    recuperar um disparo perdido (atraso de cron é rotina no Actions)."""
+    cfg = _config()
+    teto = cfg["channels"]["telegram"]["max_per_day"]
+    horario = pipeline.schedule_settings(cfg)
+    orcamentos = [pipeline.pacing_budget(teto, t, horario["window_start"],
+                                         horario["window_end"])
+                  for t in _disparos_brt()]
+    maior_salto = max(b - a for a, b in zip(orcamentos, orcamentos[1:]))
+    assert maior_salto == 4
+    assert _posts_per_run() > maior_salto
+
+
+def test_o_ultimo_run_do_dia_alcanca_o_teto_diario():
+    """Menor da revisão: com o último cron às 23:30 e `window_end: 23:55`, o
+    orçamento do último run era 59 — a meta de 60/dia era inalcançável por
+    construção. A janela do config termina alinhada ao último disparo."""
+    cfg = _config()
+    teto = cfg["channels"]["telegram"]["max_per_day"]
+    horario = pipeline.schedule_settings(cfg)
+    assert pipeline.pacing_budget(teto, _disparos_brt()[-1], horario["window_start"],
+                                  horario["window_end"]) == teto
+
+
+def test_o_job_mede_a_propria_duracao():
+    """I-3: 1,5 min/run nunca foi medido. O job passa a imprimir a própria
+    duração (e a jogar no resumo do run) para que a primeira medição real
+    entre no runbook em vez de mais uma estimativa."""
+    passo = _passo("Duração do job")
+    assert passo["if"] == "always()"
+    assert "GITHUB_STEP_SUMMARY" in passo["run"]
+    assert "JOB_START" in passo["run"]
+    inicio = next(s for s in _workflow()["jobs"]["run"]["steps"]
+                  if "JOB_START" in str(s.get("run", "")) and s is not passo)
+    assert "GITHUB_ENV" in inicio["run"]
 
 
 def test_publish_repassa_todos_os_segredos():

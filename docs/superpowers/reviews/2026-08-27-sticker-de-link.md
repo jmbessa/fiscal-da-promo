@@ -434,6 +434,40 @@ Contexto Brasil: o Instagram Shopping segue disponível no país e product tags/
 
 ---
 
+## DECISÃO DO DONO (2026-08-27, depois de ler tudo isto) — o veredito abaixo mudou
+
+**O dono escolheu o caminho #6: instagrapi, com verificação obrigatória.** O
+veredito da seção seguinte ("ficamos no caminho #1") foi a recomendação deste
+relatório; ela deixou de valer no mesmo dia. O que valeu na decisão foi que a
+perda de 2 a 4 vezes em cliques é permanente e diária, e que o modo de falha do
+instagrapi — o único que assusta de verdade — é **detectável**, desde que
+alguém se dê ao trabalho de olhar.
+
+Foi o que a **fase 5F** implementou:
+
+- Canal `instagram_story_link` (`src/afiliado/channels/instagram_story_link.py`),
+  publicando com `StoryLink(webUri=<link de afiliado>)`.
+- **Verificação pós-publicação** com `story_info(pk)` — o coração da fase, e a
+  resposta direta ao §3.3 deste relatório. Três estados: com link / sem link /
+  não foi possível verificar. Story sem figurinha **não é sucesso**.
+- **Desarme automático** em 2 falhas de verificação seguidas, com aviso mandando
+  ligar o `instagram_story` (Graph API) como fallback.
+- **Fora do GitHub Actions**: comando próprio (`afiliado stories`) para a
+  máquina do dono, porque o IP do Actions é de datacenter e muda a cada
+  execução. O `afiliado run` ignora o canal mesmo ligado.
+- **Nunca os dois canais de story juntos** na mesma conta — o `doctor` reclama.
+- Sessão persistida em `data/ig_session.json` via `afiliado ig-login`; o extra
+  `stories` é opcional e o import é preguiçoso.
+
+Operação, riscos e o que fazer quando o canal desarmar:
+[`docs/runbooks/instagrapi-stories.md`](../../runbooks/instagrapi-stories.md).
+
+O caminho #1 (Graph API, sem figurinha) **continua implementado e ligado por
+padrão**: ele é o fallback de um comando de distância. A compensação descrita
+mais abaixo (página de ofertas do dia, CTA mais forte na arte) não foi
+cancelada — ela vale para os dias em que o canal com figurinha estiver
+desarmado, e para o dia em que ele for desligado de vez.
+
 ## VEREDITO FINAL (2026-08-27, depois da verificação do dono)
 
 O caminho #2 caiu: o Meta Business Suite mostra link em story **só no

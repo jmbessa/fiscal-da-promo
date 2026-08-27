@@ -20,19 +20,23 @@ Pipeline automático de divulgação de ofertas com link de afiliado
 | `CLAUDE_CODE_OAUTH_TOKEN` | Rodar `claude setup-token` na sua máquina (usa a assinatura Max) |
 | `ART_HOST_BOT_TOKEN` | Bot **secundário** que hospeda a arte do feed (fase 5C). Crie um segundo bot no @BotFather e adicione **só ao chat de operações** — a URL da arte que vai à Meta carrega o token de quem a enviou, e não pode ser o do administrador do canal |
 | `IG_USER_ID` / `IG_ACCESS_TOKEN` | Feed automático do Instagram (fase 2A) — seguir `docs/runbooks/meta-setup.md` |
+| `IG_USERNAME` / `IG_PASSWORD` | Story **com figurinha de link** (fase 5F, canal `instagram_story_link`). É a **senha da conta**, não um token revogável — só na máquina do dono, **nunca** nos GitHub Secrets nem na VPS. Seguir `docs/runbooks/instagrapi-stories.md` |
 | `MELI_CLIENT_ID` / `MELI_CLIENT_SECRET` / `MELI_REFRESH_TOKEN` | Fonte Mercado Livre (fase 3, desligada por padrão) — seguir `docs/runbooks/meli-setup.md` |
 
-São **12 variáveis**: `SHOPEE_APP_ID`, `SHOPEE_APP_SECRET`, `TELEGRAM_BOT_TOKEN`,
+São **14 variáveis**: `SHOPEE_APP_ID`, `SHOPEE_APP_SECRET`, `TELEGRAM_BOT_TOKEN`,
 `TELEGRAM_CHANNEL_ID`, `TELEGRAM_OPS_CHAT_ID`, `ART_HOST_BOT_TOKEN`,
-`CLAUDE_CODE_OAUTH_TOKEN`, `IG_USER_ID`, `IG_ACCESS_TOKEN`, `MELI_CLIENT_ID`,
-`MELI_CLIENT_SECRET`, `MELI_REFRESH_TOKEN`. As do Instagram e do Mercado Livre
-podem ficar vazias: o canal/fonte correspondente é ignorado com aviso no chat
-de operações. `ART_HOST_BOT_TOKEN` vazia também funciona — com um aviso diário,
-porque aí o token do bot do canal é o que viaja até a Meta.
+`CLAUDE_CODE_OAUTH_TOKEN`, `IG_USER_ID`, `IG_ACCESS_TOKEN`, `IG_USERNAME`,
+`IG_PASSWORD`, `MELI_CLIENT_ID`, `MELI_CLIENT_SECRET`, `MELI_REFRESH_TOKEN`. As
+do Instagram e do Mercado Livre podem ficar vazias: o canal/fonte correspondente
+é ignorado com aviso no chat de operações. `ART_HOST_BOT_TOKEN` vazia também
+funciona — com um aviso diário, porque aí o token do bot do canal é o que viaja
+até a Meta.
 
 No GitHub: Settings → Secrets and variables → Actions → criar os secrets acima
-(todos já repassados pelo `publish.yml`). Na VPS, o `.env` (template completo
-em `deploy/install-vps.sh`).
+(todos já repassados pelo `publish.yml`) — **menos `IG_USERNAME`/`IG_PASSWORD`**,
+que não vão para o Actions de jeito nenhum: o canal que as usa não roda lá (ver
+`docs/runbooks/instagrapi-stories.md`). Na VPS, o `.env` (template completo em
+`deploy/install-vps.sh`), com essas duas vazias.
 
 ## Instagram (fase 2A)
 
@@ -97,6 +101,14 @@ ao vivo → link) em `docs/runbooks/meli-setup.md`.
   sem publicar. Sem efeitos colaterais: não escreve no `state.db`, não baixa a
   imagem e não toca no link de afiliado.
 - `afiliado run` — executa e publica de verdade.
+- `afiliado stories [--posts N] [--dry-run]` — o mesmo pipeline com **só os
+  canais de story**, para o dono rodar da própria máquina (fase 5F). É o único
+  comando que monta o `instagram_story_link` (instagrapi, story com figurinha de
+  link); `afiliado run` ignora esse canal mesmo ligado, porque ele não pode
+  rodar no GitHub Actions.
+- `afiliado ig-login` — cria/renova `data/ig_session.json`, a sessão do
+  instagrapi, lendo `IG_USERNAME`/`IG_PASSWORD` do ambiente. Ver
+  `docs/runbooks/instagrapi-stories.md`.
 
 ## Portões e política de falhas (fase 5A)
 

@@ -62,9 +62,14 @@ MAX_SEM_LINK_PADRAO = 2
 # Exceções do instagrapi que significam "esta sessão morreu". Por NOME: a lista
 # muda entre versões (`AccountSuspended` nasceu em jul/2026) e um import direto
 # quebraria com a versão errada.
-ERROS_DE_SESSAO = ("LoginRequired", "ChallengeRequired", "PleaseWaitFewMinutes",
-                   "AccountSuspended", "BadPassword", "TwoFactorRequired",
-                   "ReloginAttemptExceeded")
+#
+# `ChallengeError` é o PAI de toda a família de desafio no instagrapi
+# (`ChallengeRedirection`, `ChallengeSelfieCaptcha`, `ChallengeUnknownStep`,
+# `RecaptchaChallengeForm`, ...): classificar por ele — e subindo a hierarquia,
+# ver `e_erro_de_sessao` — pega a família inteira sem listar nome por nome.
+ERROS_DE_SESSAO = ("LoginRequired", "ChallengeError", "ChallengeRequired",
+                   "PleaseWaitFewMinutes", "AccountSuspended", "BadPassword",
+                   "TwoFactorRequired", "ReloginAttemptExceeded")
 
 # Os três estados da verificação. São excludentes de propósito: o dia em que
 # "não consegui ler" virar "não tem link" é o dia em que o canal começa a
@@ -158,6 +163,20 @@ def guarda_sessao(cl, session_path: str | Path) -> None:
     caminho = Path(session_path)
     caminho.parent.mkdir(parents=True, exist_ok=True)
     cl.dump_settings(caminho)
+
+
+def e_erro_de_sessao(exc: BaseException) -> bool:
+    """A exceção é uma das que significam "esta sessão morreu / há um desafio"?
+
+    Classifica pelo NOME da classe e de todas as suas ancestrais, sem importar
+    instagrapi — e por isso funciona nos TRÊS lugares que falam com o
+    Instagram, não só no login. Era essa a lacuna que a revisão mediu: com a
+    sessão carregada o `login()` passa direto e o `ChallengeRequired` chega no
+    `photo_upload_to_story`, onde ninguém o reconhecia. Resultado: três
+    tentativas por run, canal armado, e até 18 chamadas por dia disparando
+    desafio contra uma conta já sinalizada.
+    """
+    return any(cls.__name__ in ERROS_DE_SESSAO for cls in type(exc).__mro__)
 
 
 def sem_segredos(texto: str, *segredos: str) -> str:
@@ -278,6 +297,13 @@ class InstagramStoryLinkChannel:
             media = cl.photo_upload_to_story(
                 caminho, links=[self.link_factory(post.affiliate_link)])
         except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta
+            if e_erro_de_sessao(exc):
+                # O caso COMUM (a sessão carregada faz o `login()` passar
+                # direto, e o desafio aparece só aqui). Uma tentativa, canal
+                # fechado, e a instrução — nunca "tenta de novo".
+                self._desarma(AVISO_SESSAO)
+                return PublishResult(False, error=self._sem_senha(
+                    f"{SESSAO_INVALIDA} ({type(exc).__name__}: {exc})"))
             return PublishResult(False, error=self._sem_senha(
                 f"falha ao publicar o story ({type(exc).__name__}: {exc})"))
 
@@ -308,6 +334,14 @@ class InstagramStoryLinkChannel:
         try:
             story = cl.story_info(pk)
         except Exception as exc:      # noqa: BLE001 - qualquer falha é "não sei"
+            if e_erro_de_sessao(exc):
+                # Ler de volta também é falar com o Instagram: o desafio pode
+                # aparecer AQUI. O canal se fecha (mesma classificação do
+                # upload e do login) — mas o estado continua NÃO VERIFICADO:
+                # não vimos o story, e inventar "sem link" seria mentir.
+                self._desarma(AVISO_SESSAO)
+                return Verificacao(NAO_VERIFICADO, self._sem_senha(
+                    f"{SESSAO_INVALIDA} ({type(exc).__name__}: {exc})"))
             return Verificacao(NAO_VERIFICADO,
                                self._sem_senha(f"{type(exc).__name__}: {exc}"))
         if story is None:

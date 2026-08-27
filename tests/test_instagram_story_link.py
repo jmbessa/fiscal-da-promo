@@ -270,6 +270,108 @@ def test_verificacao_desligada_nao_afirma_que_verificou():
     assert "SEM verificação" in mod.AVISO_SEM_VERIFICACAO
 
 
+# -- 4b. o desafio que chega no UPLOAD (rodada de correção, C1) ----------------
+#
+# A classificação de "esta sessão morreu" existia só no login. Com sessão
+# carregada o `login()` normalmente passa direto e o `ChallengeRequired` chega
+# no `photo_upload_to_story` — onde não era classificado, não desarmava, e o
+# pipeline tentava 3× por run (até 18 chamadas que disparam desafio por dia,
+# contra uma conta já sinalizada).
+
+
+class ChallengeRequired(Exception):
+    """Nome IGUAL ao do instagrapi, de propósito: a classificação é por NOME
+    (`ERROS_DE_SESSAO`) — o único jeito de reconhecer a exceção sem importar a
+    biblioteca, que nem instalada está."""
+
+
+class ChallengeSelfieCaptcha(ChallengeRequired):
+    """Um primo do desafio: no instagrapi a família toda desce de
+    `ChallengeError`, então a classificação sobe a hierarquia."""
+
+
+def test_desafio_no_upload_e_classificado_desarma_e_diz_o_que_fazer():
+    """C1. Uma tentativa, canal desarmado, e a mensagem que manda rodar
+    `afiliado ig-login` — em vez de "falha ao publicar o story" repetido 3×."""
+    post = make_post()
+    cliente = FakeClient(erro_upload=ChallengeRequired("challenge_required"))
+    canal = _canal(cliente)
+    res = canal.publish(post)
+
+    assert not res.ok
+    assert mod.SESSAO_INVALIDA in res.error
+    assert "afiliado ig-login" in res.error
+    assert "ChallengeRequired" in res.error       # a causa, com nome
+    assert canal.disponivel is False and canal.max_per_run == 0
+    assert canal.warnings == [mod.AVISO_SESSAO]
+    assert [c[0] for c in cliente.chamadas] == ["upload"]
+
+    # ...e não tenta de novo neste run.
+    assert canal.publish(post).ok is False
+    assert [c[0] for c in cliente.chamadas] == ["upload"]
+
+
+def test_a_classificacao_do_desafio_sobe_a_hierarquia():
+    cliente = FakeClient(erro_upload=ChallengeSelfieCaptcha("selfie"))
+    canal = _canal(cliente)
+    assert mod.SESSAO_INVALIDA in canal.publish(make_post()).error
+    assert canal.disponivel is False
+
+
+def test_erro_comum_no_upload_nao_desarma_o_canal():
+    """A contraprova: um timeout não é evidência de sessão morta. O canal
+    continua armado (e o freio de 3 falhas seguidas do pipeline vale)."""
+    cliente = FakeClient(erro_upload=RuntimeError("timeout do upload"))
+    canal = _canal(cliente)
+    res = canal.publish(make_post())
+
+    assert not res.ok and "timeout do upload" in res.error
+    assert mod.SESSAO_INVALIDA not in res.error
+    assert canal.disponivel is True and canal.warnings == []
+
+
+def test_desafio_na_verificacao_desarma_sem_afirmar_que_falta_link():
+    """A leitura de volta também fala com o Instagram. Um desafio ali desarma
+    o canal — mas continua sendo NÃO VERIFICADO: não vimos o story."""
+    post = make_post()
+    cliente = FakeClient(erro_info=ChallengeRequired("challenge_required"))
+    canal = _canal(cliente)
+    res = canal.publish(post)
+
+    assert not res.ok
+    assert "não foi possível verificar" in res.error.lower()
+    assert mod.SESSAO_INVALIDA in res.error and "ig-login" in res.error
+    assert "SEM figurinha" not in res.error
+    assert canal.sem_link_seguidos == 0          # desafio não é instagrapi quebrado
+    assert canal.disponivel is False
+    assert canal.warnings == [mod.AVISO_SESSAO]
+
+
+def test_o_pipeline_faz_UMA_chamada_quando_o_desafio_chega_no_upload(tmp_path, monkeypatch):
+    """A medida da revisão: com o desafio no upload eram 3 uploads por run.
+    Agora o canal se fecha na primeira e o run segue sem ele."""
+    from afiliado import llm, pipeline
+    from afiliado.state import StateDB
+    from tests.test_models import make_offer
+    from tests.test_pipeline import CFG, FakeSource, no_network_validator
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    cliente = FakeClient(erro_upload=ChallengeRequired("challenge_required"))
+    canal = _canal(cliente)
+    canal.max_per_run = 3
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 3}}
+    ofertas = [make_offer(item_id=f"a{i}", title=f"Oferta {i}") for i in range(3)]
+
+    summary = pipeline.run(cfg, [FakeSource(ofertas)], [canal], db,
+                           validator=no_network_validator)
+
+    assert [c[0] for c in cliente.chamadas] == ["upload"]      # UMA, não três
+    assert canal.max_per_run == 0
+    assert mod.AVISO_SESSAO in canal.warnings + summary.warnings
+    db.close()
+
+
 # -- 5. desarme automático -----------------------------------------------------
 
 def test_duas_falhas_seguidas_desarmam_o_canal_e_avisam():

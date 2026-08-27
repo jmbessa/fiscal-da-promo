@@ -8,11 +8,17 @@ from afiliado.watchlist import Watchlist
 
 MAX_CANDIDATES_FOR_PROMPT = 30
 # Fase 5C (M3/A8): o slate apresentado ao ranker é a união de três recortes —
-# 10 por valor esperado, 10 por vendas, 10 por desconto ALEGÁVEL — com no
-# máximo 4 itens da mesma categoria. Antes o LLM via só os 30 maiores EV, que
-# com a comissão crua eram os 30 mais caros.
+# 10 por valor esperado, 10 por vendas, 10 por desconto ALEGÁVEL — com variedade
+# de categoria. Antes o LLM via só os 30 maiores EV, que com a comissão crua
+# eram os 30 mais caros.
 SLATE_POR_CRITERIO = 10
-MAX_POR_CATEGORIA_NO_SLATE = 4
+# PISO do limite por categoria (I-5 da revisão da 5C). O limite de 4 era fixo,
+# e `offer.category` é o id da categoria RAIZ: com as 5 raízes que o config
+# permite, o slate saturava em 20 das 30 vagas, e um estoque concentrado numa
+# categoria degradava para QUATRO itens em silêncio. O limite real é
+# `max(MIN_POR_CATEGORIA_NO_SLATE, ceil(30 / categorias presentes))`, que sempre
+# comporta as 30 vagas: 5 categorias → 6 cada, 3 → 10 cada, 1 → 30.
+MIN_POR_CATEGORIA_NO_SLATE = 4
 # Expoente que amortece a comissão no EV (1.0 = comissão crua, como antes).
 DEFAULT_COMMISSION_EXP = 0.7
 
@@ -212,12 +218,19 @@ def build_slate(candidates: list[Offer], cfg: dict,
     Três consequências desenhadas:
     - o campeão de vendas entra mesmo com EV baixo (a creatina de R$ 30 com
       50 mil vendas não some atrás de 30 câmeras);
-    - nenhuma categoria ocupa mais de `MAX_POR_CATEGORIA_NO_SLATE` das vagas —
-      um item bloqueado pela cota cede o lugar ao próximo do MESMO recorte, e
-      não a um item de outro critério;
+    - nenhuma categoria ocupa mais que a sua fatia das vagas
+      (`_limite_por_categoria`) — um item bloqueado pela cota cede o lugar ao
+      próximo do MESMO recorte, e não a um item de outro critério;
     - a ORDEM já é o fallback determinístico: quando o LLM cai, `rank_offers`
       pega os primeiros daqui, que alternam origem em vez de repetir o topo
       do EV.
+
+    E o slate SEMPRE enche até `MAX_CANDIDATES_FOR_PROMPT` quando há candidatas
+    (I-5): os três recortes podem não dar 30 — o de desconto fica vazio num dia
+    sem modo A, e categorias raras esgotam —, e o prompt promete 30 vagas.
+    Sobrando espaço, ele é completado por EV: primeiro respeitando o limite por
+    categoria, e só então ignorando-o. Slate menos diverso é ruim; slate de 4
+    itens escolhidos entre 13.000, em silêncio, é pior.
 
     O recorte de desconto só considera o que o veredito autoriza alegar (modo
     A): ranquear por um desconto que o post não vai dizer é o mesmo erro que a
@@ -234,12 +247,18 @@ def build_slate(candidates: list[Offer], cfg: dict,
     escolhidos: list[Offer] = []
     vistos: set[tuple[str, str]] = set()
     por_categoria: dict[str, int] = {}
+    limite = _limite_por_categoria(candidates)
 
     def cabe(offer: Offer) -> bool:
         if (offer.source, offer.item_id) in vistos:
             return False
-        return (not offer.category
-                or por_categoria.get(offer.category, 0) < MAX_POR_CATEGORIA_NO_SLATE)
+        return not offer.category or por_categoria.get(offer.category, 0) < limite
+
+    def escolhe(offer: Offer) -> None:
+        vistos.add((offer.source, offer.item_id))
+        if offer.category:
+            por_categoria[offer.category] = por_categoria.get(offer.category, 0) + 1
+        escolhidos.append(offer)
 
     while len(escolhidos) < MAX_CANDIDATES_FOR_PROMPT:
         rodada = False
@@ -251,16 +270,41 @@ def build_slate(candidates: list[Offer], cfg: dict,
                 posicoes[i] += 1
                 if not cabe(offer):
                     continue
-                vistos.add((offer.source, offer.item_id))
-                if offer.category:
-                    por_categoria[offer.category] = por_categoria.get(offer.category, 0) + 1
-                escolhidos.append(offer)
+                escolhe(offer)
                 restantes[i] -= 1
                 rodada = True
                 break
         if not rodada:
             break
+
+    # Completa as vagas que sobraram (I-5): por EV, primeiro respeitando o
+    # limite por categoria e só depois ignorando-o.
+    for respeita_limite in (True, False):
+        for offer in recortes[0]:
+            if len(escolhidos) >= MAX_CANDIDATES_FOR_PROMPT:
+                return escolhidos
+            if (offer.source, offer.item_id) in vistos:
+                continue
+            if respeita_limite and not cabe(offer):
+                continue
+            escolhe(offer)
     return escolhidos
+
+
+def _limite_por_categoria(candidates: list[Offer]) -> int:
+    """Quantas vagas do slate uma mesma categoria pode ocupar: a fatia que
+    cabe a ela, nunca menos que `MIN_POR_CATEGORIA_NO_SLATE`.
+
+    `offer.category` é o id da categoria RAIZ (`selection.category_ids` tem 5),
+    e não a subcategoria: um limite fixo de 4 tinha teto de 20 dos 30 lugares
+    do prompt, e um estoque concentrado numa raiz dava um slate de 4. Ofertas
+    sem categoria (fonte que não informa) não entram na conta — senão TODAS
+    disputariam as mesmas vagas."""
+    categorias = {o.category for o in candidates if o.category}
+    if not categorias:
+        return MAX_CANDIDATES_FOR_PROMPT
+    return max(MIN_POR_CATEGORIA_NO_SLATE,
+               math.ceil(MAX_CANDIDATES_FOR_PROMPT / len(categorias)))
 
 
 def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,

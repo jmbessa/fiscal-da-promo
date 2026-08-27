@@ -462,16 +462,54 @@ def test_slate_traz_o_campeao_de_vendas_mesmo_com_ev_baixo():
     assert "cre0" in {o.item_id for o in slate}
 
 
-def test_slate_limita_quatro_por_categoria():
+def test_slate_reparte_as_vagas_entre_as_categorias_presentes():
+    """I-5 da revisão: o limite por categoria deixou de ser 4 fixo e passou a
+    ser `max(4, ceil(30 / categorias presentes))` — com 3 categorias são 10
+    vagas cada, e o slate enche em vez de saturar em 12."""
     candidatas = ([_camera(i) for i in range(30)] + [_creatina(i) for i in range(30)]
                   + [make_offer(item_id=f"casa{i}", category="casa", commission_brl=5.0,
                                 sales=900) for i in range(30)])
     slate = selection.build_slate(candidatas, CFG)
     from collections import Counter
     por_categoria = Counter(o.category for o in slate)
-    assert max(por_categoria.values()) <= 4
-    assert len(por_categoria) >= 3                # nenhuma categoria ocupa o slate
+    assert len(slate) == selection.MAX_CANDIDATES_FOR_PROMPT
+    assert max(por_categoria.values()) <= 10
+    assert len(por_categoria) == 3                # nenhuma categoria ocupa o slate
     assert len(slate) == len(set(o.item_id for o in slate))
+
+
+def test_slate_enche_as_trinta_vagas_com_as_cinco_raizes():
+    """Teste do brief: 13.000 candidatas em 5 categorias → 30 no slate. Com o
+    limite fixo de 4 e as 5 raízes que o config permite, o slate saturava em
+    20 e o prompt prometia 30 vagas que nunca existiam."""
+    candidatas = [make_offer(item_id=f"x{i}", category=f"c{i % 5}",
+                             commission_brl=1.0 + (i % 7), sales=(i % 500) * 10)
+                  for i in range(13000)]
+    slate = selection.build_slate(candidatas, CFG)
+    assert len(slate) == selection.MAX_CANDIDATES_FOR_PROMPT
+    assert len({o.category for o in slate}) == 5
+
+
+def test_slate_com_estoque_concentrado_numa_categoria_nao_degrada():
+    """O outro lado do mesmo bug: estoque inteiro numa categoria dava um slate
+    de QUATRO itens, em silêncio — o LLM escolhia 4 de 13.000."""
+    candidatas = [make_offer(item_id=f"x{i}", category="100630",
+                             commission_brl=1.0 + (i % 7), sales=(i % 500) * 10)
+                  for i in range(13000)]
+    assert len(selection.build_slate(candidatas, CFG)) == selection.MAX_CANDIDATES_FOR_PROMPT
+
+
+def test_slate_cheio_mesmo_com_categorias_de_um_item_so():
+    """Rede de segurança: 5 categorias presentes dão limite 6, mas quatro
+    delas têm um item só. Antes de sobrar vaga vazia, o slate completa por EV
+    ignorando o limite — melhor menos diverso que pela metade."""
+    candidatas = [make_offer(item_id=f"g{i}", category="grande", commission_brl=2.0,
+                             sales=i) for i in range(100)]
+    candidatas += [make_offer(item_id=f"p{i}", category=f"peq{i}", commission_brl=1.0,
+                              sales=1) for i in range(4)]
+    slate = selection.build_slate(candidatas, CFG)
+    assert len(slate) == selection.MAX_CANDIDATES_FOR_PROMPT
+    assert {"p0", "p1", "p2", "p3"} <= {o.item_id for o in slate}   # os raros entram
 
 
 def test_slate_alterna_as_origens():

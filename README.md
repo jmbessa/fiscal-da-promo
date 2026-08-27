@@ -176,8 +176,11 @@ preço e comissão atualizados ao vivo (`refresh_price`, 1 chamada por
 `selection.min_ev_brl` continua cortando candidatas com valor esperado abaixo
 do piso. Desde a fase 5C a comissão entra **amortecida** no EV
 (`ev_weights.commission_exp: 0.7`) e o ranker recebe um **slate diverso**: a
-união de 10 por EV, 10 por vendas e 10 por desconto alegável, no máximo 4 por
-categoria — antes o LLM só via os 30 itens mais caros.
+união de 10 por EV, 10 por vendas e 10 por desconto alegável — antes o LLM só
+via os 30 itens mais caros. Nenhuma categoria ocupa mais que a fatia dela
+(`max(4, 30 ÷ categorias presentes)`: 6 vagas com as 5 raízes ligadas, 30 se
+tudo vier de uma só), e o que sobrar das 30 vagas é completado por EV: o
+prompt promete 30 candidatas e precisa entregar 30.
 
 ## Agendamento
 

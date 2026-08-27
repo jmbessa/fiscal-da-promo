@@ -1,5 +1,15 @@
 state:
   path: data/state.db
+  # Fase 5F (I2): o `afiliado stories` roda na MÁQUINA DO DONO e escreve num
+  # banco próprio. `data/state.db` acima é rastreado no git e o Actions o
+  # commita a cada run — o comando local escrevendo nele faria todo `git pull`
+  # virar conflito binário. Este arquivo está no .gitignore e é só dele.
+  # O preço, para você saber: o dedupe e o histórico de preços do canal de
+  # story com figurinha ficam INDEPENDENTES do resto — um produto que saiu no
+  # Telegram de manhã pode virar story à tarde. São superfícies diferentes e
+  # são 6 por dia; se um dia isso incomodar, aponte os dois para o mesmo
+  # arquivo e aceite os conflitos.
+  stories_path: data/state_stories.db
 
 # Fase 5A: dia LOCAL e ritmo. O teto diário de cada canal, o price_log e a
 # deduplicação de avisos são contados no dia deste fuso (antes era UTC: a

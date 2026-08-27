@@ -98,3 +98,14 @@ def test_a_sessao_do_instagram_nunca_vai_ao_git():
     """`data/ig_session.json` guarda cookies e o perfil de device da conta —
     é credencial viva, e commitá-la entrega a sessão a quem clonar o repo."""
     assert "data/ig_session.json" in (RAIZ / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_o_banco_do_comando_local_nao_vai_ao_git():
+    """Rodada de correção da 5F (I2): `data/state.db` é rastreado no git e o
+    Actions o commita a cada run. O `afiliado stories` roda na máquina do dono,
+    fora do Actions — se escrevesse no mesmo arquivo, todo `git pull` viraria
+    conflito binário. Ele tem banco próprio, e esse é local."""
+    gitignore = (RAIZ / ".gitignore").read_text(encoding="utf-8")
+    assert "data/state_stories.db" in gitignore
+    config = (RAIZ / "config.yaml").read_text(encoding="utf-8")
+    assert "stories_path: data/state_stories.db" in config

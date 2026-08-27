@@ -980,8 +980,10 @@ def _env_do_story_link(monkeypatch):
     monkeypatch.delenv("IG_TOTP_SEED", raising=False)
 
 
-def _config_com_story_link(tmp_path, extra: str = "") -> str:
+def _config_com_story_link(tmp_path, extra: str = "", oficial: str = "false") -> str:
     cfg_text = (open("config.yaml", encoding="utf-8").read()
+                .replace("data/state_stories.db",
+                         str(tmp_path / "stories.db").replace("\\", "/"))
                 .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
                 .replace("data/watchlist.json",
                          str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
@@ -990,7 +992,7 @@ def _config_com_story_link(tmp_path, extra: str = "") -> str:
                  "  telegram: true\n"
                  "  instagram_feed: true\n"
                  "  instagram_story:\n"
-                 "    enabled: false\n"          # regra de ouro: nunca os dois
+                 f"    enabled: {oficial}\n"     # regra de ouro: nunca os dois
                  "  instagram_story_link:\n"
                  "    enabled: true\n"
                  "    max_per_day: 6\n"
@@ -1001,12 +1003,19 @@ def _config_com_story_link(tmp_path, extra: str = "") -> str:
     return str(caminho)
 
 
+def _arquivo_do_banco(db) -> str:
+    """O arquivo que este StateDB abriu — é assim que se confere que o
+    `afiliado stories` não escreve no `state.db` que o Actions commita."""
+    return db.conn.execute("PRAGMA database_list").fetchone()[2]
+
+
 def _captura_run(monkeypatch) -> dict:
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
                  warnings_iniciais=None):
-        chamado.update(channels=channels, dry_run=dry_run, cfg=cfg,
+        chamado.update(channels=channels, dry_run=dry_run, cfg=cfg, db=db,
+                       banco=_arquivo_do_banco(db),
                        avisos=list(warnings_iniciais or []))
         return pipeline.RunSummary()
 
@@ -1106,6 +1115,100 @@ def test_stories_sem_sessao_salva_avisa_para_rodar_ig_login(monkeypatch, tmp_pat
     assert any("ig-login" in a for a in chamado["avisos"])
 
 
+# -- rodada de correção: I1, I2, I3 --------------------------------------------
+
+def _ambiente_de_stories(monkeypatch):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+
+
+def test_stories_nao_monta_o_canal_da_graph_api(monkeypatch, tmp_path):
+    """I1: `instagram_story` (Graph API) sai pelo `afiliado run`, no Actions.
+    Montá-lo TAMBÉM aqui daria dois tetos de 6/dia e dois dedupes sobre a mesma
+    conta — o comando local ignora, e diz de quem ele é."""
+    _ambiente_de_stories(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+    cfg_file = _config_com_story_link(tmp_path, oficial="true",
+                                      extra="  # oficial ligado\n")
+    # Só o oficial ligado: o de figurinha fica de fora do teste do I1.
+    texto = open(cfg_file, encoding="utf-8").read().replace(
+        "  instagram_story_link:\n    enabled: true\n",
+        "  instagram_story_link:\n    enabled: false\n")
+    open(cfg_file, "w", encoding="utf-8").write(texto)
+
+    assert cli.main(["stories", "--config", cfg_file]) == 0
+    assert chamado["channels"] == []
+    assert cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES in chamado["avisos"]
+    assert "afiliado run" in cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES
+
+
+def test_stories_recusa_o_canal_privado_com_o_oficial_ligado(monkeypatch, tmp_path,
+                                                             capsys):
+    """I3: a regra de ouro vira código. Com os dois ligados o `afiliado stories`
+    publicava o MESMO post pela API privada e pela oficial, na mesma conta e no
+    mesmo minuto — o padrão que a investigação apontou como o que mais chama
+    atenção. O doctor reclamava; nada impedia. Agora falha FECHADA."""
+    _ambiente_de_stories(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--config",
+                     _config_com_story_link(tmp_path, oficial="true")]) == 0
+
+    assert chamado["channels"] == []
+    aviso = next(a for a in chamado["avisos"]
+                 if a == cli.AVISO_REGRA_DE_OURO)
+    assert "instagram_story" in aviso and "doctor" in aviso
+    assert aviso in capsys.readouterr().out
+
+
+def test_stories_usa_banco_proprio_e_o_run_usa_o_do_actions(monkeypatch, tmp_path):
+    """I2: `data/state.db` é rastreado no git e o Actions o commita. O comando
+    local escrevendo nele faria todo `git pull` virar conflito binário."""
+    _ambiente_de_stories(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+    cfg_file = _config_com_story_link(tmp_path)
+
+    assert cli.main(["stories", "--config", cfg_file]) == 0
+    assert chamado["banco"] == str(tmp_path / "stories.db")
+
+    assert cli.main(["run", "--config", cfg_file]) == 0
+    assert chamado["banco"] == str(tmp_path / "s.db")
+
+
+def test_o_canal_recebe_o_banco_para_o_desarme_atravessar_o_run(monkeypatch, tmp_path):
+    """C2 do lado do comando: sem o banco, o desarme voltaria a valer só por um
+    processo."""
+    _ambiente_de_stories(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--config", _config_com_story_link(tmp_path)]) == 0
+    canal = chamado["channels"][0]
+    assert canal.estado is chamado["db"]
+
+
+def test_stories_avisa_quando_o_canal_amanheceu_desarmado(monkeypatch, tmp_path):
+    """O canal desarmado ontem à noite (ou no run das 14h) nasce fechado e o
+    ops precisa saber por quê — senão o dia fica mudo em silêncio."""
+    from afiliado.channels import instagram_story_link as mod
+    from afiliado.state import StateDB
+
+    _ambiente_de_stories(monkeypatch)
+    cfg_file = _config_com_story_link(tmp_path)
+    db = StateDB(tmp_path / "stories.db")
+    db.set_day_flag(mod.CHAVE_DESARMADO, mod.AVISO_SESSAO)
+    db.close()
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--config", cfg_file]) == 0
+    canal = chamado["channels"][0]
+    assert canal.disponivel is False and canal.max_per_run == 0
+    assert mod.AVISO_SESSAO in chamado["avisos"]     # e o canal não repete depois
+    assert canal.warnings == []
+
+
 # -- `afiliado ig-login` -------------------------------------------------------
 
 class _ClienteFalso:
@@ -1157,6 +1260,48 @@ def test_ig_login_cria_a_sessao_e_nao_imprime_credencial(monkeypatch, tmp_path, 
     saida = capsys.readouterr().out
     assert "✅" in saida and str(sessao) in saida     # só sucesso e o caminho
     assert SENHA_DE_TESTE not in saida
+
+
+def test_ig_login_bem_sucedido_rearma_o_canal_desarmado(monkeypatch, tmp_path):
+    """C2: o desarme dura o dia — e `afiliado ig-login` é o gesto que diz "a
+    sessão voltou". Ele apaga a marca; senão o dono re-logaria e o canal
+    continuaria mudo até a virada do dia, sem entender por quê."""
+    from afiliado.channels import instagram_story_link as mod
+    from afiliado.state import StateDB
+
+    _env_do_story_link(monkeypatch)
+    _instagrapi_falso(monkeypatch)
+    cfg_file = _config_com_story_link(tmp_path)
+    db = StateDB(tmp_path / "stories.db")
+    db.set_day_flag(mod.CHAVE_DESARMADO, mod.AVISO_SESSAO)
+    db.set_day_flag(mod.CHAVE_SEM_LINK, "1")
+    db.close()
+
+    assert cli.main(["ig-login", "--config", cfg_file]) == 0
+
+    db = StateDB(tmp_path / "stories.db")
+    assert db.day_flag(mod.CHAVE_DESARMADO) == ""
+    assert db.day_flag(mod.CHAVE_SEM_LINK) == ""
+    db.close()
+
+
+def test_ig_login_que_falha_nao_rearma_nada(monkeypatch, tmp_path):
+    """A contraprova: um login que falhou não é evidência de sessão boa."""
+    from afiliado.channels import instagram_story_link as mod
+    from afiliado.state import StateDB
+
+    _env_do_story_link(monkeypatch)
+    _instagrapi_falso(monkeypatch, erro=RuntimeError("challenge_required"))
+    cfg_file = _config_com_story_link(tmp_path)
+    db = StateDB(tmp_path / "stories.db")
+    db.set_day_flag(mod.CHAVE_DESARMADO, mod.AVISO_SESSAO)
+    db.close()
+
+    assert cli.main(["ig-login", "--config", cfg_file]) == 1
+
+    db = StateDB(tmp_path / "stories.db")
+    assert db.day_flag(mod.CHAVE_DESARMADO) == mod.AVISO_SESSAO
+    db.close()
 
 
 def test_ig_login_usa_totp_quando_ha_semente(monkeypatch, tmp_path):

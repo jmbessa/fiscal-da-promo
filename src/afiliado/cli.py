@@ -70,9 +70,20 @@ ART_HOST_AVISO_TMPL = ("⚠️ {canal}: arte hospedada pelo bot do canal — "
 ART_HOST_AVISO = ART_HOST_AVISO_TMPL.format(canal="instagram_feed")
 ART_HOST_AVISO_STORY = ART_HOST_AVISO_TMPL.format(canal="instagram_story")
 
-# Fase 5F. Os canais que produzem STORY, e só eles, são o que `afiliado
-# stories` monta — o Telegram e o feed continuam saindo pelo `afiliado run`.
-CANAIS_DE_STORY = ("instagram_story_link", "instagram_story", "story_dispatch")
+# Fase 5F, rodada de correção (I1): o `afiliado stories` monta SÓ o canal de
+# API privada. Ele é o único que não pode rodar no Actions; todos os outros —
+# inclusive o `instagram_story` (Graph API) e o `story_dispatch` — saem pelo
+# `afiliado run`. Montar os mesmos canais nos dois comandos daria dois tetos
+# diários e dois dedupes (bancos diferentes, ver `state.stories_path`) sobre a
+# MESMA conta.
+CANAIS_DO_STORIES = ("instagram_story_link",)
+
+# Banco do comando local. `data/state.db` é rastreado no git e o Actions o
+# commita a cada run: se o `afiliado stories` escrevesse nele, o arquivo
+# divergiria na máquina do dono e todo `git pull` viraria conflito binário.
+# Consequência documentada no runbook: o dedupe deste canal é independente do
+# resto — um produto que saiu no Telegram de manhã pode virar story à tarde.
+DEFAULT_STORIES_STATE = "data/state_stories.db"
 
 # O canal da API privada é montado SÓ pelo `afiliado stories`. `afiliado run` é
 # o que roda no GitHub Actions, cujo IP é de datacenter e muda a cada execução:
@@ -88,6 +99,25 @@ STORY_LINK_SEM_ENV = ("⚠️ canal instagram_story_link ignorado: variável "
 STORY_LINK_SEM_SESSAO = ("⚠️ instagram_story_link: sem sessão salva em {caminho} — "
                          "rode `afiliado ig-login` antes (login novo a cada run é o "
                          "que atrai desafio)")
+
+# I1: o canal oficial de story é da Graph API e sai pelo `afiliado run` (é o que
+# o Actions executa). Montá-lo também aqui daria dois tetos de 6/dia e dois
+# dedupes, em bancos diferentes, sobre a mesma conta.
+AVISO_STORY_OFICIAL_FORA_DO_STORIES = (
+    "⚠️ canal instagram_story ligado, mas ignorado por `afiliado stories` — ele é da "
+    "Graph API e sai pelo `afiliado run`; montá-lo aqui daria dois tetos diários e "
+    "dois dedupes sobre a mesma conta")
+
+# I3: a regra de ouro deixa de ser conselho. Com os dois canais ligados, o
+# mesmo post saía pela API privada e pela oficial dentro da MESMA iteração do
+# laço — mesma conta, mesmo minuto: o padrão que a investigação identificou
+# como o que mais chama atenção. Falha FECHADA: o canal de risco é o que não
+# sobe.
+AVISO_REGRA_DE_OURO = (
+    "⚠️ canal instagram_story_link NÃO montado: o instagram_story (Graph API) está "
+    "ligado ao mesmo tempo. Publicar pela API privada e pela oficial na MESMA conta é "
+    "o padrão que chama atenção — deixe só um em config.yaml e rode `afiliado doctor` "
+    "(ver docs/runbooks/instagrapi-stories.md)")
 
 
 def _meli(cfg: dict | None = None) -> MeliSource | None:
@@ -137,6 +167,37 @@ def _env(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
+def _senha() -> str:
+    """`IG_PASSWORD` SEM `.strip()`.
+
+    Senha de Instagram pode terminar (ou começar) em espaço, e o `.strip()` do
+    `_env` a mutilava em silêncio: o login voltava `BadPassword`, que o canal
+    relata como "sessão inválida" — mandando o dono para o galho errado do
+    runbook (`afiliado ig-login`, que falharia de novo) em vez de "confira a
+    senha no .env". Um token de API não tem esse problema; uma senha tem.
+    """
+    return os.environ.get("IG_PASSWORD", "")
+
+
+def state_path(cfg: dict, stories: bool = False) -> str:
+    """O banco de estado deste comando.
+
+    `afiliado stories` usa um banco PRÓPRIO (`state.stories_path`, padrão
+    `data/state_stories.db`, no .gitignore): `data/state.db` é rastreado no git
+    e o Actions o commita a cada run — o comando local escrevendo nele faria
+    todo `git pull` virar conflito binário. O preço, documentado no runbook: o
+    dedupe e o histórico deste canal são independentes do resto."""
+    st = cfg.get("state") or {}
+    if stories:
+        return st.get("stories_path") or DEFAULT_STORIES_STATE
+    return st["path"]
+
+
+def _abre_estado(cfg: dict, stories: bool = False) -> StateDB:
+    return StateDB(state_path(cfg, stories),
+                   timezone=pipeline.schedule_settings(cfg)["timezone"])
+
+
 def _channel_settings(raw) -> tuple[bool, int | None]:
     """Normaliza a entrada de um canal em `channels:` — bool ou dict — para
     `(enabled, max_per_day)`. Dict: `enabled` (default True) e `max_per_day`
@@ -169,12 +230,16 @@ def ig_session_path(cfg: dict) -> Path:
 
 def _monta_story_link(ch_cfg: dict, cfg: dict, channels: list, avisos: list[str],
                       brand_handle: str | None, brand_name: str,
-                      api_privada: bool) -> None:
+                      api_privada: bool, db: StateDB | None = None) -> None:
     """Monta o `instagram_story_link` (instagrapi, story COM figurinha).
 
     Ele não se parece com os outros canais do Instagram: não usa Graph API, não
     hospeda arte no Telegram, e as credenciais dele são usuário e SENHA. E só é
     montado quando `api_privada` é verdadeiro — isto é, sob `afiliado stories`.
+
+    Duas recusas, as duas fechadas: com o `instagram_story` ligado ele não sobe
+    (a regra de ouro, I3), e sem `db` ele não teria como lembrar do desarme
+    depois que o processo morre (C2) — por isso o banco vem de fora.
     """
     enabled, max_per_day = _channel_settings(ch_cfg.get(InstagramStoryLinkChannel.name))
     if not enabled:
@@ -182,7 +247,15 @@ def _monta_story_link(ch_cfg: dict, cfg: dict, channels: list, avisos: list[str]
     if not api_privada:
         _aviso(avisos, AVISO_STORY_LINK_FORA_DO_RUN)
         return
-    usuario, senha = _env("IG_USERNAME"), _env("IG_PASSWORD")
+    # A regra de ouro, em código: o config inteiro, não o recorte deste comando
+    # — o `instagram_story` sai pelo `afiliado run`, e é a CONTA que não pode
+    # receber os dois no mesmo dia.
+    oficial, _ = _channel_settings(
+        (cfg.get("channels") or {}).get(InstagramStoryChannel.name))
+    if oficial:
+        _aviso(avisos, AVISO_REGRA_DE_OURO)
+        return
+    usuario, senha = _env("IG_USERNAME"), _senha()
     if not (usuario and senha):
         # A senha NUNCA entra em aviso, log ou resumo — só a ausência dela.
         _aviso(avisos, STORY_LINK_SEM_ENV)
@@ -191,12 +264,18 @@ def _monta_story_link(ch_cfg: dict, cfg: dict, channels: list, avisos: list[str]
     sessao = ig_session_path(cfg)
     ch = InstagramStoryLinkChannel(
         usuario, senha, session_path=sessao, brand_handle=brand_handle,
-        brand_name=brand_name,
+        brand_name=brand_name, estado=db,
         max_sem_link=int(bruto.get("max_sem_link")
                          or instagram_story_link.MAX_SEM_LINK_PADRAO))
     if max_per_day is not None:
         ch.max_per_day = int(max_per_day)
     channels.append(ch)
+    # O canal pode nascer FECHADO (desarmado hoje, C2). O aviso está nele; sai
+    # daqui para o resumo de operações, como qualquer aviso de montagem —
+    # senão o dia ficaria mudo sem que ninguém soubesse por quê.
+    for aviso in ch.warnings:
+        _aviso(avisos, aviso)
+    ch.warnings.clear()
     if not sessao.is_file():
         # Sem sessão o canal faz login com senha no meio do run. Funciona — e é
         # exatamente o comportamento que atrai desafio se virar rotina.
@@ -236,7 +315,8 @@ def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[
 
 
 def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
-                    api_privada: bool = False) -> tuple[list, list[str]]:
+                    api_privada: bool = False,
+                    db: StateDB | None = None) -> tuple[list, list[str]]:
     """Monta os canais habilitados em config.yaml a partir das envs
     disponíveis e devolve também os avisos de montagem.
 
@@ -253,13 +333,20 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
     `api_privada` autoriza o `instagram_story_link` — que fora do `afiliado
     stories` não é montado, nem no Actions nem na VPS."""
     ch_cfg = cfg.get("channels") or {"telegram": True}
+    avisos_do_recorte: list[str] = []
     if somente is not None:
+        # I1: o canal oficial de story é o único do recorte que o dono pode
+        # esperar ver aqui — e ele não vem. Dizer isso é diferente de omitir.
+        if _channel_settings(ch_cfg.get(InstagramStoryChannel.name))[0]:
+            avisos_do_recorte.append(AVISO_STORY_OFICIAL_FORA_DO_STORIES)
         ch_cfg = {k: v for k, v in ch_cfg.items() if k in somente}
     brand_cfg = cfg.get("brand") or {}
     brand_handle = brand_cfg.get("handle") or None
     brand_name = brand_cfg.get("name") or "Fiscal da Promo"
     channels: list = []
     avisos: list[str] = []
+    for aviso in avisos_do_recorte:
+        _aviso(avisos, aviso)
 
     enabled, max_per_day = _channel_settings(ch_cfg.get("telegram"))
     if enabled:
@@ -298,7 +385,7 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
     # Fase 5F: o story COM figurinha de link, pela API privada. Último de
     # propósito — é o canal de maior risco e o único que não roda em toda parte.
     _monta_story_link(ch_cfg, cfg, channels, avisos, brand_handle=brand_handle,
-                      brand_name=brand_name, api_privada=api_privada)
+                      brand_name=brand_name, api_privada=api_privada, db=db)
 
     return channels, avisos
 
@@ -498,7 +585,10 @@ def _doctor_story_link(cfg: dict) -> bool:
     if not ligado:
         return ok
 
-    faltando = [nome for nome in ("IG_USERNAME", "IG_PASSWORD") if not _env(nome)]
+    # A senha é lida sem `.strip()` (ver `_senha`): uma senha de um espaço só é
+    # uma senha, e o doctor não pode dizer que ela falta.
+    presentes = {"IG_USERNAME": _env("IG_USERNAME"), "IG_PASSWORD": _senha()}
+    faltando = [nome for nome, valor in presentes.items() if not valor]
     if faltando:
         ok = False
         print(f"❌ instagram_story_link: {'/'.join(faltando)} ausente(s) no ambiente — "
@@ -532,7 +622,7 @@ def ig_login(cfg: dict) -> int:
     Imprime sucesso/falha e o caminho da sessão. Nada mais: nem usuário, nem
     senha, nem o texto cru de uma exceção que possa carregá-la.
     """
-    usuario, senha, semente = _env("IG_USERNAME"), _env("IG_PASSWORD"), _env("IG_TOTP_SEED")
+    usuario, senha, semente = _env("IG_USERNAME"), _senha(), _env("IG_TOTP_SEED")
     caminho = ig_session_path(cfg)
     if not (usuario and senha):
         print("❌ ig-login: IG_USERNAME/IG_PASSWORD ausentes no ambiente — preencha o "
@@ -554,8 +644,27 @@ def ig_login(cfg: dict) -> int:
             print("   Se a conta tem 2FA, defina IG_TOTP_SEED (app autenticador; "
                   "o instagrapi não faz SMS).")
         return 1
+    _rearma_o_canal(cfg)
     print(f"✅ ig-login: sessão salva em {caminho}")
     return 0
+
+
+def _rearma_o_canal(cfg: dict) -> None:
+    """Um `ig-login` bem-sucedido apaga o desarme do dia (C2).
+
+    Sem isto o dono re-logaria — o gesto que o próprio aviso pede — e o canal
+    continuaria mudo até a virada do dia local, sem dizer por quê. Só aqui,
+    porque só aqui houve prova de que a sessão voltou.
+    """
+    try:
+        db = _abre_estado(cfg, stories=True)
+    except Exception:      # noqa: BLE001 - o login funcionou; isto é acessório
+        return
+    try:
+        db.set_day_flag(instagram_story_link.CHAVE_DESARMADO, "")
+        db.set_day_flag(instagram_story_link.CHAVE_SEM_LINK, "")
+    finally:
+        db.close()
 
 
 def load_dotenv(path: str | Path = ".env", override: bool = True) -> int:
@@ -634,15 +743,16 @@ def main(argv: list[str] | None = None) -> int:
         cfg = {**cfg, "selection": {**cfg["selection"],
                                     "posts_per_run": int(posts_por_run)}}
 
-    db = StateDB(cfg["state"]["path"], timezone=pipeline.schedule_settings(cfg)["timezone"])
+    db = _abre_estado(cfg, stories=somente_story)
     sources, avisos = _build_sources(cfg, db)
     channels = []
     if not args.dry_run:
         # A API privada só é montada sob `afiliado stories` — ver
-        # AVISO_STORY_LINK_FORA_DO_RUN.
+        # AVISO_STORY_LINK_FORA_DO_RUN. O `db` vai junto: é nele que o desarme
+        # do canal sobrevive ao processo (C2).
         channels, avisos_canais = _build_channels(
-            cfg, somente=CANAIS_DE_STORY if somente_story else None,
-            api_privada=somente_story)
+            cfg, somente=CANAIS_DO_STORIES if somente_story else None,
+            api_privada=somente_story, db=db)
         avisos += avisos_canais
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")

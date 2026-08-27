@@ -732,6 +732,16 @@ def _instagrapi_falso(monkeypatch, cliente, erro_login=None, registro=None):
 
 
 def test_sem_sessao_no_disco_o_canal_loga_e_guarda_a_sessao(tmp_path, monkeypatch):
+    """O que este teste prova: houve UM login e o `dump_settings` foi chamado
+    com o caminho da sessão.
+
+    O que ele NÃO prova (dito aqui porque a asserção parece dizer mais do que
+    diz): que o `dump_settings` do instagrapi de VERDADE não grava a senha. O
+    `dump_settings` aqui é um duplo que escreve `{"uuids": {}}` — se a
+    biblioteca real gravasse a senha, este teste passaria do mesmo jeito. Quem
+    conferiu foi a leitura da doc do instagrapi (settings = uuids, cookies,
+    device); confirmar com os olhos é item do primeiro uso real, no runbook.
+    """
     post, registro = make_post(), []
     _instagrapi_falso(monkeypatch, _com_link(post), registro=registro)
     sessao = tmp_path / "ig_session.json"
@@ -741,7 +751,7 @@ def test_sem_sessao_no_disco_o_canal_loga_e_guarda_a_sessao(tmp_path, monkeypatc
 
     assert [c[0] for c in registro] == ["login", "dump_settings"]
     assert sessao.is_file()                       # sessão guardada: um login só
-    assert SENHA not in sessao.read_text(encoding="utf-8")
+    assert SENHA not in sessao.read_text(encoding="utf-8")   # do DUPLO, não da lib
 
 
 def test_com_sessao_no_disco_o_canal_carrega_antes_de_logar(tmp_path, monkeypatch):
@@ -837,22 +847,75 @@ def test_nenhuma_mensagem_do_canal_carrega_a_senha(capsys, tmp_path, monkeypatch
     assert SENHA not in saida.out and SENHA not in saida.err
 
 
-def test_nenhum_print_do_projeto_toca_a_senha():
-    """A outra metade do teste 10 do brief: uma varredura no fonte INTEIRO, não
-    só neste canal. Nenhum `print` do projeto pode receber a senha — nem por
-    variável, nem por atributo. Imprimir o NOME da variável ("IG_PASSWORD
-    ausente", no doctor) é o oposto disso e continua permitido: é presença,
-    nunca valor."""
-    proibidos = {"senha", "password", "IG_PASSWORD"}
+# Por onde um segredo SAI do processo: o terminal (print), qualquer escrita em
+# stream ou arquivo, o log, e o texto de uma exceção — que sobe até virar
+# traceback ou mensagem de resumo.
+SAIDAS = ("write", "writelines", "debug", "info", "warning", "error",
+          "exception", "critical", "log")
+# Ler o VALOR da credencial dentro de uma saída: `print(_env("IG_PASSWORD"))`
+# passava pela varredura antiga, porque "IG_PASSWORD" ali é uma constante e
+# não um nome. Imprimir o NOME ("IG_USERNAME/IG_PASSWORD ausente", no doctor)
+# continua permitido: é presença, nunca valor.
+ENVS_SECRETAS = {"IG_PASSWORD", "IG_TOTP_SEED"}
+NOMES_SECRETOS = {"senha", "password", "IG_PASSWORD", "totp_seed", "semente"}
+
+
+def _saidas_do_modulo(arvore):
+    """Os nós por onde texto deixa o processo: `print(...)`, `x.write(...)` e
+    companhia, e o construtor de uma exceção levantada."""
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Call):
+            if getattr(no.func, "id", "") == "print" or getattr(no.func, "attr", "") in SAIDAS:
+                yield no
+        elif isinstance(no, ast.Raise) and isinstance(no.exc, ast.Call):
+            yield no.exc
+
+
+def test_nenhuma_saida_do_projeto_toca_o_VALOR_da_senha():
+    """A outra metade do teste 10 do brief, ampliada pela revisão.
+
+    O que esta varredura PROVA, no fonte inteiro: nenhum `print`, escrita em
+    stream/arquivo, chamada de log ou construtor de exceção levantada recebe a
+    senha por nome, por atributo, ou lendo `IG_PASSWORD`/`IG_TOTP_SEED` do
+    ambiente ali dentro.
+
+    O que ela NÃO prova, e por isso está escrito aqui: aliasing
+    (`s = senha; print(s)`) escapa de qualquer varredura estática barata, e
+    formatar a senha numa variável antes de imprimi-la também. A defesa de
+    verdade contra isso é o `_sem_senha`, por onde passa toda mensagem do
+    canal, e os testes de comportamento acima.
+    """
     src = Path(mod.__file__).resolve().parents[2]
     for arquivo in src.rglob("*.py"):
         arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
-        for no in ast.walk(arvore):
-            if not (isinstance(no, ast.Call) and getattr(no.func, "id", "") == "print"):
-                continue
-            usados = {n.id for n in ast.walk(no) if isinstance(n, ast.Name)}
-            usados |= {n.attr for n in ast.walk(no) if isinstance(n, ast.Attribute)}
-            assert not usados & proibidos, f"{arquivo}: print com {usados & proibidos}"
+        for saida in _saidas_do_modulo(arvore):
+            usados = {n.id for n in ast.walk(saida) if isinstance(n, ast.Name)}
+            usados |= {n.attr for n in ast.walk(saida) if isinstance(n, ast.Attribute)}
+            assert not usados & NOMES_SECRETOS, f"{arquivo}: saída com {usados & NOMES_SECRETOS}"
+            lidas = {a.value for n in ast.walk(saida) if isinstance(n, ast.Call)
+                     for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
+            assert not lidas & ENVS_SECRETAS, f"{arquivo}: saída lendo {lidas & ENVS_SECRETAS}"
+
+
+def test_a_varredura_pega_os_casos_que_a_antiga_deixava_passar():
+    """A varredura antiga só olhava nomes dentro de `print(...)`. Estes quatro
+    trechos passavam por ela — e falham nesta."""
+    trechos = ['print(_env("IG_PASSWORD"))',
+               'sys.stdout.write(senha)',
+               'arquivo.write(self.password)',
+               'raise RuntimeError(f"senha {senha} recusada")']
+    for trecho in trechos:
+        arvore = ast.parse(trecho)
+        saidas = list(_saidas_do_modulo(arvore))
+        assert saidas, trecho
+        pego = False
+        for saida in saidas:
+            usados = {n.id for n in ast.walk(saida) if isinstance(n, ast.Name)}
+            usados |= {n.attr for n in ast.walk(saida) if isinstance(n, ast.Attribute)}
+            lidas = {a.value for n in ast.walk(saida) if isinstance(n, ast.Call)
+                     for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
+            pego = pego or bool(usados & NOMES_SECRETOS) or bool(lidas & ENVS_SECRETAS)
+        assert pego, f"a varredura deixou passar: {trecho}"
 
 
 def test_o_canal_nao_imprime_nada():

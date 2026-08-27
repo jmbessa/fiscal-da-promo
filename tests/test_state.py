@@ -286,6 +286,22 @@ def test_payload_corrompido_nao_derruba_o_estoque(tmp_path):
     db.close()
 
 
+def test_tabelas_de_linha_curta_sao_without_rowid(tmp_path):
+    """O Actions commita o state.db a cada run, e o estoque de candidatas +
+    90 dias de price_log fazem o arquivo passar de 50 MB. WITHOUT ROWID nas
+    tabelas de linha curta corta o price_log pela metade (47 MB → 22 MB com
+    630 mil linhas). `candidates` (payload JSON longo) e `runs`
+    (AUTOINCREMENT) ficam de fora de propósito."""
+    db = StateDB(tmp_path / "s.db")
+    sql = {nome: texto for nome, texto in db.conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table'").fetchall()}
+    for tabela in ("posted", "price_log", "warned", "discovery_cursor"):
+        assert "WITHOUT ROWID" in sql[tabela], tabela
+    for tabela in ("candidates", "runs"):
+        assert "WITHOUT ROWID" not in sql[tabela], tabela
+    db.close()
+
+
 def test_cursor_de_descoberta_persiste(tmp_path):
     db = StateDB(tmp_path / "s.db")
     assert db.get_cursor("shopee:root_page:100630", "1") == "1"

@@ -48,6 +48,25 @@ Não é preciso editar nada: `.github/workflows/publish.yml` já roda a cada
   (`client_credentials`, verificado ao vivo em 2026-08-26), então o runner
   efêmero nunca rotaciona refresh token e o workflow não precisa de PAT nem de
   `gh secret set` (detalhes e o plano B em `docs/runbooks/meli-setup.md`).
+- **Tamanho do repositório — o limite real desta montagem.** Cada run commita
+  `data/state.db`, e a fase 5C engordou esse arquivo: em regime ele mede
+  ~35 MB (medido com 12.000 candidatas no estoque, 630 mil linhas de
+  `price_log` = 90 dias × ~7.000 observações/dia, e 30 dias de `posted`; as
+  tabelas de linha curta já são `WITHOUT ROWID`, o que cortou o `price_log`
+  de 47 para 22 MB). Um binário de 35 MB que muda inteiro, commitado 32×/dia,
+  soma **alguns GB por mês** no histórico. O `checkout` do runner continua
+  rápido (clone raso, `fetch-depth: 1`), então o sintoma não é lentidão: é o
+  repositório crescendo até o GitHub reclamar. Acompanhe em Settings →
+  Repository e, quando incomodar, na ordem:
+  1. `selection.ref_window_days` de 90 → 30 dias (o `price_log` é ~2/3 do
+     arquivo). Custo: a mediana/p25 passam a olhar 30 dias — ainda muito acima
+     dos 14 dias distintos que a regra do quartil exige.
+  2. `shopee.candidate_max_age_days` de 3 → 1 (o estoque é ~10 MB). Custo:
+     candidata não publicada em 24 h precisa ser redescoberta; com o ciclo de
+     ~1,25 dia do Actions, isso reduz um pouco a fila.
+  3. Reescrever o histórico do `state.db` — branch órfã com um commit só e
+     force-push, ou `git gc` agressivo — ou mudar o estado para a Opção B, onde
+     ele nem é commitado.
 - **Desligar:** GitHub → Actions → publish → `...` → *Disable workflow*. O
   GitHub também desativa workflows agendados após 60 dias sem atividade no
   repositório — o heartbeat diário no chat de operações é o que denuncia isso.

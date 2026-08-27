@@ -8,6 +8,13 @@ from zoneinfo import ZoneInfo
 
 from afiliado.models import Offer, Post
 
+# `WITHOUT ROWID` nas tabelas de linha CURTA (fase 5C): elas são o que faz o
+# `state.db` crescer, e o Actions commita esse arquivo a cada run. A tabela é
+# a própria árvore da chave primária, em vez de tabela + índice duplicando os
+# dados: medido com 90 dias de price_log (630 mil linhas), 47 MB → 22 MB.
+# `candidates` fica FORA porque a linha carrega a Offer inteira em JSON (~600
+# bytes) e linhas longas numa WITHOUT ROWID transbordam para páginas extras.
+# `runs` também fica: AUTOINCREMENT exige rowid.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS posted (
     source TEXT NOT NULL,
@@ -18,7 +25,7 @@ CREATE TABLE IF NOT EXISTS posted (
     message_id TEXT NOT NULL DEFAULT '',
     posted_at TEXT NOT NULL,
     PRIMARY KEY (source, item_id, channel)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     finished_at TEXT NOT NULL,
@@ -32,12 +39,12 @@ CREATE TABLE IF NOT EXISTS price_log (
     day TEXT NOT NULL,
     price_cents INTEGER NOT NULL,
     PRIMARY KEY (source, item_id, day)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS warned (
     key TEXT NOT NULL,
     day TEXT NOT NULL,
     PRIMARY KEY (key, day)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS candidates (
     source TEXT NOT NULL,
     item_id TEXT NOT NULL,
@@ -48,7 +55,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 CREATE TABLE IF NOT EXISTS discovery_cursor (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
-);
+) WITHOUT ROWID;
 """
 
 # Campos que existem HOJE em Offer: um payload gravado por uma versão anterior

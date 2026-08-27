@@ -12,6 +12,18 @@
 # Sem os caches o setup sozinho passava de 2,5 min/run (2.400 min/mês) e
 # estouraria a cota — se algum dia estourar, corte o cron das 12:00-18:00 BRT
 # para 1×/hora antes de mexer no resto.
+#
+# ATENÇÃO — o tamanho do repositório é o limite real desta montagem, não os
+# minutos. Cada run commita `data/state.db`, que em regime (estoque de
+# candidatas de 3 dias + 90 dias de price_log + 30 dias de posted) mede ~35 MB;
+# 32 commits/dia de um binário que muda inteiro somam alguns GB por mês. O
+# `checkout` continua rápido (clone raso), mas o repositório cresce sem parar.
+# Acompanhe em Settings → Repository e, quando incomodar, escolha um destes,
+# nesta ordem: (1) baixar `selection.ref_window_days` de 90 para 30 — o
+# price_log é ~2/3 do arquivo; (2) baixar `shopee.candidate_max_age_days` de 3
+# para 1; (3) reescrever o histórico do state.db (branch órfã com um commit
+# só, force-push) ou passar o estado para a VPS. Detalhes e as contas em
+# docs/runbooks/vps-setup.md.
 name: publish
 on:
   schedule:

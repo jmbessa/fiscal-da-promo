@@ -47,6 +47,11 @@ MELI_ENV_AVISO = ("⚠️ fonte meli ignorada: variável MELI_CLIENT_ID/MELI_CLI
 # dígitos), então uma mensagem única faria o feed engolir o aviso do story.
 ART_HOST_AVISO_TMPL = ("⚠️ {canal}: arte hospedada pelo bot do canal — "
                        "defina ART_HOST_BOT_TOKEN")
+# As duas constantes abaixo existem para os TESTES: `_monta_instagram` formata
+# o template direto, com o nome do canal que está montando. `ART_HOST_AVISO`
+# mantém de propósito o valor exato de antes da 5E (o do feed) — é o que os
+# testes da 5C afirmam, e mudar a string só para "arrumar" o nome moveria
+# testes que não têm nada a ver com esta fase.
 ART_HOST_AVISO = ART_HOST_AVISO_TMPL.format(canal="instagram_feed")
 ART_HOST_AVISO_STORY = ART_HOST_AVISO_TMPL.format(canal="instagram_story")
 

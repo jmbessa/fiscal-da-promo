@@ -199,7 +199,8 @@ brand:
 watchlist:
   path: data/watchlist.json
 
-# Variante da API do Instagram usada por `instagram_feed` e pelo doctor:
+# Variante da API do Instagram usada por `instagram_feed`, `instagram_story`
+# (fase 5E) e pelo doctor:
 #   instagram_login — "API do Instagram com Login do Instagram": token gerado no painel
 #                     da Meta, sem Página do Facebook (padrão; ver docs/runbooks/meta-setup.md)
 #   facebook_login  — conta business vinculada a Página; token via Graph API Explorer

@@ -338,6 +338,12 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     # termina AQUI: nenhuma oferta paga refresh_price, link, copy (LLM) ou
     # validação sem ter onde ser publicada — antes, com todos no teto, cada
     # run varria a fila inteira (195 chamadas LLM, 97 links, 0 posts).
+    #
+    # Um teto que este código NÃO conhece: a cota de publicação da Meta é de
+    # 100 por 24 h e COMPARTILHADA por `instagram_feed` e `instagram_story`
+    # (medida ao vivo em 2026-08-27; o doctor a imprime). Os `max_per_day` do
+    # config.yaml saem do mesmo balde — 2 + 6 usam 8 de 100. Quem for subir
+    # esses números um dia: some os dois antes, porque a Meta soma.
     horario = schedule_settings(cfg)
     agora = db.local_now()
     orcamento: dict[str, int | None] = {}

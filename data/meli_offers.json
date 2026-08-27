@@ -1,0 +1,387 @@
+{
+ "generated_at": "2026-08-26",
+ "valid_days": 30,
+ "source": "JoomPulse MercadoProductsWeekly (buy-box) — curadoria manual assistida",
+ "offers": [
+  {
+   "product_id": "MLB66637233",
+   "title": "Creatina Monohidratada 500g Pó Growth",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_602304-MLA109372354737_032026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 7890,
+   "price_historic_min_cents": 3051,
+   "sales": 43103,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB26796581",
+   "title": "Creatina Monohidratada Pura 500g Dark Lab Unidade",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_968096-MLA115057376622_082026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 4990,
+   "price_historic_min_cents": 3191,
+   "sales": 27599,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB68104527",
+   "title": "Kit Body Splash Masculino Barbarius + Enigma + Midtown 200ml",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_997574-MLA109633443994_042026-O.webp",
+   "category": "MLB1246",
+   "price_ref_cents": 8900,
+   "price_historic_min_cents": 7913,
+   "sales": 22727,
+   "rating": 4.7
+  },
+  {
+   "product_id": "MLB19506691",
+   "title": "Creatina Monohidratada em Pote 300g 100% Pura Dark Lab",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_689689-MLA115056881082_082026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 4290,
+   "price_historic_min_cents": 3231,
+   "sales": 20216,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB53222689",
+   "title": "Kit 10 Potes Herméticos Vidro 640ml Starhouse Marmita Forno Micro-ondas Airfryer",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_942823-MLA113526261849_062026-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 9390,
+   "price_historic_min_cents": 7890,
+   "sales": 19231,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB19603205",
+   "title": "Creatina Monohidratada 250g Growth Supplements - Sem sabor em Pó",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_662415-MLA97812910758_112025-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 11550,
+   "price_historic_min_cents": 3480,
+   "sales": 16639,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB66453791",
+   "title": "Papel Higiênico Familiar Folha Dupla 24 Rolos",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_790904-MLA108570211465_032026-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 6999,
+   "price_historic_min_cents": 2980,
+   "sales": 16094,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB51183406",
+   "title": "Percarbonato De Sódio 100% Puro Tira Manchas Alvejante 1kg Calisul",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_910926-MLA104135384526_012026-O-original-percabonato-de-sodio-100-puro-tira-manchas---1kg.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 2990,
+   "price_historic_min_cents": 1715,
+   "sales": 15369,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB25929487",
+   "title": "Creatina Monohidratada Pura 1kg Dark Lab Unidade Sem sabor",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_766599-MLA115054388342_082026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 7890,
+   "price_historic_min_cents": 5990,
+   "sales": 13501,
+   "rating": 5.0
+  },
+  {
+   "product_id": "MLB18725310",
+   "title": "Creatina 1kg Suplemento Monohidratada em pó 100% Pura - Soldiers Nutrition",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_894230-MLA111390627295_052026-E.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 6890,
+   "price_historic_min_cents": 4792,
+   "sales": 13337,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB24529498",
+   "title": "Creme Multirreparador Calmante Cicaplast Baume B5+ La Roche-Posay 40ml",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_630919-MLA114210163571_072026-O.webp",
+   "category": "MLB1246",
+   "price_ref_cents": 7690,
+   "price_historic_min_cents": 4990,
+   "sales": 13169,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB21361292",
+   "title": "Loção Hidratante Corporal Sem Perfume com Ceramidas CeraVe 473ml",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_841667-MLA110746696146_052026-E.webp",
+   "category": "MLB1246",
+   "price_ref_cents": 9839,
+   "price_historic_min_cents": 6227,
+   "sales": 11468,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB17001105",
+   "title": "Sabão Em Pó Omo Lavagem Perfeita 2.2kg",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_810413-MLA114220347547_072026-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 7412,
+   "price_historic_min_cents": 2019,
+   "sales": 10928,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB61856977",
+   "title": "Kit Body Splash Masculino Barbarius e Midtown 200ml Primacial",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_847667-MLA97122485144_112025-O.webp",
+   "category": "MLB1246",
+   "price_ref_cents": 8235,
+   "price_historic_min_cents": 5899,
+   "sales": 10067,
+   "rating": 4.5
+  },
+  {
+   "product_id": "MLB66060206",
+   "title": "Kit 10 Pote De Vidro Marmita Hermético 370ml Freezer Fitness Rishon",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_605578-MLA113633610823_062026-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 15990,
+   "price_historic_min_cents": 6270,
+   "sales": 9404,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB36931922",
+   "title": "Perfumes Colônia Miniatura Cebolinha Turma Da Mônica Jequiti 25ml",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_891519-MLA116511281911_082026-E.webp",
+   "category": "MLB1246",
+   "price_ref_cents": 1990,
+   "price_historic_min_cents": 1616,
+   "sales": 8855,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB75631257",
+   "title": "Rodízio Kit 5 Rodinhas Cadeira Escritório Silicone Antirisco",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_702902-MLA114908217575_072026-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 3290,
+   "price_historic_min_cents": 3125,
+   "sales": 8333,
+   "rating": 5.0
+  },
+  {
+   "product_id": "MLB6204289",
+   "title": "Creatina 100% Pura 300g Integralmedica - Força e Performance",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_604581-MLA110163702191_042026-E.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 4453,
+   "price_historic_min_cents": 3102,
+   "sales": 8093,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB32081918",
+   "title": "Creatina 300g Suplemento Monohidratada em pó 100% Pura - Soldiers Nutrition",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_690593-MLA113761134645_062026-E.webp",
+   "category": "MLB1276",
+   "price_ref_cents": 4404,
+   "price_historic_min_cents": 3298,
+   "sales": 8004,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB65763631",
+   "title": "Kit 2 Tapetes Para Banheiro Tapete Mágico Ultra Absorção",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_723164-MLB101848516780_122025-O-kit2-tapetes-para-banheiro-tapete-magico-ultra--para-absorca.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 3088,
+   "price_historic_min_cents": 2064,
+   "sales": 7979,
+   "rating": 4.6
+  },
+  {
+   "product_id": "MLB53761906",
+   "title": "Panela Frigideira Antiaderente Cerâmica Dinda Home Indução Gás Elétrico",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_987811-MLA95696773330_102025-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 6782,
+   "price_historic_min_cents": 5499,
+   "sales": 7895,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB6104856",
+   "title": "Creatina Monohidratada 300g Pó",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_920350-MLA113966831509_062026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 6580,
+   "price_historic_min_cents": 3360,
+   "sales": 7750,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB65629738",
+   "title": "Percarbonato De Sódio Tira Manchas Alvejante 2kg",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_699279-MLA113789601755_062026-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 6890,
+   "price_historic_min_cents": 3920,
+   "sales": 7732,
+   "rating": 5.0
+  },
+  {
+   "product_id": "MLB18522997",
+   "title": "Suplemento em Pó Black Skull Creatine Turbo sem sabor 300g",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_918727-MLA116136597285_082026-E.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 4560,
+   "price_historic_min_cents": 1575,
+   "sales": 7710,
+   "rating": 5.0
+  },
+  {
+   "product_id": "MLB53222545",
+   "title": "Kit 10 Potes Vidro 370ml Hermético Marmita Forno Refratário Star House",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_972589-MLA99948367685_112025-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 6696,
+   "price_historic_min_cents": 5696,
+   "sales": 7692,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB28574077",
+   "title": "Câmera Lâmpada De Segurança Casenn Ip Wifi Visão Noturna 360º",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_637153-MLA99478543820_112025-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 5490,
+   "price_historic_min_cents": 4590,
+   "sales": 7500,
+   "rating": 5.0
+  },
+  {
+   "product_id": "MLB65325719",
+   "title": "Balança Digital Vidro Até 180kg Banheiro Academia Com Medidor De Temperatura",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_768694-MLA106121483546_022026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 3400,
+   "price_historic_min_cents": 2765,
+   "sales": 7426,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB75495547",
+   "title": "Dextrose 1kg Soldiers Nutrition",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_964798-MLA114603125607_072026-O.webp",
+   "category": "MLB1276",
+   "price_ref_cents": 4090,
+   "price_historic_min_cents": 3870,
+   "sales": 7143,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB75495472",
+   "title": "Balança Digital de Bioimpedância Inteligente com Aplicativo 180kg",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_716428-MLA113354237282_072026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 4250,
+   "price_historic_min_cents": 3328,
+   "sales": 7143,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB50850550",
+   "title": "Cabide Adulto Reforçado Kit 100 Unidades Organizador Godinho",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_714504-MLA99359195946_112025-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 6190,
+   "price_historic_min_cents": 3599,
+   "sales": 6667,
+   "rating": 4.5
+  },
+  {
+   "product_id": "MLB50368081",
+   "title": "Câmera de Segurança IP Wi-Fi Lâmpada E27 HW 360° Full HD Visão Noturna",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_618454-MLA113146753504_072026-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 5643,
+   "price_historic_min_cents": 4887,
+   "sales": 6522,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB62060315",
+   "title": "Balança Digital De Vidro Good Deals Até 180kg Portátil Corporal",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_916618-MLA113724112192_072026-O.webp",
+   "category": "MLB264586",
+   "price_ref_cents": 4999,
+   "price_historic_min_cents": 2559,
+   "sales": 6410,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB23561130",
+   "title": "Papel Higiênico Vip Folha Dupla Neutro 30 Metros Personal",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_973631-MLA99920830077_112025-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 2900,
+   "price_historic_min_cents": 1075,
+   "sales": 6334,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB46836439",
+   "title": "Kit 2 Câmeras Segurança Ip Interna Externa Wifi iCSee Prova D'Água HW",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_901090-MLA99414404486_112025-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 19205,
+   "price_historic_min_cents": 16649,
+   "sales": 6287,
+   "rating": 4.8
+  },
+  {
+   "product_id": "MLB23561155",
+   "title": "Papel Higiênico Neutro Folha Dupla Personal 30m Leve 16 Pague 15",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_832036-MLA99833055039_112025-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 3384,
+   "price_historic_min_cents": 1932,
+   "sales": 6183,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB22658831",
+   "title": "Detergente Ypê Clear 500ml Com 6 Unidades",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_941437-MLA99446768288_112025-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 3290,
+   "price_historic_min_cents": 1124,
+   "sales": 6034,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB22430943",
+   "title": "Marmita Micro-ondas Freezer 500ml Com 24 Unidades Pote Fitness",
+   "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_835194-MLA110741796966_052026-E.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 3390,
+   "price_historic_min_cents": 999,
+   "sales": 6024,
+   "rating": 4.9
+  },
+  {
+   "product_id": "MLB75033614",
+   "title": "Conjunto 19 Peças Utensílios Cozinha Silicone Apoapp Preto",
+   "image_url": "https://http2.mlstatic.com/D_NQ_NP_839684-MLA114222935029_072026-O.webp",
+   "category": "MLB1574",
+   "price_ref_cents": 16990,
+   "price_historic_min_cents": 4917,
+   "sales": 6000,
+   "rating": 4.7
+  }
+ ]
+}

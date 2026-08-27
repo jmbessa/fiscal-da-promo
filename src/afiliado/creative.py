@@ -13,10 +13,12 @@ message.py) — esta fase não desenha os campos de `CopyParts` na arte.
 import functools
 import importlib.resources
 import io
+import math
 
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from afiliado import pricing
 from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts, Offer, format_brl
@@ -162,10 +164,10 @@ def _fit_card(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
 
 
 def _draw_badge(
-    draw: ImageDraw.ImageDraw, right_x: float, top_y: float, discount_pct: int,
+    draw: ImageDraw.ImageDraw, right_x: float, top_y: float, real_discount_pct: int,
     font_size: int, pad_y: int, pad_x: int, radius: int = 12,
 ) -> None:
-    text = f"-{discount_pct}%"
+    text = f"-{real_discount_pct}%"
     font = _font("sans", font_size, 800)
     bbox = draw.textbbox((0, 0), text, font=font)
     w = (bbox[2] - bbox[0]) + 2 * pad_x
@@ -178,7 +180,7 @@ def _draw_badge(
 def _draw_card(
     canvas: Image.Image, draw: ImageDraw.ImageDraw, product: Image.Image,
     x: int, y: int, w: int, h: int, radius: int, margin: int,
-    discount_pct: int, badge_font_size: int, badge_pad_y: int, badge_pad_x: int,
+    real_discount_pct: int, badge_font_size: int, badge_pad_y: int, badge_pad_x: int,
     badge_offset: int,
 ) -> None:
     card = Image.new("RGB", (w, h), WHITE)
@@ -190,8 +192,12 @@ def _draw_card(
     mask = Image.new("L", (w, h), 0)
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
     canvas.paste(card, (x, y), mask)
-    _draw_badge(draw, x + w - badge_offset, y + badge_offset, discount_pct,
-                badge_font_size, badge_pad_y, badge_pad_x)
+    # 0 = sem desconto verificado: nada de selo de porcentagem (o post
+    # desse item destaca prova social, não preço). O desconto do vendedor
+    # (Offer.discount_pct) não entra aqui — ver afiliado.pricing.
+    if real_discount_pct > 0:
+        _draw_badge(draw, x + w - badge_offset, y + badge_offset, real_discount_pct,
+                    badge_font_size, badge_pad_y, badge_pad_x)
 
 
 # --- Cabeçalho (avatar + nome/handle) -----------------------------------------
@@ -311,25 +317,59 @@ def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: 
 
 # --- Pill de preço (align-self: flex-start) -----------------------------------
 
+def _modo_desconto_verificado(offer: Offer, min_real_discount_pct: int) -> bool:
+    """Mesma régua do texto (ver afiliado.pricing): só há o que alegar quando o
+    desconto é verificável contra a NOSSA referência."""
+    return (offer.real_discount_pct > 0
+            and offer.real_discount_pct >= min_real_discount_pct)
+
+
+def _pill_left(offer: Offer, min_real_discount_pct: int) -> tuple[str, bool]:
+    """(texto à esquerda do preço na pill, se ele é riscado).
+
+    Modo A (desconto verificado): a NOSSA referência, riscada — nunca o "de"
+    do vendedor. Modo B: NADA — a pill é só o preço, grande; nota, vendas e
+    loja ficam na linha de meta logo abaixo (`_draw_meta`), exatamente como
+    no modo A, sem duplicar a prova social.
+    """
+    if _modo_desconto_verificado(offer, min_real_discount_pct):
+        return format_brl(offer.price_ref_cents), True
+    return "", False
+
+
 def _price_pill_dims(
     draw: ImageDraw.ImageDraw, offer: Offer, orig_size: int, cur_size: int,
-    pad_y: int, pad_x: int, gap: int,
+    pad_y: int, pad_x: int, gap: int, pill_left: tuple[str, bool] = ("", False),
+    max_width: int | None = None,
 ) -> dict:
-    orig_font = _font("sans", orig_size, 600)
+    left_text, strike = pill_left
+    orig_font = _font("sans", orig_size, 600 if strike else 500)
     cur_font = _font("sans", cur_size, 800)
-    orig_text = format_brl(offer.price_original_cents)
     cur_text = format_brl(offer.price_current_cents)
-    orig_bbox = draw.textbbox((0, 0), orig_text, font=orig_font)
     cur_bbox = draw.textbbox((0, 0), cur_text, font=cur_font)
     orig_asc, orig_desc = orig_font.getmetrics()
     cur_asc, cur_desc = cur_font.getmetrics()
-    orig_w = orig_bbox[2] - orig_bbox[0]
     cur_w = cur_bbox[2] - cur_bbox[0]
-    content_h = max(orig_asc + orig_desc, cur_asc + cur_desc)
-    content_w = orig_w + gap + cur_w
+
+    # Guarda horizontal: a pill nunca pode passar da largura útil do canvas.
+    if left_text and max_width is not None:
+        disponivel = max_width - 2 * pad_x - gap - cur_w
+        left_text = (_hard_truncate(draw, left_text, orig_font, disponivel)
+                     if disponivel > 0 else "")
+
+    if left_text:
+        orig_bbox = draw.textbbox((0, 0), left_text, font=orig_font)
+        orig_w = orig_bbox[2] - orig_bbox[0]
+        content_h = max(orig_asc + orig_desc, cur_asc + cur_desc)
+        content_w = orig_w + gap + cur_w
+    else:
+        # Sem o "de" (modo B) a pill encolhe para o preço + padding.
+        orig_bbox, orig_w = (0, 0, 0, 0), 0
+        content_h = cur_asc + cur_desc
+        content_w = cur_w
     return {
         "orig_font": orig_font, "cur_font": cur_font,
-        "orig_text": orig_text, "cur_text": cur_text,
+        "orig_text": left_text, "cur_text": cur_text, "strike": strike,
         "orig_bbox": orig_bbox, "cur_bbox": cur_bbox,
         "orig_asc": orig_asc, "cur_asc": cur_asc,
         "orig_w": orig_w, "cur_w": cur_w,
@@ -343,53 +383,107 @@ def _draw_price_pill(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, 
     draw.rounded_rectangle([x, y, x + w, y + h], radius=radius, fill=GOLD)
     cur_font, orig_font = dims["cur_font"], dims["orig_font"]
     baseline = y + dims["pad_y"] + dims["cur_asc"]
-    orig_x = x + dims["pad_x"]
-    orig_bbox = dims["orig_bbox"]
-    orig_y = baseline - dims["orig_asc"]
-    draw.text((orig_x - orig_bbox[0], orig_y - orig_bbox[1]), dims["orig_text"],
-               font=orig_font, fill=PRICE_DIM_INK)
-    strike_y = round(orig_y + (orig_bbox[1] + orig_bbox[3]) / 2)
-    draw.line([(orig_x, strike_y), (orig_x + dims["orig_w"], strike_y)], fill=PRICE_DIM_INK, width=3)
-    cur_x = orig_x + dims["orig_w"] + dims["gap"]
+    cur_x = x + dims["pad_x"]
+    if dims["orig_text"]:
+        orig_x = x + dims["pad_x"]
+        orig_bbox = dims["orig_bbox"]
+        orig_y = baseline - dims["orig_asc"]
+        draw.text((orig_x - orig_bbox[0], orig_y - orig_bbox[1]), dims["orig_text"],
+                   font=orig_font, fill=PRICE_DIM_INK)
+        if dims["strike"]:
+            strike_y = round(orig_y + (orig_bbox[1] + orig_bbox[3]) / 2)
+            draw.line([(orig_x, strike_y), (orig_x + dims["orig_w"], strike_y)],
+                      fill=PRICE_DIM_INK, width=3)
+        cur_x = orig_x + dims["orig_w"] + dims["gap"]
     cur_bbox = dims["cur_bbox"]
     cur_y = baseline - dims["cur_asc"]
     draw.text((cur_x - cur_bbox[0], cur_y - cur_bbox[1]), dims["cur_text"], font=cur_font, fill=INK)
     return y + h
 
 
-# --- Meta (vendas · fonte) -----------------------------------------------------
+# --- Meta (nota [estrela] · vendas · fonte) ------------------------------------
+
+STAR_RADIUS_EM = 0.42   # raio da estrela em relação ao tamanho da fonte
+STAR_INNER = 0.4        # raio interno / raio externo (10 vértices alternados)
+STAR_PAD_EM = 0.08      # respiro de cada lado da estrela
+
 
 def _source_label(source: str) -> str:
     return "Mercado Livre" if source == "meli" else "Shopee"
 
 
-def _meta_text(offer: Offer) -> str:
-    """Linha mono abaixo do preço: nota (se conhecida) · vendas (se >= 1) · fonte."""
-    fonte = "Mercado Livre" if offer.source == "meli" else "Shopee"
-    partes = []
+def _meta_parts(offer: Offer) -> tuple[str, str]:
+    """Linha mono abaixo do preço, em dois segmentos ao redor da estrela:
+    (texto até a nota, o resto). Com nota: ("4,9 ", " · 30 mil vendidos ·
+    Shopee") — a estrela entra entre os dois, desenhada como vetor
+    (`_draw_star`). Sem nota (rating == 0): ("", "30 mil vendidos · Shopee") —
+    nada de estrela, o texto começa em vendas (ou na loja)."""
+    resto = " · ".join(p for p in (pricing.format_sales(offer.sales),
+                                    _source_label(offer.source)) if p)
     if offer.rating > 0:
-        partes.append(f"{offer.rating:.1f}".replace(".", ",") + " ★")
-    if offer.sales >= 1000:
-        partes.append(f"{offer.sales // 1000} mil vendidos")
-    elif offer.sales > 0:
-        partes.append(f"{offer.sales} vendidos")
-    partes.append(fonte)
-    return " · ".join(partes)
+        nota = f"{offer.rating:.1f}".replace(".", ",")
+        return f"{nota} ", f" · {resto}"
+    return "", resto
+
+
+def _draw_star(draw: ImageDraw.ImageDraw, cx: float, cy: float, r: float,
+               fill: tuple[int, int, int]) -> None:
+    """Estrela de 5 pontas como polígono: 10 vértices alternando raio `r` e
+    `r * STAR_INNER`, começando com a ponta para cima. Não depende do glifo
+    da fonte — nem a Bricolage nem a IBM Plex Mono têm U+2605/U+2B50 (caem
+    no .notdef, o "tofu"); mesmo motivo de `_draw_check` desenhar o "✓"."""
+    pontos = []
+    for i in range(10):
+        ang = -math.pi / 2 + i * math.pi / 5
+        raio = r if i % 2 == 0 else r * STAR_INNER
+        pontos.append((cx + raio * math.cos(ang), cy + raio * math.sin(ang)))
+    draw.polygon(pontos, fill=fill)
+
+
+def _meta_layout(draw: ImageDraw.ImageDraw, offer: Offer, font: ImageFont.FreeTypeFont) -> dict:
+    """Medidas da linha de meta: larguras dos dois segmentos, a estrela
+    (`2r` + respiro dos dois lados, centrada na altura-x da fonte) e a
+    largura total — é o que `_meta_dims` mede e o que `_draw_meta` desenha."""
+    antes, depois = _meta_parts(offer)
+    w_antes = draw.textlength(antes, font=font) if antes else 0.0
+    w_depois = draw.textlength(depois, font=font)
+    r = pad = star_w = star_dx = star_dy = 0.0
+    if antes:
+        r = font.size * STAR_RADIUS_EM
+        pad = font.size * STAR_PAD_EM
+        star_w = 2 * r + 2 * pad
+        # Centro vertical na altura-x: bbox de "x" relativo ao topo do
+        # ascender (âncora "la", a mesma de draw.text sem anchor).
+        _, x_top, _, x_bottom = font.getbbox("x")
+        star_dx = w_antes + pad + r
+        star_dy = (x_top + x_bottom) / 2
+    return {
+        "antes": antes, "depois": depois, "w_antes": w_antes, "w_depois": w_depois,
+        "r": r, "star_w": star_w, "star_dx": star_dx, "star_dy": star_dy,
+        "width": w_antes + star_w + w_depois,
+    }
 
 
 def _meta_dims(draw: ImageDraw.ImageDraw, offer: Offer, mono_size: int) -> dict:
-    text = _meta_text(offer)
     font = _font("mono", mono_size, 400)
     asc, desc = font.getmetrics()
-    return {"font": font, "text": text, "height": asc + desc}
+    return {"font": font, "height": asc + desc,
+            "width": _meta_layout(draw, offer, font)["width"]}
 
 
-def _draw_meta(draw: ImageDraw.ImageDraw, canvas_width: int, y: float, dims: dict) -> float:
-    font, text = dims["font"], dims["text"]
-    tw = draw.textlength(text, font=font)
-    x = (canvas_width - tw) / 2
-    draw.text((x, y), text, font=font, fill=MUTED)
-    return y + dims["height"]
+def _draw_meta(draw: ImageDraw.ImageDraw, x: float, y: float, offer: Offer,
+               font: ImageFont.FreeTypeFont, fill: tuple[int, int, int]) -> float:
+    """Desenha a meta em segmentos — texto até a nota, estrela vetorial, o
+    resto — tudo na mesma cor. Devolve a largura total (a mesma que
+    `_meta_dims` mede, estrela incluída), para quem chama continuar medindo."""
+    lay = _meta_layout(draw, offer, font)
+    cursor = x
+    if lay["antes"]:
+        draw.text((cursor, y), lay["antes"], font=font, fill=fill)
+        _draw_star(draw, x + lay["star_dx"], y + lay["star_dy"], lay["r"], fill)
+        cursor = x + lay["w_antes"] + lay["star_w"]
+    draw.text((cursor, y), lay["depois"], font=font, fill=fill)
+    return lay["width"]
 
 
 # --- Selo "menor preço verificado" ---------------------------------------------
@@ -447,9 +541,9 @@ def _draw_selo(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, radius
 # --- Corpo (título + pill de preço + meta + selo) e guarda de overflow -------
 
 def _story_body_dims(draw, offer, price_floor, title_size, title_weight, title_lines_cap,
-                      include_meta, include_selo):
+                      include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, STORY_TITLE_WIDTH, title_lines_cap, title_weight)
-    price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24)
+    price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, pill_left, STORY_TITLE_WIDTH)
     y = 1050 + title["height"] + 34 + price["height"]
     meta = None
     if include_meta:
@@ -463,9 +557,9 @@ def _story_body_dims(draw, offer, price_floor, title_size, title_weight, title_l
 
 
 def _feed_body_dims(draw, offer, price_floor, title_size, title_weight, title_lines_cap,
-                     include_meta, include_selo):
+                     include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, FEED_TITLE_WIDTH, title_lines_cap, title_weight)
-    price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22)
+    price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, pill_left, FEED_TITLE_WIDTH)
     y = 790 + title["height"] + 24 + price["height"]
     meta = None
     if include_meta:
@@ -478,7 +572,8 @@ def _feed_body_dims(draw, offer, price_floor, title_size, title_weight, title_li
     return y, title, price, meta, selo
 
 
-def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_size, title_weight):
+def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_size, title_weight,
+                     pill_left=("", False)):
     """Guarda de overflow: se o corpo (título..selo) invadir o rodapé, reduz o
     título p/ 1 linha, depois descarta o meta, e só por último o selo — o selo
     é o diferenciador da marca (prova de menor preço) e é o que mais queremos
@@ -486,7 +581,8 @@ def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_si
     title_cap, meta_on, selo_on = TITLE_MAX_LINES, True, True
     while True:
         bottom, title, price, meta, selo = dims_fn(
-            draw, offer, price_floor, title_size, title_weight, title_cap, meta_on, selo_on)
+            draw, offer, price_floor, title_size, title_weight, title_cap, meta_on, selo_on,
+            pill_left)
         if bottom <= allowed_bottom:
             return title, price, meta, selo
         if title_cap > 1:
@@ -499,39 +595,41 @@ def _run_guard_steps(draw, offer, price_floor, allowed_bottom, dims_fn, title_si
             return title, price, meta, selo  # não cabe mesmo assim — segue com o mínimo
 
 
-def _story_body_options(draw, offer, price_floor, allowed_bottom):
+def _story_body_options(draw, offer, price_floor, allowed_bottom, pill_left=("", False)):
     return _run_guard_steps(draw, offer, price_floor, allowed_bottom, _story_body_dims,
-                             STORY_TITLE_SIZE, 700)
+                             STORY_TITLE_SIZE, 700, pill_left)
 
 
-def _feed_body_options(draw, offer, price_floor, allowed_bottom):
+def _feed_body_options(draw, offer, price_floor, allowed_bottom, pill_left=("", False)):
     # Antes do passo "reduzir para 1 linha": tenta a variante "3b" do design
     # (título 48px/w600, ainda em 2 linhas) — se ela já couber com meta e
     # selo inteiros, evita truncar o título por causa de um rodapé apertado.
     for size, weight in ((FEED_TITLE_SIZE, 700), (FEED_TITLE_ALT_SIZE, FEED_TITLE_ALT_WEIGHT)):
         bottom, title, price, meta, selo = _feed_body_dims(
-            draw, offer, price_floor, size, weight, TITLE_MAX_LINES, True, True)
+            draw, offer, price_floor, size, weight, TITLE_MAX_LINES, True, True, pill_left)
         if bottom <= allowed_bottom:
             return title, price, meta, selo
     return _run_guard_steps(draw, offer, price_floor, allowed_bottom, _feed_body_dims,
-                             FEED_TITLE_SIZE, 700)
+                             FEED_TITLE_SIZE, 700, pill_left)
 
 
-def _draw_story_body(draw, canvas_width, title, price, meta, selo) -> None:
+def _draw_story_body(draw, canvas_width, offer, title, price, meta, selo) -> None:
     y = _draw_title(draw, canvas_width, 1050, title) + 34
     y = _draw_price_pill(draw, STORY_PAD, y, price)
     if meta is not None:
-        y = _draw_meta(draw, canvas_width, y + 18, meta)
+        _draw_meta(draw, (canvas_width - meta["width"]) / 2, y + 18, offer, meta["font"], MUTED)
+        y += 18 + meta["height"]
     if selo is not None:
         selo_x = (canvas_width - selo["width"]) / 2
         _draw_selo(draw, selo_x, y + 28, selo)
 
 
-def _draw_feed_body(draw, canvas_width, title, price, meta, selo) -> None:
+def _draw_feed_body(draw, canvas_width, offer, title, price, meta, selo) -> None:
     y = _draw_title(draw, canvas_width, 790, title) + 24
     y = _draw_price_pill(draw, FEED_PAD, y, price)
     if meta is not None:
-        y = _draw_meta(draw, canvas_width, y + 20, meta)
+        _draw_meta(draw, (canvas_width - meta["width"]) / 2, y + 20, offer, meta["font"], MUTED)
+        y += 20 + meta["height"]
     if selo is not None:
         selo_x = (canvas_width - selo["width"]) / 2
         _draw_selo(draw, selo_x, y + 24, selo)
@@ -622,21 +720,25 @@ def _draw_feed_footer(draw: ImageDraw.ImageDraw, width: int, pad: int, offer: Of
 # --- Render principal -----------------------------------------------------------
 
 def _render_story(offer: Offer, price_floor: PriceFloor | None, client: httpx.Client | None,
-                   handle: str | None, brand_name: str) -> bytes:
+                   handle: str | None, brand_name: str, min_real_discount_pct: int) -> bytes:
     width, height = STORY_SIZE
     product = _open_product_image(_get_image_bytes(offer, client))
 
     canvas = _glow_background(width, height, 540, 154, 594, 528)
     draw = ImageDraw.Draw(canvas)
+    badge_pct = (offer.real_discount_pct
+                 if _modo_desconto_verificado(offer, min_real_discount_pct) else 0)
+    pill_left = _pill_left(offer, min_real_discount_pct)
 
     _draw_header_story(draw, canvas, 72, 120, 68, brand_name)
     _draw_card(canvas, draw, product, 72, 224, 936, 790, 28, 24,
-               offer.discount_pct, 44, 14, 22, 28)
+               badge_pct, 44, 14, 22, 28)
 
     footer_geo = _story_footer_geometry(draw, width, height, handle, offer)
     allowed_bottom = footer_geo["cta_box"][1] - 36
-    title, price, meta, selo = _story_body_options(draw, offer, price_floor, allowed_bottom)
-    _draw_story_body(draw, width, title, price, meta, selo)
+    title, price, meta, selo = _story_body_options(draw, offer, price_floor, allowed_bottom,
+                                                   pill_left)
+    _draw_story_body(draw, width, offer, title, price, meta, selo)
     _draw_story_footer(draw, width, handle, footer_geo)
 
     buffer = io.BytesIO()
@@ -645,21 +747,25 @@ def _render_story(offer: Offer, price_floor: PriceFloor | None, client: httpx.Cl
 
 
 def _render_feed(offer: Offer, price_floor: PriceFloor | None, client: httpx.Client | None,
-                  handle: str | None, brand_name: str) -> bytes:
+                  handle: str | None, brand_name: str, min_real_discount_pct: int) -> bytes:
     width, height = FEED_SIZE
     product = _open_product_image(_get_image_bytes(offer, client))
 
     canvas = _glow_background(width, height, 540, 81, 594, 338)
     draw = ImageDraw.Draw(canvas)
+    badge_pct = (offer.real_discount_pct
+                 if _modo_desconto_verificado(offer, min_real_discount_pct) else 0)
+    pill_left = _pill_left(offer, min_real_discount_pct)
 
     _draw_header_feed(draw, canvas, 64, 64, 62, brand_name, handle)
     _draw_card(canvas, draw, product, 64, 158, 952, 600, 26, 20,
-               offer.discount_pct, 42, 12, 20, 26)
+               badge_pct, 42, 12, 20, 26)
 
     footer_geo = _feed_footer_geometry(width, height, FEED_PAD)
     allowed_bottom = footer_geo["divider_y"] - 36
-    title, price, meta, selo = _feed_body_options(draw, offer, price_floor, allowed_bottom)
-    _draw_feed_body(draw, width, title, price, meta, selo)
+    title, price, meta, selo = _feed_body_options(draw, offer, price_floor, allowed_bottom,
+                                                  pill_left)
+    _draw_feed_body(draw, width, offer, title, price, meta, selo)
     _draw_feed_footer(draw, width, FEED_PAD, offer, footer_geo)
 
     buffer = io.BytesIO()
@@ -674,9 +780,10 @@ def render_story(
     client: httpx.Client | None = None,
     handle: str | None = None,
     brand_name: str = DEFAULT_BRAND_NAME,
+    min_real_discount_pct: int = pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT,
 ) -> bytes:
     del copy  # reservado para fases futuras; não usado no template atual
-    return _render_story(offer, price_floor, client, handle, brand_name)
+    return _render_story(offer, price_floor, client, handle, brand_name, min_real_discount_pct)
 
 
 def render_feed(
@@ -686,6 +793,7 @@ def render_feed(
     client: httpx.Client | None = None,
     handle: str | None = None,
     brand_name: str = DEFAULT_BRAND_NAME,
+    min_real_discount_pct: int = pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT,
 ) -> bytes:
     del copy  # reservado para fases futuras; não usado no template atual
-    return _render_feed(offer, price_floor, client, handle, brand_name)
+    return _render_feed(offer, price_floor, client, handle, brand_name, min_real_discount_pct)

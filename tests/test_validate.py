@@ -7,7 +7,8 @@ from afiliado.models import CopyParts, Post
 from tests.test_models import make_offer
 
 CFG = {
-    "selection": {"min_discount_pct": 20, "price_min_brl": 20, "price_max_brl": 1000},
+    "selection": {"price_min_brl": 20, "price_max_brl": 1000,
+                  "max_above_ref": 1.00, "require_price_ref": False},
     "validation": {"allowed_domains": ["shopee.com.br", "shope.ee"]},
 }
 
@@ -33,13 +34,45 @@ def test_check_link_rejects_wrong_domain():
 
 def test_check_price_rules():
     validate.check_price(make_offer(), CFG)
-    with pytest.raises(ValidationError):  # sem desconto real
-        validate.check_price(make_offer(price_original_cents=24999), CFG)
-    with pytest.raises(ValidationError):  # desconto abaixo do mínimo
-        validate.check_price(make_offer(price_original_cents=26000), CFG)
     with pytest.raises(ValidationError):  # acima da faixa
         validate.check_price(
             make_offer(price_current_cents=150_000, price_original_cents=300_000), CFG)
+    with pytest.raises(ValidationError):  # abaixo da faixa
+        validate.check_price(make_offer(price_current_cents=999), CFG)
+
+
+def test_check_price_aceita_oferta_sem_desconto():
+    # O portão de desconto matava o ML inteiro (discount_pct == 0 por
+    # construção) e qualquer post de volume. Agora passa.
+    validate.check_price(make_offer(price_original_cents=24999), CFG)
+    validate.check_price(make_offer(price_original_cents=26000), CFG)
+    validate.check_price(
+        make_offer(source="meli", price_original_cents=7890, price_current_cents=7890,
+                   price_ref_cents=7890), CFG)
+
+
+def test_check_price_rejeita_acima_da_referencia():
+    # Rede de segurança que roda DEPOIS do refresh_price: pega a oferta que
+    # encareceu entre a busca e a publicação.
+    with pytest.raises(ValidationError, match="acima da referência"):
+        validate.check_price(
+            make_offer(price_ref_cents=2600, price_current_cents=3390), CFG)
+    # no preço da referência (ou abaixo) segue publicável
+    validate.check_price(make_offer(price_ref_cents=2600, price_current_cents=2600), CFG)
+
+
+def test_check_price_max_above_ref_com_folga():
+    cfg = {**CFG, "selection": {**CFG["selection"], "max_above_ref": 1.10}}
+    validate.check_price(make_offer(price_ref_cents=2600, price_current_cents=2860), cfg)
+    with pytest.raises(ValidationError):
+        validate.check_price(make_offer(price_ref_cents=2600, price_current_cents=2861), cfg)
+
+
+def test_check_price_require_price_ref():
+    cfg = {**CFG, "selection": {**CFG["selection"], "require_price_ref": True}}
+    with pytest.raises(ValidationError, match="sem referência"):
+        validate.check_price(make_offer(), cfg)
+    validate.check_price(make_offer(price_ref_cents=2600, price_current_cents=2500), cfg)
 
 
 def test_check_image():

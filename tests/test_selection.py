@@ -9,9 +9,11 @@ from tests.test_models import make_offer
 from tests.test_state import make_post
 
 CFG = {
-    "selection": {"posts_per_run": 2, "min_discount_pct": 20, "price_min_brl": 20,
+    "selection": {"posts_per_run": 2, "price_min_brl": 20,
                   "price_max_brl": 1000, "dedupe_days": 30, "category_ids": [],
-                  "ev_weights": {"popularity": 0.3}},
+                  "max_above_ref": 1.00, "require_price_ref": False,
+                  "min_real_discount_pct": 10,
+                  "ev_weights": {"popularity": 0.3, "discount": 0.5}},
     "llm": {"model": "haiku"},
 }
 
@@ -24,12 +26,88 @@ def test_filter_offers(tmp_path):
         make_offer(item_id="dup"),                                  # já postado
         make_offer(item_id="caro", price_current_cents=200_000,
                    price_original_cents=400_000),                    # fora da faixa
-        make_offer(item_id="pouco", price_original_cents=26_000),    # desconto < 20%
         make_offer(item_id="semtitulo", title=""),                   # inválido
     ]
     result = selection.filter_offers(offers, db, CFG)
     assert [o.item_id for o in result] == ["ok"]
     db.close()
+
+
+def test_filter_offers_publica_sem_desconto(tmp_path):
+    # Decisão de volume máximo: o desconto do vendedor NÃO é mais portão. Uma
+    # oferta sem desconto nenhum (o caso de toda oferta do ML, que nasce com
+    # discount_pct == 0) continua candidata — o que muda é só o que o post
+    # alega. Sem esta regra o ML publicava ZERO ofertas, em silêncio.
+    db = StateDB(tmp_path / "s.db")
+    offers = [
+        make_offer(item_id="sem-desconto", price_original_cents=24_999,
+                   price_current_cents=24_999),
+        make_offer(item_id="meli", source="meli", price_original_cents=7_890,
+                   price_current_cents=7_890, price_ref_cents=7_890),
+    ]
+    result = selection.filter_offers(offers, db, CFG)
+    assert [o.item_id for o in result] == ["sem-desconto", "meli"]
+    db.close()
+
+
+def test_filter_offers_descarta_mais_caro_que_a_referencia(tmp_path):
+    # Régua honesta: o único corte de preço é não anunciar algo mais caro que
+    # o típico (caso real da creatina: referência R$ 26, hoje R$ 33,90).
+    db = StateDB(tmp_path / "s.db")
+    offers = [
+        make_offer(item_id="no-preco", price_ref_cents=2600, price_current_cents=2600),
+        make_offer(item_id="abaixo", price_ref_cents=5200, price_current_cents=3900),
+        make_offer(item_id="caro", price_ref_cents=2600, price_current_cents=3390),
+    ]
+    result = selection.filter_offers(offers, db, CFG)
+    assert [o.item_id for o in result] == ["no-preco", "abaixo"]
+    db.close()
+
+
+def test_filter_offers_max_above_ref_com_folga(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    cfg = {**CFG, "selection": {**CFG["selection"], "max_above_ref": 1.10}}
+    offers = [
+        make_offer(item_id="dentro", price_ref_cents=2600, price_current_cents=2860),
+        make_offer(item_id="fora", price_ref_cents=2600, price_current_cents=2861),
+    ]
+    assert [o.item_id for o in selection.filter_offers(offers, db, cfg)] == ["dentro"]
+    db.close()
+
+
+def test_filter_offers_require_price_ref(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    cfg = {**CFG, "selection": {**CFG["selection"], "require_price_ref": True}}
+    offers = [make_offer(item_id="com-ref", price_ref_cents=2600, price_current_cents=2500),
+              make_offer(item_id="sem-ref")]
+    assert [o.item_id for o in selection.filter_offers(offers, db, cfg)] == ["com-ref"]
+    db.close()
+
+
+def test_ev_score_bonifica_desconto_verificado():
+    base = make_offer(price_current_cents=24999)
+    com_desconto = make_offer(price_current_cents=24999, price_ref_cents=49998)  # 50%
+    assert com_desconto.real_discount_pct == 50
+    assert (selection.ev_score(com_desconto, CFG)
+            == pytest.approx(selection.ev_score(base, CFG) * (1 + 0.5 * 0.5)))
+
+
+def test_ev_score_ignora_desconto_do_vendedor():
+    # "de" inflado do vendedor não vale nada no score: sem referência própria,
+    # o bônus é zero.
+    inflado = make_offer(price_original_cents=350_000, price_current_cents=24999)
+    assert inflado.discount_pct == 93
+    limpo = make_offer(price_original_cents=24999, price_current_cents=24999)
+    assert selection.ev_score(inflado, CFG) == pytest.approx(selection.ev_score(limpo, CFG))
+
+
+def test_rank_prompt_usa_desconto_verificado():
+    offer = make_offer(price_original_cents=350_000, price_current_cents=24999,
+                       price_ref_cents=49998)
+    prompt = selection._rank_prompt([offer], [], 2)
+    assert "desconto verificado=50%" in prompt
+    assert "desconto=93%" not in prompt
+    assert "Desconto 0% não é defeito" in prompt
 
 
 def test_filter_offers_min_ev_floor(tmp_path):

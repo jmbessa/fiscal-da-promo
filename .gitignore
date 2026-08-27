@@ -4,4 +4,5 @@ __pycache__/
 .pytest_cache/
 .env
 preview-*.png
+.claude/previews/
 data/meli_token.json

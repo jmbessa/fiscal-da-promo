@@ -22,7 +22,16 @@ CREATE TABLE IF NOT EXISTS runs (
     discarded INTEGER NOT NULL,
     notes TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS price_log (
+    source TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    price_cents INTEGER NOT NULL,
+    PRIMARY KEY (source, item_id, day)
+);
 """
+
+DEFAULT_REF_WINDOW_DAYS = 90
 
 
 def _now() -> datetime:
@@ -74,12 +83,56 @@ class StateDB:
         )
         self.conn.commit()
 
-    def record_run(self, published: int, discarded: int, notes: str = "") -> None:
+    # -- histórico próprio de preços (fase 4: régua honesta) ----------------
+
+    def record_price(self, source: str, item_id: str, price_cents: int,
+                     day: str | None = None) -> None:
+        """Grava a observação de preço do dia. Em conflito no mesmo dia,
+        mantém o MENOR preço — referência mais conservadora, menos desconto
+        alegado depois. Ignora `price_cents <= 0`."""
+        self.record_prices([(source, item_id, price_cents)], day=day)
+
+    def record_prices(self, rows: list[tuple[str, str, int]], day: str | None = None) -> None:
+        """Versão em lote de `record_price`: uma única transação para todas as
+        observações do run (nada de commit por linha em laço)."""
+        dia = day or _now().date().isoformat()
+        valores = [(source, item_id, dia, int(price_cents))
+                   for source, item_id, price_cents in rows
+                   if price_cents and int(price_cents) > 0]
+        if not valores:
+            return
+        self.conn.executemany(
+            "INSERT INTO price_log (source, item_id, day, price_cents) VALUES (?,?,?,?) "
+            "ON CONFLICT(source,item_id,day) DO UPDATE SET "
+            "price_cents=MIN(price_cents,excluded.price_cents)",
+            valores,
+        )
+        self.conn.commit()
+
+    def price_history(self, source: str, item_id: str, days: int) -> list[int]:
+        """Preços dos últimos N dias (um por dia), mais recentes primeiro."""
+        cutoff = (_now().date() - timedelta(days=days)).isoformat()
+        rows = self.conn.execute(
+            "SELECT price_cents FROM price_log WHERE source=? AND item_id=? AND day>=? "
+            "ORDER BY day DESC",
+            (source, item_id, cutoff),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def prune_price_log(self, days: int) -> None:
+        """Apaga observações anteriores ao corte da janela."""
+        cutoff = (_now().date() - timedelta(days=days)).isoformat()
+        self.conn.execute("DELETE FROM price_log WHERE day<?", (cutoff,))
+        self.conn.commit()
+
+    def record_run(self, published: int, discarded: int, notes: str = "",
+                   ref_window_days: int = DEFAULT_REF_WINDOW_DAYS) -> None:
         self.conn.execute(
             "INSERT INTO runs (finished_at, published, discarded, notes) VALUES (?,?,?,?)",
             (_now().isoformat(), published, discarded, notes),
         )
         self.conn.commit()
+        self.prune_price_log(ref_window_days)
 
     def close(self) -> None:
         self.conn.close()

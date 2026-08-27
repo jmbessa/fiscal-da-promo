@@ -146,3 +146,37 @@ def test_art_is_hosted_as_jpeg():
     body = next(b for k, b in (x for x in seen if isinstance(x, tuple)) if k == "photo_body")
     assert b"art.jpg" in body and b"image/jpeg" in body
     assert bytes.fromhex("ffd8ff") in body          # magic number do JPEG
+
+
+def _caption_for(min_real_discount_pct: int | None = None, **offer_kw) -> str:
+    extra = {} if min_real_discount_pct is None else {"min_real_discount_pct": min_real_discount_pct}
+    client = httpx.Client(transport=httpx.MockTransport(_happy_handler))
+    canal = InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTTOKEN", "OPSCHAT", client=client, **extra)
+    return canal._build_caption(make_post(**offer_kw))
+
+
+def test_caption_respeita_o_min_real_discount_pct_do_canal():
+    # 20% verificado (26,00 -> 20,80): com o padrão (10) a legenda alega;
+    # com o mínimo 30 vindo do config, sai no modo B — sem "OFF".
+    assert "(20% OFF)" in _caption_for(price_ref_cents=2600, price_current_cents=2080)
+    caption = _caption_for(min_real_discount_pct=30, price_ref_cents=2600,
+                           price_current_cents=2080)
+    assert "OFF" not in caption
+    assert "R$ 20,80" in caption
+    assert "R$ 26,00" not in caption
+
+
+def test_caption_modo_a_usa_a_nossa_referencia():
+    caption = _caption_for(price_original_cents=35000, price_ref_cents=2600,
+                           price_current_cents=1890)
+    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)" in caption
+    assert "R$ 350,00" not in caption
+
+
+def test_caption_modo_b_sem_referencia_nao_alega_desconto():
+    caption = _caption_for(price_original_cents=35000, price_current_cents=4900,
+                           rating=4.9, sales=30000)
+    assert "R$ 49,00" in caption
+    assert "R$ 350,00" not in caption
+    assert "OFF" not in caption
+    assert "⭐ 4,9 · 30 mil vendidos" in caption

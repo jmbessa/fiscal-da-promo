@@ -2,16 +2,19 @@ from datetime import date, timedelta
 
 from afiliado import llm, pipeline
 from afiliado.channels.base import PublishResult
-from afiliado.errors import ValidationError
+from afiliado.errors import SourceError, ValidationError
 from afiliado.models import CopyParts, Post
 from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
 from tests.test_models import make_offer
 
 CFG = {
-    "selection": {"posts_per_run": 2, "min_discount_pct": 20, "price_min_brl": 20,
+    "selection": {"posts_per_run": 2, "price_min_brl": 20,
                   "price_max_brl": 1000, "dedupe_days": 30, "category_ids": [],
-                  "ev_weights": {"popularity": 0.3}},
+                  "max_above_ref": 1.00, "require_price_ref": False,
+                  "min_real_discount_pct": 10, "ref_window_days": 90,
+                  "ref_min_observations": 5, "seal_tolerance": 1.05,
+                  "ev_weights": {"popularity": 0.3, "discount": 0.5}},
     "llm": {"model": "haiku"},
     "copy": {"tone": "pt-BR"},
     "validation": {"allowed_domains": ["shope.ee"]},
@@ -214,6 +217,87 @@ def test_run_respects_channel_max_per_day(tmp_path, monkeypatch):
     db.close()
 
 
+def test_run_refresh_price_failure_discards_and_promotes_next(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(3)]
+
+    class FlakySource(FakeSource):
+        def refresh_price(self, offer):
+            if offer.item_id == "0":
+                raise SourceError("preço acima da mínima histórica")
+            return offer
+
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [FlakySource(offers)], [ch], db, validator=no_network_validator)
+    assert len(ch.sent) == 2               # posts_per_run=2, oferta "0" descartada
+    assert "0" not in [p.offer.item_id for p in ch.sent]
+    assert len(summary.discarded) == 1
+    assert "mínima histórica" in summary.discarded[0]
+    db.close()
+
+
+def test_run_source_without_refresh_price_still_works(tmp_path, monkeypatch):
+    # FakeSource (usado no resto deste arquivo) não implementa refresh_price
+    # -- getattr(src, "refresh_price", None) deve simplesmente pular a
+    # chamada, sem quebrar fontes que não o implementam.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    assert getattr(FakeSource(offers=[]), "refresh_price", None) is None
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id=str(i)) for i in range(2)]
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [FakeSource(offers)], [ch], db, validator=no_network_validator)
+    assert len(summary.published) == 2
+    db.close()
+
+
+def test_run_warns_when_meli_source_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class EmptyMeliSource:
+        name = "meli"
+
+        def fetch_offers(self, cfg):
+            return []
+
+        def resolve_affiliate_link(self, offer):
+            return "x"
+
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [EmptyMeliSource()], [ch], db, validator=no_network_validator)
+    assert any("meli" in w and "pool" in w for w in summary.warnings)
+    db.close()
+
+
+def test_run_no_meli_warning_when_meli_source_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [FakeSource([])], [ch], db, validator=no_network_validator)
+    assert not any("meli" in w for w in summary.warnings)
+    db.close()
+
+
+def test_run_no_meli_warning_when_meli_source_has_offers(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class NonEmptyMeliSource:
+        name = "meli"
+
+        def fetch_offers(self, cfg):
+            return [make_offer(item_id="m1", source="meli")]
+
+        def resolve_affiliate_link(self, offer):
+            return "https://mercadolivre.com/sec/x"
+
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [NonEmptyMeliSource()], [ch], db, validator=no_network_validator)
+    assert not any("meli" in w for w in summary.warnings)
+    db.close()
+
+
 def test_run_offer_counts_when_one_channel_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")
@@ -227,4 +311,85 @@ def test_run_offer_counts_when_one_channel_fails(tmp_path, monkeypatch):
     assert len(ch_b.sent) == 2
     assert len(summary.discarded) == 2      # uma linha de falha de B por oferta
     assert all("B" in d for d in summary.discarded)
+    db.close()
+
+
+# --- Fase 4: régua honesta no pipeline ---------------------------------------
+
+class RefreshingSource(FakeSource):
+    """Fonte com refresh_price, para provar que o rótulo é recalculado DEPOIS
+    do preço ao vivo (antes ele mostrava o desconto do preço velho)."""
+
+    def __init__(self, offers, novo_preco_cents):
+        super().__init__(offers)
+        self._novo = novo_preco_cents
+
+    def refresh_price(self, offer):
+        import dataclasses
+        return dataclasses.replace(offer, price_current_cents=self._novo)
+
+
+def test_run_rotulo_usa_o_desconto_depois_do_refresh(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    # Referência 100,00; na busca custava 99,00 (1%), no refresh cai para 50,00.
+    offer = make_offer(item_id="x", price_ref_cents=10000, price_current_cents=9900)
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [RefreshingSource([offer], 5000)], [ch], db,
+                           validator=no_network_validator)
+    assert summary.published == ["Tênis Nike SB (50% OFF)"]
+    db.close()
+
+
+def test_run_rotulo_sem_desconto_verificado_e_so_o_titulo(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="x")])], [ch], db,
+                           validator=no_network_validator)
+    assert summary.published == ["Tênis Nike SB"]
+    db.close()
+
+
+def test_run_grava_o_historico_de_precos(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    offers = [make_offer(item_id="a", price_current_cents=2600),
+              make_offer(item_id="b", price_current_cents=3390)]
+    pipeline.run(CFG, [FakeSource(offers)], [FakeChannel()], db,
+                 validator=no_network_validator)
+    assert db.price_history("shopee", "a", days=1) == [2600]
+    assert db.price_history("shopee", "b", days=1) == [3390]
+    db.close()
+
+
+def test_run_usa_o_historico_como_referencia(tmp_path, monkeypatch):
+    # Com histórico suficiente, a mediana vira referência e a oferta que hoje
+    # está MAIS CARA que o típico não é publicada.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    hoje = date.today()
+    for i in range(1, 7):
+        db.record_price("shopee", "caro", 2600, day=(hoje - timedelta(days=i)).isoformat())
+    offers = [make_offer(item_id="caro", price_current_cents=3390),
+              make_offer(item_id="normal", price_current_cents=2500)]
+    ch = FakeChannel()
+    summary = pipeline.run(CFG, [FakeSource(offers)], [ch], db,
+                           validator=no_network_validator)
+    assert [p.offer.item_id for p in ch.sent] == ["normal"]
+    assert len(summary.published) == 1
+    db.close()
+
+
+def test_run_expoe_o_aviso_do_pool_do_meli(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class MeliComAviso(FakeSource):
+        name = "meli"
+        pool_warning = "2 entrada(s) do pool ignorada(s): price_historic_min_cents ausente"
+
+    summary = pipeline.run(CFG, [MeliComAviso([make_offer(item_id="x", source="meli")])],
+                           [FakeChannel()], db, validator=no_network_validator)
+    assert any("entrada(s) do pool ignorada(s)" in w for w in summary.warnings)
     db.close()

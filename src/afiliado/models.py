@@ -29,12 +29,24 @@ class Offer:
     price_min_cents: int = 0   # 0 = desconhecido; > 0 e != price_current => produto com variações
     price_max_cents: int = 0
     commission_brl: float = 0.0  # comissão absoluta em R$ informada pela API
+    price_ref_cents: int = 0    # nossa referência honesta (mediana do histórico). 0 = desconhecida
+    price_floor_cents: int = 0  # mínima histórica conhecida. 0 = desconhecida
 
     @property
     def discount_pct(self) -> int:
+        """Desconto informado pelo vendedor — NÃO exibir e NÃO filtrar por ele
+        (o "de" é inflado). Use real_discount_pct."""
         if self.price_original_cents <= 0:
             return 0
         return round((1 - self.price_current_cents / self.price_original_cents) * 100)
+
+    @property
+    def real_discount_pct(self) -> int:
+        """Desconto verificável contra a NOSSA referência.
+        0 quando não há referência ou o preço atual não está abaixo dela."""
+        if self.price_ref_cents <= 0 or self.price_current_cents >= self.price_ref_cents:
+            return 0
+        return round((1 - self.price_current_cents / self.price_ref_cents) * 100)
 
 
 @dataclass(frozen=True)

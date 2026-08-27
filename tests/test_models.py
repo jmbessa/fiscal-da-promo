@@ -28,6 +28,29 @@ def test_discount_pct():
     assert make_offer(price_original_cents=0).discount_pct == 0
 
 
+def test_real_discount_pct_usa_a_nossa_referencia():
+    # 26,00 -> 18,90 = 27% verificável contra a NOSSA mediana, não contra o
+    # "de" do vendedor (que aqui está inflado em 499,99).
+    offer = make_offer(price_ref_cents=2600, price_current_cents=1890)
+    assert offer.real_discount_pct == 27
+
+
+def test_real_discount_pct_zero_sem_referencia():
+    assert make_offer().real_discount_pct == 0
+    assert make_offer(price_ref_cents=0).real_discount_pct == 0
+
+
+def test_real_discount_pct_zero_quando_nao_esta_abaixo_da_referencia():
+    assert make_offer(price_ref_cents=2600, price_current_cents=2600).real_discount_pct == 0
+    assert make_offer(price_ref_cents=2600, price_current_cents=3390).real_discount_pct == 0
+
+
+def test_price_ref_e_floor_default_zero():
+    offer = make_offer()
+    assert offer.price_ref_cents == 0
+    assert offer.price_floor_cents == 0
+
+
 def test_post_holds_parts():
     post = Post(
         offer=make_offer(),

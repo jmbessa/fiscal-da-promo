@@ -15,11 +15,11 @@ import io
 import httpx
 from PIL import Image
 
-from afiliado import creative
+from afiliado import creative, message, pricing
 from afiliado.channels.base import PublishResult
 from afiliado.channels.telegram import get_file_url, send_photo_bytes
 from afiliado.errors import SourceError
-from afiliado.models import Post, format_brl
+from afiliado.models import Post
 
 GRAPH_HOSTS = {
     # Conta business vinculada a Página do Facebook; escopos instagram_basic + instagram_content_publish.
@@ -45,7 +45,9 @@ class InstagramFeedChannel:
 
     def __init__(self, ig_user_id: str, access_token: str, bot_token: str, ops_chat_id: str,
                  client: httpx.Client | None = None, brand_handle: str | None = None,
-                 brand_name: str = "Fiscal da Promo", api: str = "facebook_login"):
+                 brand_name: str = "Fiscal da Promo", api: str = "facebook_login",
+                 min_real_discount_pct: int = pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT,
+                 seal_tolerance: float = message.DEFAULT_SEAL_TOLERANCE):
         # .strip() mata o footgun clássico de segredo colado com espaço/quebra
         # de linha nas pontas (env var, clipboard); não cobre caractere de
         # controle NO MEIO da string — para isso, ver o try/except amplo em
@@ -58,12 +60,19 @@ class InstagramFeedChannel:
         self.brand_handle = brand_handle
         self.brand_name = brand_name
         self.graph = GRAPH_HOSTS.get(api, GRAPH_HOSTS["facebook_login"])
+        # Régua honesta (selection.* do config, via cli._build_channels):
+        # min_real_discount_pct decide o modo da arte E da legenda;
+        # seal_tolerance fica guardado para quando arte/legenda ganharem o
+        # selo do histórico próprio — hoje o selo da arte é só o da watchlist.
+        self.min_real_discount_pct = min_real_discount_pct
+        self.seal_tolerance = seal_tolerance
 
     def publish(self, post: Post) -> PublishResult:
         try:
             art = creative.render_feed(post.offer, post.copy, price_floor=post.price_floor,
                                        client=self.client, handle=self.brand_handle,
-                                       brand_name=self.brand_name)
+                                       brand_name=self.brand_name,
+                                       min_real_discount_pct=self.min_real_discount_pct)
         except SourceError as exc:
             return PublishResult(False, error=f"falha ao gerar arte do feed: {exc}")
 
@@ -116,15 +125,18 @@ class InstagramFeedChannel:
             return title
         return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
 
-    @classmethod
-    def _build_caption(cls, post: Post) -> str:
+    def _build_caption(self, post: Post) -> str:
         offer, copy = post.offer, post.copy
-        titulo = cls._sanitize_title(offer.title)
+        titulo = self._sanitize_title(offer.title)
+        # Mesma régua do texto do Telegram: quem decide como o preço
+        # aparece é pricing.price_line (ver afiliado.pricing), com o mesmo
+        # min_real_discount_pct do config.
+        linha_preco, prova_social = pricing.price_line(offer, self.min_real_discount_pct)
+        bloco_preco = linha_preco + (f"\n{prova_social}" if prova_social else "")
         return (
             f"{copy.headline}\n{copy.description}\n\n"
             f"{titulo}\n"
-            f"De {format_brl(offer.price_original_cents)} por "
-            f"{format_brl(offer.price_current_cents)} ({offer.discount_pct}% OFF)\n\n"
+            f"{bloco_preco}\n\n"
             f"{copy.cta}\n"
             "🔗 Link na bio e no canal do Telegram"
         )

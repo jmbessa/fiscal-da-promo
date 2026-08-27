@@ -108,6 +108,10 @@ class ShopeeSource:
             return offer.offer_link
         raise SourceError(f"sem link de afiliado para item {offer.item_id}")
 
+    def refresh_price(self, offer: Offer) -> Offer:
+        """A busca da Shopee já devolve preço ao vivo — nada a atualizar."""
+        return offer
+
 
 def _parse_node(node: dict) -> Offer | None:
     if "itemId" not in node:

@@ -59,11 +59,14 @@ CI) e cai para `refresh_token` quando necessário — o Mercado Livre rotaciona
 o refresh token a cada uso, então o pipeline persiste a rotação em
 `data/meli_token.json` (segredo, gitignored) a cada troca.
 
-**Pendente do spike da parte 2:** não existe API oficial de link de afiliado
-no Mercado Livre. Por ora, `resolve_affiliate_link` usa um **pool de links
-pré-gerados** em `data/meli_links.json`, abastecido manualmente pelo painel
-de afiliados — item sem link no pool é descartado (comportamento já
-existente do pipeline, promove a próxima oferta da fila).
+Não há API oficial de link de afiliado no Mercado Livre — `resolve_affiliate_link`
+lê um **pool de links pré-gerados** em `data/meli_links.json`, preenchido
+pelo skill `/meli-links-refresh` (`.claude/skills/meli-links-refresh/`),
+que gera links em lote pelo painel de afiliados (`src/afiliado/meli_links.py`)
+e mescla o resultado no pool sem sobrescrever links existentes — item sem
+link no pool é descartado (comportamento já existente do pipeline, promove
+a próxima oferta da fila). Fluxo completo (pool curado de ofertas → preço
+ao vivo → link) em `docs/runbooks/meli-setup.md`.
 
 ## Comandos
 

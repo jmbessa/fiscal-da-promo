@@ -7,6 +7,14 @@ dependencies = ["httpx>=0.27", "PyYAML>=6.0", "Pillow>=10.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Fase 5F: story COM figurinha de link (canal `instagram_story_link`). É API
+# PRIVADA do Instagram — a Graph API nega figurinhas ("Story Limitations", ver
+# docs/superpowers/reviews/2026-08-27-sticker-de-link.md). Fica fora das
+# dependências obrigatórias de propósito: quem não instalar o extra continua
+# com o pipeline inteiro funcionando (o import do instagrapi é preguiçoso,
+# dentro da função), e a suíte roda numa máquina sem ele.
+#   pip install -e .[stories]
+stories = ["instagrapi>=2.18"]
 
 [project.scripts]
 afiliado = "afiliado.cli:main"

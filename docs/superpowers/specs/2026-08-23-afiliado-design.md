@@ -22,7 +22,7 @@ CTA e link curto de afiliado.
 | Afiliação | Usuário já cadastrado nos programas da Shopee e do Mercado Livre; hoje gera links manualmente |
 | Audiência | Começa do zero em todos os canais; construir audiência faz parte do projeto |
 | Nicho | "Achadinhos" geral com categorias fixas no config (ex.: casa, eletrônicos, beleza); nichar depois conforme dados de cliques |
-| Autonomia | Automático para Telegram e feed do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. **Stories NÃO são automáticos** (`story_dispatch`, fase 2A): o pipeline gera a arte e o link e os entrega ao chat de operações; publicar é um gesto manual do dono, e o resumo do run lista essas ofertas em "📤 Despachados p/ ops — postar no app", fora da contagem de publicados (fase 5C, A12) |
+| Autonomia | Automático para Telegram, feed **e story** do Instagram — nenhum post passa por revisão humana; a segurança vem de portões de validação no pipeline. **Story virou automático na fase 5E** (`instagram_story`): `media_type=STORIES` na Graph API, sem legenda e sem sticker de link (a API não tem um), medido ao vivo em 2026-08-27. Da fase 2A à 5C o spec dizia que stories NÃO podiam ser automáticos — a afirmação estava errada. O `story_dispatch` continua como fallback manual DESLIGADO: quando ligado, o resumo lista essas ofertas em "📤 Despachados p/ ops — postar no app", fora da contagem de publicados (fase 5C, A12) |
 | Volume | **60 ofertas/dia** somadas as duas lojas, cota 50/50 por fonte, dedupe de 30 dias (fase 5C; a conta está em `docs/superpowers/reviews/2026-08-26-descoberta-shopee.md`) |
 | Sinalização de publicidade | **Nenhuma** — decisão do dono na fase 5C. O risco regulatório está registrado em `2026-08-26-analise-adversarial.md` (A7) |
 | Infra | **GitHub Actions (cron) é a produção** desde a fase 5C — de hora em hora, 08:00–23:00 BRT (16 jobs/dia: o GitHub cobra cada job arredondado para o minuto seguinte, e a cadência de 30 min estourava a cota); a VPS (systemd, 5 min) fica opcional. O código não depende de nenhum dos dois |
@@ -51,17 +51,20 @@ Actions**: `publish.yml` de hora em hora das 08:00 às 23:00 BRT (16 jobs/dia,
 antes do push. A VPS (timer systemd a cada 5 min, 192 execuções/dia, 1 oferta
 por run; `docs/runbooks/vps-setup.md`) fica **opcional**, para quem quiser
 cadência mais fina — nunca as duas ao mesmo tempo. Cada canal tem um teto diário
-(`max_per_day`: `telegram` 60 — a meta do canal —, `story_dispatch` 6,
+(`max_per_day`: `telegram` 60 — a meta do canal —, `instagram_story` 6,
 `instagram_feed` 2), contado no **dia local** de `schedule.timezone` e, desde
 a fase 5A, **distribuído pela janela** `schedule.window_start`–`window_end`:
 um canal só publica enquanto o que já postou hoje está abaixo de
 `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`;
 fora da janela o orçamento é 0. Sem nenhum canal aberto o run termina antes
 do ranking — nenhuma oferta paga preço ao vivo, link, copy ou validação sem
-ter onde ser publicada. `story_dispatch` é **manual**: a arte e o link chegam
-prontos ao chat de operações e o dono posta o story à mão — essas ofertas
-entram em `summary.dispatched` e em `day_stats().dispatched`, nunca em
-"publicados" (senão o heartbeat da manhã relata um dia melhor do que o dia foi).
+ter onde ser publicada. `instagram_story` é publicação de VERDADE: conta em
+`summary.published`, em `day_stats().published` e no heartbeat, como o feed e o
+Telegram. Quem é **manual** é só o `story_dispatch` (desligado desde a 5E): a
+arte e o link chegam prontos ao chat de operações e o dono posta o story à mão
+— essas ofertas entram em `summary.dispatched` e em `day_stats().dispatched`,
+nunca em "publicados" (senão o heartbeat da manhã relata um dia melhor do que o
+dia foi).
 
 A descoberta deixou de ser refeita a cada run (fase 5C, C1). Cada run lê uma
 **fatia** do espaço da API (`shopee.calls_per_run`, cursor persistido em
@@ -98,8 +101,10 @@ Afiliado/
 │   ├── channels/
 │   │   ├── base.py          # interface: publish(post) -> PublishResult
 │   │   ├── telegram.py      # Bot API — fase 1
-│   │   ├── story_dispatch.py    # fase 2A: arte de story + link prontos no chat de operações (semi-auto)
+│   │   ├── story_dispatch.py    # fase 2A: arte de story + link prontos no chat de operações (semi-auto; DESLIGADO desde a 5E, fallback manual)
+│   │   ├── instagram_common.py  # fase 5E: base dos dois canais do IG (hosts, JPEG, hospedagem da arte, chamadas que não levantam)
 │   │   ├── instagram_feed.py    # fase 2A: post de feed 100% automático via Meta Graph API
+│   │   ├── instagram_story.py   # fase 5E: story 100% automático (media_type=STORIES + polling do container)
 │   │   └── whatsapp.py      # fase 4
 │   ├── llm.py               # wrapper `claude -p` + fallback API key
 │   ├── validate.py          # portões pré-publicação
@@ -184,7 +189,7 @@ Custo LLM por run: ~4 chamadas curtas (1 ranking + N copies) na cota Max.
 | Fase | Entrega | Racional |
 |---|---|---|
 | 1 | Shopee → Telegram, full auto, com estado, validação e chat de operações | APIs 100% oficiais dos dois lados; valida o pipeline de ponta a ponta com risco zero |
-| 2 | Instagram feed + stories via Meta Graph API; criativos por template (Pillow); exige conta business/creator vinculada a página do Facebook — **estágio A entregue** (semi-auto stories via `story_dispatch` + feed via API oficial, `instagram_feed`, desligado até o runbook de setup) | Motor de crescimento de audiência |
+| 2 | Instagram feed + stories via Meta Graph API; criativos por template (Pillow); exige conta business/creator vinculada a página do Facebook — **estágio A entregue** (semi-auto stories via `story_dispatch` + feed via API oficial, `instagram_feed`, desligado até o runbook de setup). **Fechado na fase 5E**: o story passou a ser publicado pela API (`instagram_story`) e o `story_dispatch` virou fallback manual desligado | Motor de crescimento de audiência |
 | 3 | Mercado Livre (descoberta + spike do link, estratégias do §6) | Segunda fonte de ofertas |
 | 4 | WhatsApp via biblioteca não-oficial, rodando na VPS | Só quando houver audiência que justifique o risco de banimento do número; risco documentado e aceito explicitamente na hora |
 

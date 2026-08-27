@@ -1,5 +1,15 @@
 state:
   path: data/state.db
+  # Fase 5F (I2): o `afiliado stories` roda na MÁQUINA DO DONO e escreve num
+  # banco próprio. `data/state.db` acima é rastreado no git e o Actions o
+  # commita a cada run — o comando local escrevendo nele faria todo `git pull`
+  # virar conflito binário. Este arquivo está no .gitignore e é só dele.
+  # O preço, para você saber: o dedupe e o histórico de preços do canal de
+  # story com figurinha ficam INDEPENDENTES do resto — um produto que saiu no
+  # Telegram de manhã pode virar story à tarde. São superfícies diferentes e
+  # são 6 por dia; se um dia isso incomodar, aponte os dois para o mesmo
+  # arquivo e aceite os conflitos.
+  stories_path: data/state_stories.db
 
 # Fase 5A: dia LOCAL e ritmo. O teto diário de cada canal, o price_log e a
 # deduplicação de avisos são contados no dia deste fuso (antes era UTC: a
@@ -199,7 +209,8 @@ brand:
 watchlist:
   path: data/watchlist.json
 
-# Variante da API do Instagram usada por `instagram_feed` e pelo doctor:
+# Variante da API do Instagram usada por `instagram_feed`, `instagram_story`
+# (fase 5E) e pelo doctor:
 #   instagram_login — "API do Instagram com Login do Instagram": token gerado no painel
 #                     da Meta, sem Página do Facebook (padrão; ver docs/runbooks/meta-setup.md)
 #   facebook_login  — conta business vinculada a Página; token via Graph API Explorer
@@ -215,12 +226,43 @@ channels:
   telegram:
     enabled: true
     max_per_day: 60          # meta: 60 ofertas/dia, espalhadas das 08:00 às 23:15 (~1 a cada 15 min)
+  # Fase 5E: DESLIGADO. Este canal só entrega a arte no chat de operações para
+  # o dono postar à mão — 6 gestos por dia. Ele existia porque o projeto
+  # acreditava que a API não publicava story; ela publica (medido ao vivo em
+  # 2026-08-27, ver docs/runbooks/meta-setup.md) e quem faz isso agora é o
+  # `instagram_story` abaixo. Continua aqui como FALLBACK MANUAL: se a conta
+  # perder a permissão de publicação (instagram_content_publish), ligue este e
+  # desligue o outro — o dia volta a sair, só que na mão.
   story_dispatch:
-    enabled: true            # SEMI-automático: arte de story + link prontos no chat de operações; você posta
+    enabled: false           # SEMI-automático: arte de story + link prontos no chat de operações; você posta
     max_per_day: 6           # artes de story por dia, ~uma a cada 2h40
   instagram_feed:
     enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
     max_per_day: 2           # 1 de manhã, a 2ª só a partir da metade da janela
+  # Fase 5E: story publicado pela API oficial (media_type=STORIES, sem legenda
+  # e sem sticker de link — a API não tem um). A cota de publicação da Meta é
+  # COMPARTILHADA com o feed: 100 por 24 h; 2 + 6 usam 8.
+  instagram_story:
+    enabled: true
+    max_per_day: 6           # stories por dia, ~um a cada 2h40 (o teto que era do despacho manual)
+  # Fase 5F: story COM figurinha de link, pelo instagrapi (API PRIVADA). Existe
+  # porque a Graph API NEGA figurinhas e o Meta Business Suite só põe link em
+  # story do Facebook — ver docs/superpowers/reviews/2026-08-27-sticker-de-link.md.
+  #
+  # REGRA DE OURO: este canal e o `instagram_story` acima NUNCA ficam ligados ao
+  # mesmo tempo. Publicar pela API privada e pela oficial na MESMA conta, no
+  # mesmo dia, é o padrão que chama atenção — o `doctor` reclama se os dois
+  # estiverem `enabled: true`. O de cima é o fallback: se este desarmar, ligue
+  # aquele e desligue este.
+  #
+  # E ele NÃO roda no GitHub Actions nem na VPS: só no `afiliado stories`, na
+  # máquina do dono (IP residencial, sessão e device estáveis). O `afiliado run`
+  # ignora este canal com aviso, mesmo ligado.
+  instagram_story_link:
+    enabled: false           # o dono liga depois de rodar `afiliado ig-login`
+    max_per_day: 6           # stories por dia, ~um a cada 2h40
+    max_sem_link: 2          # falhas de verificação SEGUIDAS antes de desarmar o canal
+    # session_path: data/ig_session.json   # padrão; está no .gitignore
 
 # Fase 1.8: chat de operações só recebe resumo quando o run publicou,
 # descartou ou gerou aviso — evita 192 mensagens/dia com a cadência de 5 min.

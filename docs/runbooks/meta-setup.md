@@ -1,6 +1,7 @@
 # Runbook — Setup Meta/Instagram (fase 2)
 
-Checklist para habilitar o feed automático (`instagram_feed`). Existem **duas
+Checklist para habilitar os dois canais automáticos do Instagram
+(`instagram_feed` e, desde a fase 5E, `instagram_story`). Existem **duas
 variantes** da API do Instagram; o pipeline suporta as duas (`instagram.api` no
 `config.yaml`).
 
@@ -15,11 +16,45 @@ variantes** da API do Instagram; o pipeline suporta as duas (`instagram.api` no
 Quando travar em qualquer passo, abra o Claude Code e peça ajuda citando o
 número do passo.
 
+## Story pela API oficial (fase 5E) — a afirmação antiga estava ERRADA
+
+Da fase 2A até a 5C este runbook, o spec e o `README` diziam que **"a API não
+publica story"**, e por isso existia o `story_dispatch`: a arte ia para o chat
+de operações e o dono postava à mão, 6 gestos por dia, 2.190 por ano.
+**A premissa estava errada.** Em **2026-08-27** o fluxo foi testado AO VIVO na
+conta real (`@ofiscaldapromo`, Variante B, token de Página permanente) e
+publicou. O que foi medido, e que o canal `instagram_story` codifica:
+
+1. **Container.** `POST /{ig_user_id}/media` com `image_url=<JPEG público>` e
+   **`media_type=STORIES`** → `{"id": "18090130007292530"}`.
+   **Sem `caption`** — story não aceita legenda pela API.
+2. **Status.** `GET /{creation_id}?fields=status_code,status` devolve
+   `IN_PROGRESS` logo após criar (`"Media is still being processed."`).
+3. **Publicação.** `POST /{ig_user_id}/media_publish` com `creation_id`
+   funcionou **mesmo com o container ainda `IN_PROGRESS`**. O canal faz polling
+   assim mesmo (5 leituras, 1 s entre elas): com imagem maior, contar com isso é
+   o tipo de coisa que falha em produção. Esgotadas as tentativas ainda em
+   `IN_PROGRESS`, ele publica — foi o que funcionou ao vivo.
+4. **Resultado.** `media_product_type: "STORY"`, `media_type: "IMAGE"`,
+   `permalink: https://www.instagram.com/stories/ofiscaldapromo/<id>`.
+5. **Cota.** `GET /{ig_user_id}/content_publishing_limit?fields=config,quota_usage`
+   → `{"config": {"quota_total": 100, "quota_duration": 86400}, "quota_usage": 1}`.
+   A cota é **compartilhada** entre feed e stories: 2 posts + 6 stories por dia
+   usam 8 de 100.
+6. **Sem sticker de link.** Não existe sticker de link pela API — em nenhuma das
+   duas variantes. O story sai sem link clicável, e isso é aceito de propósito:
+   a arte já traz o handle e a chamada, e a legenda do feed diz "link na bio e
+   no canal do Telegram". **Não invente um sticker.**
+
+`story_dispatch` continua no código e no `config.yaml`, DESLIGADO, como
+fallback manual: se a conta perder `instagram_content_publish`, ligue-o e
+desligue o `instagram_story` — o dia volta a sair, na mão.
+
 ## Hospedagem da arte: use um bot secundário (fase 5C, A5)
 
-A arte do feed é enviada ao chat de operações do Telegram e a URL de `getFile`
-é o `image_url` que a Meta busca. **Essa URL carrega o bot token** — e o que
-expira nela é o `file_path`, não o token.
+A arte do feed **e a do story** é enviada ao chat de operações do Telegram e a
+URL de `getFile` é o `image_url` que a Meta busca. **Essa URL carrega o bot
+token** — e o que expira nela é o `file_path`, não o token.
 
 - [ ] Crie um **segundo bot** no @BotFather (ex.: `@fiscalarte_bot`).
 - [ ] Adicione-o SÓ ao chat de operações — ele não precisa (e não deve) ser
@@ -28,8 +63,9 @@ expira nela é o `file_path`, não o token.
       Secrets.
 
 Sem essa variável, quem hospeda a arte é o bot administrador do canal — e o
-token dele vai à Meta em todo post. O run avisa uma vez por dia:
-`⚠️ instagram_feed: arte hospedada pelo bot do canal — defina ART_HOST_BOT_TOKEN`.
+token dele vai à Meta em todo post. O run avisa uma vez por dia, **por canal**:
+`⚠️ instagram_feed: arte hospedada pelo bot do canal — defina ART_HOST_BOT_TOKEN`
+(e o mesmo com `instagram_story`).
 
 ---
 
@@ -117,13 +153,17 @@ curl "https://graph.facebook.com/v21.0/<PAGE_ID>?fields=instagram_business_accou
 ## Configurar e ligar (as duas variantes)
 
 - [ ] `.env` local e GitHub Secrets: `IG_USER_ID`, `IG_ACCESS_TOKEN`.
-- [ ] `config.yaml`: `instagram.api` conforme a variante e
-      `channels.instagram_feed.enabled: true`.
+- [ ] `config.yaml`: `instagram.api` conforme a variante,
+      `channels.instagram_feed.enabled: true` e
+      `channels.instagram_story.enabled: true` (os dois usam as MESMAS envs).
 - [ ] `afiliado doctor` → deve mostrar `✅ Instagram: @ofiscaldapromo`.
 - [ ] `afiliado run --dry-run` e depois um run real para validar o primeiro post.
 
 ## Notas
-- O sticker de link em stories NÃO é suportado por nenhuma das variantes — os
-  stories seguem pelo fluxo semi-automático (`story_dispatch`).
-- A API só aceita **JPEG** para `image_url`; o canal converte a arte
-  automaticamente e a hospeda temporariamente via Telegram.
+- O sticker de link em stories NÃO é suportado por nenhuma das variantes. O que
+  NÃO se conclui disso — e o projeto concluiu errado até a fase 5C — é que o
+  story não possa ser publicado: ele pode, só sai sem link clicável (ver a
+  seção "Story pela API oficial", acima).
+- A cota de publicação (100/24h) é **compartilhada** entre feed e stories.
+- A API só aceita **JPEG** para `image_url`; os canais convertem a arte
+  automaticamente e a hospedam temporariamente via Telegram.

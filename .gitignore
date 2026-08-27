@@ -7,6 +7,14 @@ preview-*.png
 .claude/previews/
 data/meli_token.json
 data/meli_token.json.tmp
+# sessão do instagrapi (fase 5F): cookies + perfil de device da conta. É
+# credencial VIVA — commitá-la entrega a conta a quem clonar o repo.
+data/ig_session.json
+# banco do `afiliado stories` (fase 5F): ele roda na máquina do dono, fora do
+# Actions. O `data/state.db` é commitado a cada run pelo Actions — se o comando
+# local escrevesse nele, todo `git pull` viraria conflito binário.
+data/state_stories.db
+data/state_stories.db-*
 # resultados brutos das consultas ao JoomPulse (skills /meli-pool-refresh e
 # /watchlist-refresh): cache local para retomar sem repetir consulta
 data/joompulse_raw/

@@ -18,7 +18,8 @@ motivo para desistir; é motivo para não apostar em um canal só.
 Fatos com evidência forte (fonte oficial ou primária):
 
 - Reels e carrosséis alcançam não-seguidores; **stories não trazem seguidor
-  novo** (alcançam quem já segue). Os 6 stories/dia são retenção, não aquisição.
+  novo** (alcançam quem já segue). Os 6 stories/dia são retenção, não aquisição
+  — e desde a fase 5E são **do pipeline**, não do dono (ver `instagram_story`).
 - O sinal de ranqueamento mais forte para alcançar não-seguidores é **envio**
   (*sends*) — post de oferta é naturalmente "manda pra fulana".
 - **Trial Reels** só a partir de **1.000 seguidores**; entre quem usa, +80% de
@@ -113,9 +114,12 @@ custo por membro de Telegram** — hipótese R$ 1–10; só um teste pequeno res
 
 | Tempo por dia | O que entra |
 |---|---|
-| 0 | só o automatizado: 2, 3 (leitura), 7, 8, 9, 10 |
-| 15 min | + stories, cupom, trocas semanais |
+| 0 | só o automatizado: 2, 3 (leitura), 7, 8, 9, 10 **e os 6 stories/dia** |
+| 15 min | + cupom, trocas semanais |
 | 1 h | + grupo WhatsApp 1-a-1, DMs, Shopee Video manual |
+
+Os stories saíram da linha de 15 min na fase 5E: eram 6 gestos manuais por dia
+(2.190 por ano) e passaram a ser publicação do pipeline (`instagram_story`).
 
 ## O que o pipeline passa a fazer — fase 5D "crescimento" (depois da 5C)
 
@@ -152,10 +156,13 @@ legenda. Decisão do dono; fica registrada aqui.
   sintética (voz gerada) como variante a testar contra a versão só-texto.
   3–5 Reels/semana: os 2 melhores publicados à mão no app com áudio em alta;
   o resto pela API. Todos republicados no Shopee Video.
-- **1 h/dia de ações manuais**, como rotina fixa: 15 min stories (as 6 artes
-  do chat de ops) · 15 min DMs de troca de divulgação e comentários · 10 min
-  subir os Reels no Shopee Video · 10 min cupom, diretórios e lista do ML
-  (primeiras semanas) · 10 min ler o resumo de ops e responder.
+- **1 h/dia de ações manuais**, como rotina fixa: 25 min DMs de troca de
+  divulgação e comentários · 15 min subir os Reels no Shopee Video · 10 min
+  cupom, diretórios e lista do ML (primeiras semanas) · 10 min ler o resumo de
+  ops e responder.
+  Os 15 min de "postar os 6 stories" saíram na fase 5E — o `instagram_story`
+  publica sozinho. O tempo foi para as duas coisas que mais precisavam dele: as
+  DMs de troca (é o que alimenta "canais semelhantes") e o Shopee Video.
 - **Sem sinalização de publicidade** (decisão mantida; risco registrado acima).
 
 ## Métricas e ritmo

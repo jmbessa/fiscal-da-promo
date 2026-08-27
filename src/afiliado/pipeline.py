@@ -159,6 +159,19 @@ class _Warner:
         return True
 
 
+def _drena_avisos(ch) -> list[str]:
+    """Tira do canal os avisos que ele juntou publicando e esvazia a lista.
+
+    `warnings` é OPCIONAL (só o `instagram_story` tem hoje): canal sem a lista
+    — ou com outra coisa no lugar — não pode quebrar o run."""
+    avisos = getattr(ch, "warnings", None)
+    if not isinstance(avisos, list) or not avisos:
+        return []
+    drenados = list(avisos)
+    avisos.clear()
+    return drenados
+
+
 def candidate_max_age_days(cfg: dict, source: str) -> int:
     """`<fonte>.candidate_max_age_days` do config: por quantos dias uma
     candidata descoberta continua elegível. 0/ausente = a fonte não usa o
@@ -325,6 +338,12 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     # termina AQUI: nenhuma oferta paga refresh_price, link, copy (LLM) ou
     # validação sem ter onde ser publicada — antes, com todos no teto, cada
     # run varria a fila inteira (195 chamadas LLM, 97 links, 0 posts).
+    #
+    # Um teto que este código NÃO conhece: a cota de publicação da Meta é de
+    # 100 por 24 h e COMPARTILHADA por `instagram_feed` e `instagram_story`
+    # (medida ao vivo em 2026-08-27; o doctor a imprime). Os `max_per_day` do
+    # config.yaml saem do mesmo balde — 2 + 6 usam 8 de 100. Quem for subir
+    # esses números um dia: some os dois antes, porque a Meta soma.
     horario = schedule_settings(cfg)
     agora = db.local_now()
     orcamento: dict[str, int | None] = {}
@@ -468,16 +487,32 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                     tetos_atingidos.add(ch.name)   # teto de verdade: vira aviso
                 continue                            # ritmo/max_per_run: silêncio
             res = ch.publish(post)
-            if res.ok:
+            # Aviso que só existe DEPOIS de publicar (fase 5E: a Meta não
+            # devolveu `status_code` do container e o polling ficou cego — 5
+            # GETs e 4 s de espera em todo story). Os avisos de MONTAGEM já
+            # tinham caminho (`warnings_iniciais`); este não tinha nenhum e
+            # morria dentro do canal. Sai pelo mesmo `warn`: uma vez por dia.
+            for aviso in _drena_avisos(ch):
+                warn(aviso)
+            # Fase 5F (C2): um post que FOI ao ar conta para o teto do canal e
+            # para o dedupe mesmo quando o canal reprovou o resultado (story
+            # publicado sem a figurinha de link). Ele está na conta; o público
+            # vê. Sem isto o canal quebrado publicava 2 stories por run sem
+            # consumir max_per_run nem max_per_day, e `count_posts_today` ficava
+            # em 0 — ~12 stories sem link por dia, invisíveis a todo teto.
+            manual = bool(getattr(ch, "manual", False))
+            if res.ok or bool(getattr(res, "publicado", False)):
                 usados[ch.name] = usados.get(ch.name, 0) + 1
                 if orcamento[ch.name] is not None:
                     usados_dia[ch.name] = usados_dia.get(ch.name, 0) + 1
-                manual = bool(getattr(ch, "manual", False))
                 db.record_post(post, ch.name, res.message_id, manual=manual)
+            if res.ok:
                 published_any = True
                 so_manuais = so_manuais and manual
                 falhas_seguidas[ch.name] = 0
             else:
+                # Publicado ou não, o resultado foi falha: a oferta vai para
+                # `discarded` com o motivo, e o circuito do canal conta.
                 summary.discarded.append((rotulo, f"publicação falhou em {ch.name}: {res.error}"))
                 falhas_seguidas[ch.name] = falhas_seguidas.get(ch.name, 0) + 1
                 if falhas_seguidas[ch.name] >= MAX_FALHAS_SEGUIDAS_POR_CANAL:

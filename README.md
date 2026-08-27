@@ -20,19 +20,23 @@ Pipeline automático de divulgação de ofertas com link de afiliado
 | `CLAUDE_CODE_OAUTH_TOKEN` | Rodar `claude setup-token` na sua máquina (usa a assinatura Max) |
 | `ART_HOST_BOT_TOKEN` | Bot **secundário** que hospeda a arte do feed (fase 5C). Crie um segundo bot no @BotFather e adicione **só ao chat de operações** — a URL da arte que vai à Meta carrega o token de quem a enviou, e não pode ser o do administrador do canal |
 | `IG_USER_ID` / `IG_ACCESS_TOKEN` | Feed automático do Instagram (fase 2A) — seguir `docs/runbooks/meta-setup.md` |
+| `IG_USERNAME` / `IG_PASSWORD` | Story **com figurinha de link** (fase 5F, canal `instagram_story_link`). É a **senha da conta**, não um token revogável — só na máquina do dono, **nunca** nos GitHub Secrets nem na VPS. Seguir `docs/runbooks/instagrapi-stories.md` |
 | `MELI_CLIENT_ID` / `MELI_CLIENT_SECRET` / `MELI_REFRESH_TOKEN` | Fonte Mercado Livre (fase 3, desligada por padrão) — seguir `docs/runbooks/meli-setup.md` |
 
-São **12 variáveis**: `SHOPEE_APP_ID`, `SHOPEE_APP_SECRET`, `TELEGRAM_BOT_TOKEN`,
+São **14 variáveis**: `SHOPEE_APP_ID`, `SHOPEE_APP_SECRET`, `TELEGRAM_BOT_TOKEN`,
 `TELEGRAM_CHANNEL_ID`, `TELEGRAM_OPS_CHAT_ID`, `ART_HOST_BOT_TOKEN`,
-`CLAUDE_CODE_OAUTH_TOKEN`, `IG_USER_ID`, `IG_ACCESS_TOKEN`, `MELI_CLIENT_ID`,
-`MELI_CLIENT_SECRET`, `MELI_REFRESH_TOKEN`. As do Instagram e do Mercado Livre
-podem ficar vazias: o canal/fonte correspondente é ignorado com aviso no chat
-de operações. `ART_HOST_BOT_TOKEN` vazia também funciona — com um aviso diário,
-porque aí o token do bot do canal é o que viaja até a Meta.
+`CLAUDE_CODE_OAUTH_TOKEN`, `IG_USER_ID`, `IG_ACCESS_TOKEN`, `IG_USERNAME`,
+`IG_PASSWORD`, `MELI_CLIENT_ID`, `MELI_CLIENT_SECRET`, `MELI_REFRESH_TOKEN`. As
+do Instagram e do Mercado Livre podem ficar vazias: o canal/fonte correspondente
+é ignorado com aviso no chat de operações. `ART_HOST_BOT_TOKEN` vazia também
+funciona — com um aviso diário, porque aí o token do bot do canal é o que viaja
+até a Meta.
 
 No GitHub: Settings → Secrets and variables → Actions → criar os secrets acima
-(todos já repassados pelo `publish.yml`). Na VPS, o `.env` (template completo
-em `deploy/install-vps.sh`).
+(todos já repassados pelo `publish.yml`) — **menos `IG_USERNAME`/`IG_PASSWORD`**,
+que não vão para o Actions de jeito nenhum: o canal que as usa não roda lá (ver
+`docs/runbooks/instagrapi-stories.md`). Na VPS, o `.env` (template completo em
+`deploy/install-vps.sh`), com essas duas vazias.
 
 ## Instagram (fase 2A)
 
@@ -41,18 +45,8 @@ Grotesque (variável) e IBM Plex Mono, paleta navy/dourado e o mascote
 desenhado por código em `src/afiliado/brand.py` (ver `docs/brand-guidelines.md`);
 nome e handle exibidos nas artes vêm de `brand:` em `config.yaml`.
 
-Dois canais, dois níveis de automação:
+Dois canais automáticos (feed e story) e um fallback manual desligado:
 
-- **`story_dispatch` (MANUAL, ligado por padrão, teto de 6/dia)** — o pipeline
-  **não posta stories**. Ele gera a arte (1080×1920) e a manda ao chat de
-  operações do Telegram, seguida de uma segunda mensagem só com o link de
-  afiliado; quem posta é você: abrir o Telegram, salvar a arte, postar como
-  story no Instagram e colar o link no sticker. Não depende de nenhuma
-  credencial da Meta. O teto (`max_per_day: 6`) limita as artes ao que dá pra
-  postar à mão num dia, e no resumo do run essas ofertas aparecem numa seção
-  própria — **"📤 Despachados p/ ops — postar no app"** —, fora da contagem de
-  publicados (e fora do heartbeat da manhã: enquanto você não posta, ninguém
-  publicou nada).
 - **`instagram_feed` (100% automático via Graph API, teto de 2/dia)** —
   publica direto no feed (1080×1350) sem intervenção humana. Requer
   `IG_USER_ID` / `IG_ACCESS_TOKEN` (obtidos via `docs/runbooks/meta-setup.md`;
@@ -61,6 +55,23 @@ Dois canais, dois níveis de automação:
   link de afiliado — só "🔗 Link na bio e no canal do Telegram" — porque a API
   não permite CTA clicável fora da bio. A arte é hospedada pelo bot de
   `ART_HOST_BOT_TOKEN` (ver Credenciais).
+- **`instagram_story` (100% automático via Graph API, teto de 6/dia — fase
+  5E)** — publica o story (1080×1920) sozinho: container com
+  `media_type=STORIES`, polling do `status_code` e `media_publish`. Mesmas envs
+  e mesma hospedagem de arte do feed; a cota de publicação da Meta (100/24 h) é
+  **compartilhada** entre os dois. **Story não aceita legenda nem sticker de
+  link pela API** — a arte já traz o handle e a chamada, e o link mora na bio e
+  no Telegram. Até a fase 5C o projeto afirmava que a API não publicava story;
+  a afirmação estava errada, e o teste ao vivo de 2026-08-27 está registrado em
+  `docs/runbooks/meta-setup.md`.
+- **`story_dispatch` (MANUAL, DESLIGADO desde a fase 5E, teto de 6/dia)** —
+  fallback para o dia em que a conta perder a permissão de publicação. Gera a
+  arte de story e a manda ao chat de operações do Telegram, seguida de uma
+  segunda mensagem só com o link de afiliado; quem posta é você. Não depende de
+  nenhuma credencial da Meta. No resumo do run essas ofertas aparecem numa
+  seção própria — **"📤 Despachados p/ ops — postar no app"** —, fora da
+  contagem de publicados (e fora do heartbeat da manhã: enquanto você não
+  posta, ninguém publicou nada).
 
 ## Mercado Livre (fase 3, parte 1 — desligado por padrão)
 
@@ -90,6 +101,19 @@ ao vivo → link) em `docs/runbooks/meli-setup.md`.
   sem publicar. Sem efeitos colaterais: não escreve no `state.db`, não baixa a
   imagem e não toca no link de afiliado.
 - `afiliado run` — executa e publica de verdade.
+- `afiliado stories [--posts N] [--dry-run]` — o mesmo pipeline com **só o
+  canal de API privada** (`instagram_story_link`, instagrapi, story com
+  figurinha de link), para o dono rodar da própria máquina (fase 5F). É o
+  único comando que o monta; `afiliado run` o ignora mesmo ligado, porque ele
+  não pode rodar no GitHub Actions. O contrário também vale: os canais que o
+  Actions publica — inclusive o `instagram_story` da Graph API — **não** sobem
+  aqui, e este comando usa um **banco próprio** (`state.stories_path`, padrão
+  `data/state_stories.db`, no `.gitignore`), então o dedupe dele é
+  independente do resto.
+- `afiliado ig-login` — cria/renova `data/ig_session.json`, a sessão do
+  instagrapi, lendo `IG_USERNAME`/`IG_PASSWORD` do ambiente. Um login
+  bem-sucedido também **rearma** o canal, se ele tiver se desarmado hoje. Ver
+  `docs/runbooks/instagrapi-stories.md`.
 
 ## Portões e política de falhas (fase 5A)
 
@@ -209,8 +233,9 @@ pode chegar a publicar; quem distribui os 60/dia pela janela é o
 
 Cada canal tem um teto diário (`max_per_day` em `config.yaml`, contado no
 SQLite **no dia local** de `schedule.timezone`): `telegram` em 60/dia (a meta
-do canal), `story_dispatch` em 6/dia (artes de story que chegam ao seu chat —
-**manual**: você posta o story à mão) e `instagram_feed` em 2/dia.
+do canal), `instagram_story` em 6/dia e `instagram_feed` em 2/dia
+(`story_dispatch`, o fallback manual, está desligado e herdaria os mesmos
+6/dia).
 Desde a fase 5A o teto é **distribuído pela janela** (`schedule.window_start`
 – `window_end`): um canal só publica enquanto o que já postou hoje está
 abaixo de `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`
@@ -239,8 +264,9 @@ fallback.
   5C). A análise adversarial de 2026-08-26 registra o risco regulatório dessa
   escolha (CDC art. 36, guia CONAR para influenciadores) em
   `docs/superpowers/reviews/2026-08-26-analise-adversarial.md`, A7.
-- **Não posta stories.** `story_dispatch` entrega a arte e o link ao chat de
-  operações; o gesto de postar é seu (ver Instagram, acima).
+- **Não põe link clicável no story.** O story É publicado automaticamente
+  (`instagram_story`, fase 5E), mas a API da Meta não tem sticker de link: a
+  arte leva o handle e a chamada, e o link fica na bio e no Telegram.
 - **Não clica no próprio link de afiliado.** A validação do link é offline
   (`https` + host permitido); um GET no link curto seria um clique artificial
   do IP do runner, segundos depois de gerado.

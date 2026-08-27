@@ -458,6 +458,128 @@ def test_max_sem_link_configuravel():
     assert canal.disponivel is False and canal.warnings == [AVISO_DESARMADO.format(n=1)]
 
 
+# -- 5b. o desarme atravessa runs (rodada de correção, C2) ---------------------
+#
+# O desarme vivia só na instância e um `SEM_LINK` não consumia teto nenhum: a
+# revisão mediu 2 uploads por run, `count_posts_today == 0`, e tudo zerado no
+# processo seguinte — ~12 stories sem figurinha por dia, para sempre,
+# invisíveis ao ritmo e ao teto da 5A.
+
+
+def _um_run(banco, links_do_story, ofertas=3, max_sem_link=2):
+    """UM run do pipeline, do jeito que o processo seguinte o encontraria: o
+    banco reaberto do arquivo e um canal recém-construído — nada em memória
+    atravessa daqui para o próximo."""
+    from afiliado import pipeline
+    from afiliado.state import StateDB
+    from tests.test_models import make_offer
+    from tests.test_pipeline import CFG, FakeSource, no_network_validator
+
+    db = StateDB(banco)
+    cliente = FakeClient(links_do_story=links_do_story)
+    canal = _canal(cliente, estado=db, max_sem_link=max_sem_link)
+    canal.max_per_day = 6
+    lote = [make_offer(item_id=f"a{i}", title=f"Oferta {i}") for i in range(ofertas)]
+    resumo = pipeline.run(CFG, [FakeSource(lote)], [canal], db,
+                          validator=no_network_validator)
+    publicados = db.count_posts_today(canal.name)
+    db.close()
+    return cliente, canal, resumo, publicados
+
+
+def test_dois_runs_em_processos_separados_nao_passam_de_max_sem_link(tmp_path,
+                                                                     monkeypatch):
+    """C2, o teste que atravessa PROCESSOS: cada run reabre o banco e constrói
+    um canal novo. Com o instagrapi quebrado, o DIA inteiro não passa de
+    `max_sem_link` uploads — e cada story que foi ao ar está no banco."""
+    from afiliado import llm
+    from tests.test_pipeline import _congela
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    _congela(monkeypatch, 20, 0)
+    banco = tmp_path / "state_stories.db"
+
+    c1, _, resumo1, publicados1 = _um_run(banco, [])
+    c2, _, resumo2, publicados2 = _um_run(banco, [])
+    c3, canal3, _, publicados3 = _um_run(banco, [])
+
+    uploads = sum([e[0] for e in c.chamadas].count("upload") for c in (c1, c2, c3))
+    assert uploads == 2                       # == max_sem_link, no dia inteiro
+    assert [c[0] for c in c3.chamadas] == []  # o 3º run nem tocou no Instagram
+
+    # Os stories que foram ao ar contam para o teto do dia e para o dedupe.
+    assert (publicados1, publicados2, publicados3) == (1, 2, 2)
+
+    # E o canal do 3º processo já nasce fechado, dizendo por quê.
+    assert canal3.disponivel is False and canal3.max_per_run == 0
+    assert canal3.warnings == [AVISO_DESARMADO.format(n=2)]
+    assert AVISO_DESARMADO.format(n=2) in resumo2.warnings + canal3.warnings
+    assert resumo1.published == resumo2.published == []
+
+
+def test_o_desarme_por_sessao_invalida_tambem_atravessa_o_run(tmp_path):
+    """Um desafio no upload fecha o canal pelo DIA — não pelo run. Seis
+    processos por dia insistindo contra uma conta sinalizada é exatamente o
+    que a fase existe para não fazer."""
+    from afiliado.state import StateDB
+
+    db = StateDB(tmp_path / "s.db")
+    canal = _canal(FakeClient(erro_upload=ChallengeRequired("challenge_required")),
+                   estado=db)
+    assert not canal.publish(make_post()).ok
+    assert db.day_flag(mod.CHAVE_DESARMADO) == mod.AVISO_SESSAO
+
+    depois = _canal(FakeClient(links_do_story=[]), estado=db)
+    assert depois.disponivel is False and depois.max_per_run == 0
+    assert depois.warnings == [mod.AVISO_SESSAO]
+    assert not depois.publish(make_post()).ok
+    assert depois.client.chamadas == []          # nenhuma chamada nova
+    db.close()
+
+
+def test_o_contador_de_sem_link_atravessa_o_run_e_uma_verificacao_boa_o_zera(tmp_path):
+    from afiliado.state import StateDB
+
+    db = StateDB(tmp_path / "s.db")
+    post = make_post()
+    canal = _canal(FakeClient(links_do_story=[]), estado=db)
+    assert not canal.publish(post).ok
+    assert canal.disponivel is True               # uma só não desarma
+    assert db.day_flag(mod.CHAVE_SEM_LINK) == "1"
+
+    # Run seguinte, processo novo: o contador veio junto — e o instagrapi voltou.
+    depois = _canal(_com_link(post), estado=db)
+    assert depois.sem_link_seguidos == 1
+    assert depois.publish(post).ok
+    assert depois.sem_link_seguidos == 0
+    assert db.day_flag(mod.CHAVE_SEM_LINK) == ""  # zerado no banco também
+    db.close()
+
+
+def test_canal_sem_estado_persistente_continua_funcionando(tmp_path):
+    """`estado` é opcional: o canal construído sem banco (testes, uso avulso)
+    se comporta como antes — desarme só dentro do processo."""
+    canal = _canal(FakeClient(links_do_story=[]), max_sem_link=1)
+    assert not canal.publish(make_post()).ok
+    assert canal.disponivel is False
+
+
+def test_o_story_sem_figurinha_e_um_post_publicado(tmp_path):
+    """A raiz do C2: o story está na conta e o público vê. `ok=False` (não
+    converte) mas `publicado=True` — é o que faz o pipeline gravá-lo."""
+    post = make_post()
+    res = _canal(FakeClient(links_do_story=[])).publish(post)
+    assert not res.ok and res.publicado is True and res.message_id == "STORY-777"
+
+    # Não verificável: o story também foi ao ar.
+    res = _canal(FakeClient(erro_info=RuntimeError("504"))).publish(post)
+    assert not res.ok and res.publicado is True and res.message_id == "STORY-777"
+
+    # Upload que levantou: NÃO afirmamos que foi ao ar.
+    res = _canal(FakeClient(erro_upload=RuntimeError("timeout"))).publish(post)
+    assert not res.ok and res.publicado is False
+
+
 # -- 6. o arquivo temporário da arte ------------------------------------------
 
 def test_o_arquivo_temporario_e_apagado_depois_do_upload():

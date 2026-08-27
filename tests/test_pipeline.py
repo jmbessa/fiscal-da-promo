@@ -1279,6 +1279,63 @@ def test_so_canal_manual_e_despacho_nao_publicacao(tmp_path, monkeypatch):
     db.close()
 
 
+# --- Fase 5F (C2): o post que FOI ao ar apesar do `ok=False` ------------------
+#
+# Um story sem figurinha é falha (não converte), mas ele ESTÁ na conta e o
+# público vê. Enquanto `usados`/`usados_dia`/`record_post` só avançavam com
+# `res.ok`, esse story não consumia `max_per_run` nem `max_per_day` e não
+# entrava no dedupe: cada run publicava 2 stories quebrados e o teto de 6/dia
+# não via nenhum deles.
+
+class CanalQuePublicaEFalha(NamedFakeChannel):
+    """O canal publicou de verdade e a verificação reprovou: `ok=False` com
+    `publicado=True` e o id do post que está no ar."""
+
+    def publish(self, post):
+        self.sent.append(post)
+        return PublishResult(False, f"PK-{len(self.sent)}",
+                             error="story publicado SEM figurinha de link",
+                             publicado=True)
+
+
+def test_post_publicado_com_ok_false_conta_para_o_teto_e_para_o_dedupe(tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    _congela(monkeypatch, 20, 0)
+    db = StateDB(tmp_path / "s.db")
+    ch = CanalQuePublicaEFalha("instagram_story_link", max_per_run=1)
+    ch.max_per_day = 6
+    offers = [make_offer(item_id=str(i)) for i in range(3)]
+
+    summary = pipeline.run(CFG, [FakeSource(offers)], [ch], db,
+                           validator=no_network_validator)
+
+    # UM upload, não dois: o story que foi ao ar gastou o `max_per_run`.
+    assert len(ch.sent) == 1
+    # Ele está no banco — logo conta para o teto do dia e para o dedupe...
+    assert db.count_posts_today("instagram_story_link") == 1
+    assert db.was_posted_recently("shopee", "0", days=30)
+    # ...e mesmo assim NÃO é sucesso: a oferta foi descartada, com o motivo.
+    assert summary.published == []
+    assert len(summary.discarded) == 1
+    assert "SEM figurinha de link" in summary.discarded[0][1]
+    db.close()
+
+
+def test_post_que_nao_foi_ao_ar_nao_conta(tmp_path, monkeypatch):
+    """A contraprova: falha sem publicação (o upload levantou) não grava nada —
+    senão o teto do dia seria gasto por posts que não existem."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = NamedFakeChannel("instagram_story_link", max_per_run=1, always_fail=True)
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
+                           validator=no_network_validator)
+    assert db.count_posts_today("instagram_story_link") == 0
+    assert not db.was_posted_recently("shopee", "a", days=30)
+    assert len(summary.discarded) == 1
+    db.close()
+
+
 class CanalQueAvisa(NamedFakeChannel):
     """Canal que só descobre um problema PUBLICANDO (fase 5E: a Meta não
     devolveu `status_code` do container e o polling ficou cego) e o deixa em

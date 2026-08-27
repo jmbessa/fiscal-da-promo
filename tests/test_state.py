@@ -209,6 +209,67 @@ def test_record_run_poda_os_avisos_de_dias_anteriores(tmp_path, monkeypatch):
     db.close()
 
 
+# --- Fase 5F (C2): marcas do DIA que sobrevivem ao processo -------------------
+#
+# O desarme do `instagram_story_link` vivia só na instância: um story sem
+# figurinha fechava o canal até o fim do run e o processo seguinte começava
+# armado de novo. Seis runs/dia = ~12 stories sem link por dia, para sempre.
+# `day_flag`/`set_day_flag` são o mesmo "uma vez por dia local" da tabela
+# `warned`, só que guardando um VALOR (o aviso) em vez de um carimbo.
+
+def test_day_flag_guarda_e_devolve_no_mesmo_dia_local(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    assert db.day_flag("story_link_desarmado") == ""
+    db.set_day_flag("story_link_desarmado", "⚠️ canal desarmado")
+
+    # Outro processo, mesmo banco, mesmo dia local: a marca continua lá.
+    outro = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    assert outro.day_flag("story_link_desarmado") == "⚠️ canal desarmado"
+    outro.close()
+
+    # 23:59 BRT já é o dia seguinte em UTC — e ainda é o mesmo dia local.
+    _congela(monkeypatch, datetime(2026, 8, 25, 23, 59, tzinfo=BRT))
+    assert db.day_flag("story_link_desarmado") == "⚠️ canal desarmado"
+    # O dia vira e a marca some sozinha: o canal amanhece rearmado.
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
+    assert db.day_flag("story_link_desarmado") == ""
+    db.close()
+
+
+def test_day_flag_apagada_e_reescrita(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    db.set_day_flag("k", "1")
+    db.set_day_flag("k", "2")
+    assert db.day_flag("k") == "2"
+    db.set_day_flag("k", "")                 # vazio = apaga (rearma)
+    assert db.day_flag("k") == ""
+    db.close()
+
+
+def test_day_flag_nao_escreve_em_dry_run(tmp_path, monkeypatch):
+    """A10: em `--dry-run` nada é gravado — nem o desarme."""
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 22, 0, tzinfo=BRT))
+    db.somente_leitura = True
+    db.set_day_flag("k", "x")
+    assert db.day_flag("k") == ""
+    db.close()
+
+
+def test_record_run_poda_as_marcas_de_dias_anteriores(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 25, 12, 0, tzinfo=BRT))
+    db.set_day_flag("a", "ontem")
+    _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
+    db.set_day_flag("b", "hoje")
+    db.record_run(published=0, discarded=0)
+    rows = db.conn.execute("SELECT key, day FROM day_flags ORDER BY day").fetchall()
+    assert rows == [("b", "2026-08-26")]
+    db.close()
+
+
 # --- Fase 5A: heartbeat (contagem de ontem) ----------------------------------
 
 def test_day_stats_de_ontem(tmp_path, monkeypatch):

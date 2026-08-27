@@ -78,6 +78,13 @@ COM_LINK = "com_link"
 SEM_LINK = "sem_link"
 NAO_VERIFICADO = "nao_verificado"
 
+# Chaves do desarme PERSISTENTE (fase 5F, rodada de correção — C2). Vivem no
+# `StateDB`, na tabela `day_flags`: uma linha por chave e DIA LOCAL, podada
+# sozinha na virada do dia. Antes o desarme morria com o processo, e o canal
+# quebrado recomeçava a publicar a cada run — ~12 stories sem link por dia.
+CHAVE_DESARMADO = "story_link_desarmado"
+CHAVE_SEM_LINK = "story_link_sem_link_seguidos"
+
 AVISO_DESARMADO = ("⚠️ instagram_story_link: {n} stories sem figurinha — canal "
                    "desarmado, ligue instagram_story (Graph API) como fallback")
 AVISO_SESSAO = ("⚠️ instagram_story_link: não consegui entrar no Instagram — canal "
@@ -86,6 +93,8 @@ AVISO_SEM_INSTAGRAPI = ("⚠️ instagram_story_link: instagrapi não instalado 
                         "desarmado, rode `pip install -e .[stories]`")
 AVISO_SEM_VERIFICACAO = ("⚠️ instagram_story_link: publicando SEM verificação da "
                          "figurinha — ninguém está conferindo se o link foi junto")
+AVISO_SEM_PK = ("⚠️ instagram_story_link: o instagrapi não devolveu o pk do story — "
+                "ele foi ao ar sem id, e o resumo não sabe dizer qual é")
 
 SEM_INSTAGRAPI = ("instagrapi não instalado — `pip install -e .[stories]` "
                   "(ver docs/runbooks/instagrapi-stories.md)")
@@ -233,7 +242,7 @@ class InstagramStoryLinkChannel:
                  brand_handle: str | None = None, brand_name: str = "Fiscal da Promo",
                  verificar: bool = True, max_sem_link: int = MAX_SEM_LINK_PADRAO,
                  link_factory: Callable[[str], object] | None = None,
-                 http_client: httpx.Client | None = None):
+                 http_client: httpx.Client | None = None, estado=None):
         self.username = (username or "").strip()
         # A senha só é lida em `cl.login`. Não vai a log, a exceção, a resumo:
         # ver `_sem_senha`, por onde passa TODA mensagem deste canal.
@@ -250,10 +259,15 @@ class InstagramStoryLinkChannel:
         self.max_sem_link = max(1, int(max_sem_link))
         self.link_factory = link_factory or story_link
         self.http_client = http_client
+        # `estado` é o StateDB (ou qualquer coisa com `day_flag`/`set_day_flag`):
+        # é o que faz o desarme sobreviver ao PROCESSO. Sem ele o canal funciona
+        # igual, só que o desarme vale por um run — que foi o defeito C2.
+        self.estado = estado
         # Estado do run: o pipeline drena `warnings` depois de cada publish.
         self.disponivel = True
         self.sem_link_seguidos = 0
         self.warnings: list[str] = []
+        self._le_estado_do_dia()
 
     # -- publicação ------------------------------------------------------------
 
@@ -283,8 +297,10 @@ class InstagramStoryLinkChannel:
         try:
             cl = self._cliente()
         except _NaoDaPraEntrar as exc:
-            # Nada de retry: o canal se fecha e diz o que fazer.
-            self._desarma(exc.aviso)
+            # Nada de retry: o canal se fecha e diz o que fazer. A biblioteca
+            # ausente é a única falha que não prende o canal até amanhã — ela
+            # não gasta chamada nenhuma ao Instagram.
+            self._desarma(exc.aviso, persiste=exc.aviso != AVISO_SEM_INSTAGRAPI)
             return PublishResult(False, error=self._sem_senha(str(exc)))
         except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta
             self._desarma(AVISO_SESSAO)
@@ -307,14 +323,18 @@ class InstagramStoryLinkChannel:
             return PublishResult(False, error=self._sem_senha(
                 f"falha ao publicar o story ({type(exc).__name__}: {exc})"))
 
+        # Daqui para baixo o story ESTÁ NA CONTA: todo resultado sai com
+        # `publicado=True`, e o pipeline o grava no teto do dia e no dedupe.
         pk = _pk(media)
         if not self.verificar:
             # Existe para depurar. O silêncio é justamente o que custou cinco
             # meses de stories sem link — então ele não é silencioso.
             self._avisa(AVISO_SEM_VERIFICACAO)
-            return PublishResult(True, pk)
+            if not pk:
+                self._avisa(AVISO_SEM_PK)
+            return PublishResult(True, pk, publicado=True)
         if not pk:
-            return PublishResult(False, error=(
+            return PublishResult(False, publicado=True, error=(
                 "story enviado, mas o instagrapi não devolveu o pk — NÃO foi possível "
                 "verificar a figurinha de link"))
 
@@ -354,25 +374,30 @@ class InstagramStoryLinkChannel:
         return Verificacao(SEM_LINK, "a figurinha aponta para outro endereço" if links else "")
 
     def _resultado(self, pk: str, verificacao: Verificacao) -> PublishResult:
+        # Os três estados são falha ou sucesso, mas nos três o story JÁ ESTÁ NA
+        # CONTA: `publicado=True` é o que faz o pipeline gravá-lo no teto do dia
+        # e no dedupe. Um story sem figurinha não converte — e mesmo assim
+        # ocupa um dos 6 do dia, porque o seguidor o viu.
         if verificacao.estado == COM_LINK:
-            self.sem_link_seguidos = 0
-            return PublishResult(True, pk)
+            self._rearma()
+            return PublishResult(True, pk, publicado=True)
 
         if verificacao.estado == NAO_VERIFICADO:
             # O story pode estar perfeito; não sabemos. Isto NÃO conta para o
-            # desarme: condenar o instagrapi por um 504 do Instagram desligaria
-            # o canal por causa da rede.
-            return PublishResult(False, error=(
+            # desarme por figurinha: condenar o instagrapi por um 504 do
+            # Instagram desligaria o canal por causa da rede. (Um DESAFIO na
+            # leitura desarma — mas por sessão, dentro de `_verifica`.)
+            return PublishResult(False, pk, publicado=True, error=(
                 f"story publicado (pk={pk}), mas NÃO foi possível verificar a figurinha "
                 f"de link: {verificacao.detalhe}"))
 
         # SEM_LINK. O story fica no ar: apagar é destrutivo e o post em si não
         # faz mal — o que ele não faz é converter.
-        self.sem_link_seguidos += 1
+        self._conta_sem_link()
         if self.sem_link_seguidos >= self.max_sem_link:
             self._desarma(AVISO_DESARMADO.format(n=self.sem_link_seguidos))
         detalhe = f" — {verificacao.detalhe};" if verificacao.detalhe else " —"
-        return PublishResult(False, error=(
+        return PublishResult(False, pk, publicado=True, error=(
             f"story publicado SEM figurinha de link (pk={pk}){detalhe} "
             "instagrapi provavelmente quebrou"))
 
@@ -425,16 +450,66 @@ class InstagramStoryLinkChannel:
 
     # -- estado do canal -------------------------------------------------------
 
-    def _desarma(self, aviso: str) -> None:
-        """Indisponível pelo resto do run.
+    def _le_estado_do_dia(self) -> None:
+        """Recupera do banco o desarme e o contador do DIA local.
+
+        É o que faz um processo novo saber o que o anterior descobriu. Um canal
+        que amanheceu desarmado nasce fechado e repete o aviso — o pipeline o
+        recolhe na montagem, e o `warn_once` garante uma mensagem por dia.
+        """
+        if self.estado is None:
+            return
+        try:
+            self.sem_link_seguidos = int(self.estado.day_flag(CHAVE_SEM_LINK) or 0)
+            aviso = self.estado.day_flag(CHAVE_DESARMADO)
+        except Exception:      # noqa: BLE001 - banco ausente nunca derruba o canal
+            return
+        if aviso:
+            self.disponivel = False
+            self.max_per_run = 0
+            self._avisa(aviso)
+
+    def _grava(self, chave: str, valor: str) -> None:
+        """Marca o dia no banco. Falhar aqui não pode derrubar a publicação —
+        o pior caso é o canal voltar a ter memória de um run só."""
+        if self.estado is None:
+            return
+        try:
+            self.estado.set_day_flag(chave, valor)
+        except Exception:      # noqa: BLE001 - nunca derruba o publish
+            pass
+
+    def _conta_sem_link(self) -> None:
+        self.sem_link_seguidos += 1
+        self._grava(CHAVE_SEM_LINK, str(self.sem_link_seguidos))
+
+    def _rearma(self) -> None:
+        """Uma verificação boa apaga a marca do dia: a figurinha voltou."""
+        self.sem_link_seguidos = 0
+        self._grava(CHAVE_SEM_LINK, "")
+        self._grava(CHAVE_DESARMADO, "")
+
+    def _desarma(self, aviso: str, persiste: bool = True) -> None:
+        """Indisponível pelo resto do DIA.
 
         `max_per_run = 0` é o atributo que o pipeline JÁ lê para decidir se um
         canal ainda pode publicar (`aberto()`): zerá-lo fecha este canal sem
         que o pipeline precise conhecê-lo. `disponivel` é o mesmo fato com
         nome, para quem lê o código (e para o `publish` recusar chamada direta).
+
+        E o desarme é GRAVADO: seis processos por dia insistindo contra uma
+        conta sinalizada (ou publicando stories sem link) é exatamente o que
+        esta fase existe para não fazer. Rearma na virada do dia local, numa
+        verificação boa, ou num `afiliado ig-login` bem-sucedido.
+
+        `persiste=False` só para a biblioteca ausente: isso não gasta nenhuma
+        chamada ao Instagram, e prender o canal até amanhã faria o dono
+        instalar o extra e não entender por que o dia seguiu mudo.
         """
         self.disponivel = False
         self.max_per_run = 0
+        if persiste:
+            self._grava(CHAVE_DESARMADO, aviso)
         self._avisa(aviso)
 
     def _avisa(self, texto: str) -> None:

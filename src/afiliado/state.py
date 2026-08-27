@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS warned (
     day TEXT NOT NULL,
     PRIMARY KEY (key, day)
 ) WITHOUT ROWID;
+-- Fase 5F (C2): marcas do DIA local que precisam sobreviver ao PROCESSO —
+-- hoje, o desarme do `instagram_story_link`. Mesma semântica de `warned`
+-- (uma linha por chave e dia local, podada em `record_run`), só que
+-- guardando um VALOR: o aviso com que o canal se fechou. Sem isto o desarme
+-- morria com o processo e o run seguinte recomeçava publicando.
+CREATE TABLE IF NOT EXISTS day_flags (
+    key TEXT NOT NULL,
+    day TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (key, day)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS candidates (
     source TEXT NOT NULL,
     item_id TEXT NOT NULL,
@@ -344,6 +355,44 @@ class StateDB:
         self.conn.commit()
         return cur.rowcount == 1
 
+    # -- marcas do dia que sobrevivem ao processo (fase 5F, C2) ---------------
+
+    def day_flag(self, key: str, day: str | None = None) -> str:
+        """O valor gravado hoje (dia LOCAL) para `key`, ou "" se não há.
+
+        O canal `instagram_story_link` se desarma com isto: um story sem
+        figurinha, ou um desafio, fecha o canal pelo resto do DIA e não só do
+        run. A marca some sozinha na virada do dia local — o canal amanhece
+        rearmado sem ninguém precisar limpar nada."""
+        dia = day or self.local_today().isoformat()
+        row = self.conn.execute("SELECT value FROM day_flags WHERE key=? AND day=?",
+                                (key, dia)).fetchone()
+        return row[0] if row else ""
+
+    def set_day_flag(self, key: str, value: str, day: str | None = None) -> None:
+        """Grava (ou apaga, com valor vazio) a marca do dia local.
+
+        Respeita `somente_leitura` pelo mesmo motivo que `set_cursor`: em
+        `--dry-run` nada é escrito — nem o desarme."""
+        if self.somente_leitura:
+            return
+        dia = day or self.local_today().isoformat()
+        if not value:
+            self.conn.execute("DELETE FROM day_flags WHERE key=? AND day=?", (key, dia))
+        else:
+            self.conn.execute(
+                "INSERT INTO day_flags (key, day, value) VALUES (?,?,?) "
+                "ON CONFLICT(key,day) DO UPDATE SET value=excluded.value",
+                (key, dia, str(value)))
+        self.conn.commit()
+
+    def prune_day_flags(self) -> None:
+        """Só o dia local de hoje interessa — os anteriores saem junto com a
+        poda de `warned`."""
+        self.conn.execute("DELETE FROM day_flags WHERE day<?",
+                          (self.local_today().isoformat(),))
+        self.conn.commit()
+
     def prune_warned(self) -> None:
         """Só o dia local de hoje interessa ao `warn_once`; os anteriores
         saem (a tabela nunca era podada — revisão da 5A)."""
@@ -361,6 +410,7 @@ class StateDB:
         self.conn.commit()
         self.prune_price_log(ref_window_days)
         self.prune_warned()
+        self.prune_day_flags()
 
     def day_stats(self, day: date) -> DayStats:
         """Contagem de um dia local: ofertas distintas em `posted` (uma

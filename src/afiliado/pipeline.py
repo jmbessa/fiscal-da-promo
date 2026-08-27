@@ -494,16 +494,25 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             # morria dentro do canal. Sai pelo mesmo `warn`: uma vez por dia.
             for aviso in _drena_avisos(ch):
                 warn(aviso)
-            if res.ok:
+            # Fase 5F (C2): um post que FOI ao ar conta para o teto do canal e
+            # para o dedupe mesmo quando o canal reprovou o resultado (story
+            # publicado sem a figurinha de link). Ele está na conta; o público
+            # vê. Sem isto o canal quebrado publicava 2 stories por run sem
+            # consumir max_per_run nem max_per_day, e `count_posts_today` ficava
+            # em 0 — ~12 stories sem link por dia, invisíveis a todo teto.
+            manual = bool(getattr(ch, "manual", False))
+            if res.ok or bool(getattr(res, "publicado", False)):
                 usados[ch.name] = usados.get(ch.name, 0) + 1
                 if orcamento[ch.name] is not None:
                     usados_dia[ch.name] = usados_dia.get(ch.name, 0) + 1
-                manual = bool(getattr(ch, "manual", False))
                 db.record_post(post, ch.name, res.message_id, manual=manual)
+            if res.ok:
                 published_any = True
                 so_manuais = so_manuais and manual
                 falhas_seguidas[ch.name] = 0
             else:
+                # Publicado ou não, o resultado foi falha: a oferta vai para
+                # `discarded` com o motivo, e o circuito do canal conta.
                 summary.discarded.append((rotulo, f"publicação falhou em {ch.name}: {res.error}"))
                 falhas_seguidas[ch.name] = falhas_seguidas.get(ch.name, 0) + 1
                 if falhas_seguidas[ch.name] >= MAX_FALHAS_SEGUIDAS_POR_CANAL:

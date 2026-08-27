@@ -357,7 +357,7 @@ def _gold_bbox(png: bytes, box: tuple) -> tuple:
     return diff.point(lambda v: 255 if v == 0 else 0).getbbox()
 
 
-def test_price_pill_modo_b_encolhe_para_o_preco_e_fica_a_esquerda():
+def test_price_pill_modo_b_encolhe_para_o_preco_e_fica_centralizada():
     offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)   # sem referência
     draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     dims = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, _pill_left(offer, NO_CLAIM),
@@ -367,12 +367,16 @@ def test_price_pill_modo_b_encolhe_para_o_preco_e_fica_a_esquerda():
     assert dims["width"] == dims["cur_w"] + 2 * 30          # só o preço + padding
     assert dims["height"] == asc + desc + 2 * 20
 
-    # Na arte: a única coisa dourada no corpo é a pill, colada em STORY_PAD
-    # à esquerda e exatamente com a largura medida.
+    # Na arte: a única coisa dourada no corpo é a pill, CENTRALIZADA (como o
+    # título, a meta e o selo) e exatamente com a largura medida. Era colada
+    # em STORY_PAD até 2026-08-27; encostada na margem, ela desequilibrava o
+    # bloco no story vertical, onde é o elemento mais pesado.
     png = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     left, _, right, _ = _gold_bbox(png, (0, 1000, 1080, 1600))
-    assert abs(left - STORY_PAD) <= 1
     assert abs((right - left) - dims["width"]) <= 3
+    esperado = (1080 - dims["width"]) / 2
+    assert abs(left - esperado) <= 2
+    assert abs((1080 - right) - esperado) <= 2      # simétrica dos dois lados
 
 
 def test_price_pill_nunca_passa_da_largura_util():

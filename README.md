@@ -41,18 +41,8 @@ Grotesque (variável) e IBM Plex Mono, paleta navy/dourado e o mascote
 desenhado por código em `src/afiliado/brand.py` (ver `docs/brand-guidelines.md`);
 nome e handle exibidos nas artes vêm de `brand:` em `config.yaml`.
 
-Dois canais, dois níveis de automação:
+Dois canais automáticos (feed e story) e um fallback manual desligado:
 
-- **`story_dispatch` (MANUAL, ligado por padrão, teto de 6/dia)** — o pipeline
-  **não posta stories**. Ele gera a arte (1080×1920) e a manda ao chat de
-  operações do Telegram, seguida de uma segunda mensagem só com o link de
-  afiliado; quem posta é você: abrir o Telegram, salvar a arte, postar como
-  story no Instagram e colar o link no sticker. Não depende de nenhuma
-  credencial da Meta. O teto (`max_per_day: 6`) limita as artes ao que dá pra
-  postar à mão num dia, e no resumo do run essas ofertas aparecem numa seção
-  própria — **"📤 Despachados p/ ops — postar no app"** —, fora da contagem de
-  publicados (e fora do heartbeat da manhã: enquanto você não posta, ninguém
-  publicou nada).
 - **`instagram_feed` (100% automático via Graph API, teto de 2/dia)** —
   publica direto no feed (1080×1350) sem intervenção humana. Requer
   `IG_USER_ID` / `IG_ACCESS_TOKEN` (obtidos via `docs/runbooks/meta-setup.md`;
@@ -61,6 +51,23 @@ Dois canais, dois níveis de automação:
   link de afiliado — só "🔗 Link na bio e no canal do Telegram" — porque a API
   não permite CTA clicável fora da bio. A arte é hospedada pelo bot de
   `ART_HOST_BOT_TOKEN` (ver Credenciais).
+- **`instagram_story` (100% automático via Graph API, teto de 6/dia — fase
+  5E)** — publica o story (1080×1920) sozinho: container com
+  `media_type=STORIES`, polling do `status_code` e `media_publish`. Mesmas envs
+  e mesma hospedagem de arte do feed; a cota de publicação da Meta (100/24 h) é
+  **compartilhada** entre os dois. **Story não aceita legenda nem sticker de
+  link pela API** — a arte já traz o handle e a chamada, e o link mora na bio e
+  no Telegram. Até a fase 5C o projeto afirmava que a API não publicava story;
+  a afirmação estava errada, e o teste ao vivo de 2026-08-27 está registrado em
+  `docs/runbooks/meta-setup.md`.
+- **`story_dispatch` (MANUAL, DESLIGADO desde a fase 5E, teto de 6/dia)** —
+  fallback para o dia em que a conta perder a permissão de publicação. Gera a
+  arte de story e a manda ao chat de operações do Telegram, seguida de uma
+  segunda mensagem só com o link de afiliado; quem posta é você. Não depende de
+  nenhuma credencial da Meta. No resumo do run essas ofertas aparecem numa
+  seção própria — **"📤 Despachados p/ ops — postar no app"** —, fora da
+  contagem de publicados (e fora do heartbeat da manhã: enquanto você não
+  posta, ninguém publicou nada).
 
 ## Mercado Livre (fase 3, parte 1 — desligado por padrão)
 
@@ -209,8 +216,9 @@ pode chegar a publicar; quem distribui os 60/dia pela janela é o
 
 Cada canal tem um teto diário (`max_per_day` em `config.yaml`, contado no
 SQLite **no dia local** de `schedule.timezone`): `telegram` em 60/dia (a meta
-do canal), `story_dispatch` em 6/dia (artes de story que chegam ao seu chat —
-**manual**: você posta o story à mão) e `instagram_feed` em 2/dia.
+do canal), `instagram_story` em 6/dia e `instagram_feed` em 2/dia
+(`story_dispatch`, o fallback manual, está desligado e herdaria os mesmos
+6/dia).
 Desde a fase 5A o teto é **distribuído pela janela** (`schedule.window_start`
 – `window_end`): um canal só publica enquanto o que já postou hoje está
 abaixo de `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`
@@ -239,8 +247,9 @@ fallback.
   5C). A análise adversarial de 2026-08-26 registra o risco regulatório dessa
   escolha (CDC art. 36, guia CONAR para influenciadores) em
   `docs/superpowers/reviews/2026-08-26-analise-adversarial.md`, A7.
-- **Não posta stories.** `story_dispatch` entrega a arte e o link ao chat de
-  operações; o gesto de postar é seu (ver Instagram, acima).
+- **Não põe link clicável no story.** O story É publicado automaticamente
+  (`instagram_story`, fase 5E), mas a API da Meta não tem sticker de link: a
+  arte leva o handle e a chamada, e o link fica na bio e no Telegram.
 - **Não clica no próprio link de afiliado.** A validação do link é offline
   (`https` + host permitido); um GET no link curto seria um clique artificial
   do IP do runner, segundos depois de gerado.

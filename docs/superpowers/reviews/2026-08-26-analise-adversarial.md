@@ -109,6 +109,7 @@ E em **um defeito de honestidade** que atravessa a régua inteira:
 - **A10. `--dry-run` altera o `state.db` e clica** — `record_observations` roda sempre (só `record_run` respeita `dry_run`). Dry-run sem efeitos.
 - **A11. Config `0` vira o default em silêncio** — `sel.get(k) or DEFAULT` em `pricing.py`, `pipeline.py`, `cli.py`: `min_real_discount_pct`, `ref_min_observations`, `ref_window_days`, `seal_tolerance` não podem ser 0; a docstring de `pricing.py:64-65` diz que 0 é suportado (inalcançável). `is None`.
 - **A12. Stories são 6 gestos manuais/dia (às 21h), e o sistema os conta como publicados** — `story_dispatch.py` manda a arte ao chat de ops; `pipeline.py:123,128` grava `record_post`. Registrar como "despachado"; o spec para de chamar de automático.
+  - **RESOLVIDO em 2026-08-27 (fase 5E), pela raiz:** os 6 gestos deixaram de existir. A premissa do achado — "a API não publica story" — estava errada; o fluxo foi testado AO VIVO na conta real e publicou (`POST /{ig_user_id}/media` com `media_type=STORIES` e sem `caption`, polling do container, `media_publish`). Prova: o container `18090130007292530` virou um story com `media_product_type: "STORY"` e `permalink: https://www.instagram.com/stories/ofiscaldapromo/<media_id>` (o `media_id` devolvido pelo `media_publish` começa em `1810721…`). O canal novo é `instagram_story` (`max_per_day: 6`), publicação de verdade — `manual=0`, entra em `summary.published`, em `day_stats().published` e no heartbeat. `story_dispatch` fica desligado como fallback manual, e a metade do A12 que sobrevive é ele: quando ligado, continua sendo despacho, não publicação. Os 6 fatos medidos estão em `docs/runbooks/meta-setup.md`.
 
 ## Menores
 
@@ -154,6 +155,11 @@ Inclui rodar `/watchlist-refresh` com `price_refs`/`p25` para os itens mais vend
 
 **5C · Volume real e proteção da conta** (C1, C6, A5, A6, A7, A8, A12 + docs).
 Depende das decisões abaixo.
+
+**5E · O story publica sozinho** (A12 pela raiz, 2026-08-27).
+Não estava no plano porque o plano herdou a premissa errada de que a API não
+publicava story. Ela publica: `instagram_story` entra como canal automático e o
+`story_dispatch` vira fallback manual desligado.
 
 ## Decisões do dono
 

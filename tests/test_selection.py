@@ -360,3 +360,55 @@ def test_rank_prompt_marks_hot_items():
 def test_rank_prompt_no_hot_marker_without_watchlist():
     prompt = selection._rank_prompt([make_offer()], [], 2)
     assert "em alta" not in prompt
+
+
+# =============================================================================
+# Fase 5C (M2) — cota por fonte: 50/50 entre as lojas LIGADAS
+# =============================================================================
+
+CFG_COTA = {**CFG,
+            "selection": {**CFG["selection"], "source_quota": {"shopee": 0.5, "meli": 0.5}},
+            "channels": {"telegram": {"enabled": True, "max_per_day": 60}}}
+
+
+def test_meta_diaria_por_fonte_e_a_cota_vezes_o_teto():
+    assert selection.source_targets(CFG_COTA, ["shopee", "meli"]) == {"shopee": 30, "meli": 30}
+
+
+def test_com_uma_fonte_so_a_cota_e_cem_por_cento():
+    """A cota é normalizada entre as fontes LIGADAS — com o ML desligado a
+    Shopee recebe o teto inteiro, não metade dele."""
+    assert selection.source_targets(CFG_COTA, ["shopee"]) == {"shopee": 60}
+
+
+def test_sem_source_quota_a_meta_e_dividida_igualmente():
+    assert selection.source_targets({**CFG_COTA, "selection": CFG["selection"]},
+                                    ["shopee", "meli"]) == {"shopee": 30, "meli": 30}
+
+
+def test_sem_teto_de_telegram_nao_ha_meta():
+    assert selection.source_targets({**CFG_COTA, "channels": {"telegram": True}},
+                                    ["shopee", "meli"]) == {}
+
+
+def test_a_fila_prefere_a_fonte_abaixo_da_meta():
+    fila = [make_offer(item_id="s1"), make_offer(item_id="s2"),
+            make_offer(item_id="m1", source="meli")]
+    metas = {"shopee": 30, "meli": 30}
+    # Shopee já estourou a cota do dia, ML mal começou: o ML publica primeiro.
+    assert selection.next_index_by_quota(fila, metas, {"shopee": 30, "meli": 2}) == 2
+    # as duas abaixo da meta: vale a ordem do ranking
+    assert selection.next_index_by_quota(fila, metas, {"shopee": 1, "meli": 1}) == 0
+
+
+def test_uma_fonte_completa_a_outra_quando_a_preferida_nao_tem_candidata():
+    fila = [make_offer(item_id="s1")]              # só Shopee na fila
+    indice = selection.next_index_by_quota(fila, {"shopee": 30, "meli": 30},
+                                           {"shopee": 40, "meli": 0})
+    assert indice == 0                              # nenhuma do ML: a Shopee completa
+
+
+def test_sem_metas_a_fila_segue_o_ranking():
+    fila = [make_offer(item_id="s1"), make_offer(item_id="m1", source="meli")]
+    assert selection.next_index_by_quota(fila, {}, {}) == 0
+    assert selection.next_index_by_quota([], {}, {}) is None

@@ -198,6 +198,16 @@ def enrich_offers(offers: list[Offer], db: StateDB, watchlist: Watchlist | None,
     janela = int(setting(sel, "ref_window_days", DEFAULT_REF_WINDOW_DAYS))
     minimo_obs = int(setting(sel, "ref_min_observations", DEFAULT_REF_MIN_OBSERVATIONS))
 
+    # O price_log de TODAS as ofertas em poucas consultas: com o estoque de
+    # candidatas (fase 5C) isto era uma ida ao SQLite por oferta, milhares por
+    # run. O conteúdo é o mesmo de `db.price_history` item a item.
+    por_fonte: dict[str, list[str]] = {}
+    for offer in offers:
+        por_fonte.setdefault(offer.source, []).append(offer.item_id)
+    historicos = {(fonte, item_id): serie
+                  for fonte, ids in por_fonte.items()
+                  for item_id, serie in db.price_histories(fonte, ids, janela).items()}
+
     resultado: list[Offer] = []
     for offer in offers:
         ref, p25, dias = offer.price_ref_cents, offer.price_p25_cents, offer.price_window_days
@@ -209,7 +219,7 @@ def enrich_offers(offers: list[Offer], db: StateDB, watchlist: Watchlist | None,
             if wl_ref is not None and wl_ref.ref_cents > 0:
                 ref, p25, dias = int(wl_ref.ref_cents), int(wl_ref.p25_cents), int(wl_ref.window_days)
         if ref <= 0:
-            historico = db.price_history(offer.source, offer.item_id, janela)
+            historico = historicos.get((offer.source, offer.item_id), [])
             if len(historico) >= minimo_obs:
                 ref, p25, dias = median_cents(historico), p25_cents(historico), len(historico)
 
@@ -218,7 +228,7 @@ def enrich_offers(offers: list[Offer], db: StateDB, watchlist: Watchlist | None,
             if wl_piso is not None and wl_piso.min_price_cents > 0:
                 piso, dias_piso = int(wl_piso.min_price_cents), int(wl_piso.window_days)
         if historico is None:
-            historico = db.price_history(offer.source, offer.item_id, janela)
+            historico = historicos.get((offer.source, offer.item_id), [])
         if piso <= 0:
             if len(historico) >= minimo_obs:
                 piso, dias_piso = min(historico), len(historico)

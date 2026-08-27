@@ -53,6 +53,9 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
     sel = cfg["selection"]
     cats_by_source: dict[str, set[str]] = {}
     cortes: dict[str, int] = {}
+    # Um SELECT para o dedupe do run inteiro, não um por oferta (o estoque de
+    # candidatas da fase 5C tem milhares).
+    ja_postados = db.recently_posted(sel["dedupe_days"])
 
     def corta(portao: str) -> None:
         cortes[portao] = cortes.get(portao, 0) + 1
@@ -80,7 +83,7 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
         if not sel["price_min_brl"] <= preco_brl <= sel["price_max_brl"]:
             corta("faixa_preco")
             continue
-        if db.was_posted_recently(o.source, o.item_id, sel["dedupe_days"]):
+        if (o.source, o.item_id) in ja_postados:
             corta("dedupe")
             continue
         result.append(o)
@@ -95,6 +98,57 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
 def filter_offers(offers: list[Offer], db: StateDB, cfg: dict) -> list[Offer]:
     """Assinatura antiga: só a lista. O pipeline usa `filter_offers_with_stats`."""
     return filter_offers_with_stats(offers, db, cfg)[0]
+
+
+def _teto_do_telegram(cfg: dict) -> int:
+    """`channels.telegram.max_per_day` — a meta diária do canal. Entrada em
+    bool (ou seção ausente) = sem teto, logo sem meta por fonte."""
+    raw = (cfg.get("channels") or {}).get("telegram")
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        return max(0, int(raw.get("max_per_day") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def source_targets(cfg: dict, sources: list[str]) -> dict[str, int]:
+    """Meta de ofertas por fonte no dia: `source_quota` × o teto diário do
+    Telegram, normalizada entre as fontes LIGADAS (fase 5C, M2).
+
+    Com as duas lojas ligadas e 60/dia, 50/50 dá 30 e 30. Com uma só, ela fica
+    com 100% — a cota reparte um teto, não o reduz. Fonte ligada sem entrada em
+    `source_quota` entra com peso igual às demais. Sem teto no Telegram não há
+    meta: `{}`, e a fila volta a ser puro ranking."""
+    teto = _teto_do_telegram(cfg)
+    if teto <= 0 or not sources:
+        return {}
+    quotas_cfg = (cfg.get("selection") or {}).get("source_quota") or {}
+    pesos: dict[str, float] = {}
+    for nome in sources:
+        try:
+            peso = float(quotas_cfg.get(nome, 1.0))
+        except (TypeError, ValueError):
+            peso = 1.0
+        pesos[nome] = max(0.0, peso)
+    total = sum(pesos.values())
+    if total <= 0:
+        return {}
+    return {nome: round(teto * peso / total) for nome, peso in pesos.items()}
+
+
+def next_index_by_quota(fila: list[Offer], metas: dict[str, int],
+                        publicados: dict[str, int]) -> int | None:
+    """Índice da próxima oferta a publicar: a primeira da fila cuja fonte
+    ainda está ABAIXO da meta do dia; se nenhuma dessas existe, a primeira da
+    fila (uma fonte completa a outra — a cota não pode deixar o teto ocioso).
+    Fila vazia -> None. Sem metas, é sempre a ordem do ranking."""
+    if not fila:
+        return None
+    for i, offer in enumerate(fila):
+        if publicados.get(offer.source, 0) < metas.get(offer.source, 0):
+            return i
+    return 0
 
 
 def _desconto_alegavel(offer: Offer, cfg: dict | None = None) -> int:

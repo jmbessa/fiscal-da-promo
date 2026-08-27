@@ -296,6 +296,33 @@ def test_cursor_de_descoberta_persiste(tmp_path):
     db.close()
 
 
+def test_recently_posted_e_price_histories_batem_com_a_versao_item_a_item(tmp_path):
+    """As duas consultas em lote (fase 5C) existem só porque o estoque tem
+    milhares de itens — o RESULTADO tem de ser idêntico ao item a item."""
+    db = StateDB(tmp_path / "s.db")
+    db.record_post(make_post(item_id="a"), channel="telegram", message_id="1")
+    db.record_post(make_post(item_id="m", source="meli"), channel="telegram", message_id="2")
+    assert db.recently_posted(30) == {("shopee", "a"), ("meli", "m")}
+    assert db.recently_posted(0) == set()
+
+    db.record_price("shopee", "a", 1000, day="2026-08-24")
+    db.record_price("shopee", "a", 900, day="2026-08-25")
+    db.record_price("shopee", "b", 700, day="2026-08-25")
+    lote = db.price_histories("shopee", ["a", "b", "sem_historico"], 3650)
+    assert lote == {"a": db.price_history("shopee", "a", 3650),
+                    "b": db.price_history("shopee", "b", 3650)}
+    assert lote["a"] == [900, 1000]                 # mais recente primeiro
+    db.close()
+
+
+def test_price_histories_em_lotes_de_mais_de_500_ids(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    db.record_prices([("shopee", f"i{n}", 100 + n) for n in range(1200)])
+    lote = db.price_histories("shopee", [f"i{n}" for n in range(1200)], 30)
+    assert len(lote) == 1200 and lote["i1199"] == [1299]
+    db.close()
+
+
 # --- Fase 5C (M2): cota por fonte -------------------------------------------
 
 def test_posted_today_by_source(tmp_path, monkeypatch):

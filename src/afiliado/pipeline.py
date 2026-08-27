@@ -327,7 +327,13 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         # O quinto zero silencioso (C4a): N entraram, 0 sobraram, e por quê.
         warn(f"⚠️ {len(offers)} ofertas buscadas, 0 candidatas — {cortes.resumo()}")
     ranked = selection.rank_offers(candidates, db.recent_titles(), cfg, watchlist)
-    reserva = [o for o in selection.order_by_ev(candidates, cfg, watchlist) if o not in ranked]
+    # Comparação por IDENTIDADE da oferta, não por igualdade de dataclass: com
+    # o estoque de candidatas a fila tem milhares de itens e `o not in ranked`
+    # era O(n × m) de `__eq__` de frozen dataclass — e duas ofertas iguais em
+    # todos os campos se anulariam.
+    escolhidos = {(o.source, o.item_id) for o in ranked}
+    reserva = [o for o in selection.order_by_ev(candidates, cfg, watchlist)
+               if (o.source, o.item_id) not in escolhidos]
     fila = ranked + reserva
 
     target = sel["posts_per_run"]
@@ -336,9 +342,17 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     minimo_pct = int(pricing.setting(
         sel, "min_real_discount_pct", pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT))
 
-    for offer in fila:
-        if count >= target:
+    # Cota por fonte (M2): a meta do dia de cada loja, e quanto ela já
+    # publicou hoje. A fila continua ordenada pelo ranking; a cota só escolhe,
+    # entre as candidatas, quem vai primeiro — e nunca deixa o teto ocioso.
+    metas = selection.source_targets(cfg, [s.name for s in sources])
+    publicados_hoje = db.posted_today_by_source() if metas else {}
+
+    while count < target:
+        indice = selection.next_index_by_quota(fila, metas, publicados_hoje)
+        if indice is None:
             break
+        offer = fila.pop(indice)
         # O veredito (e o rótulo) só existem DEPOIS do refresh: antes dele o
         # desconto seria o do preço velho.
         rotulo = offer.title[:40]
@@ -369,6 +383,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if dry_run:
             print(f"--- DRY-RUN: post que seria publicado ---\n{post.message_text}\n")
             summary.published.append(f"[dry] {rotulo}")
+            publicados_hoje[offer.source] = publicados_hoje.get(offer.source, 0) + 1
             count += 1
             continue
 
@@ -395,6 +410,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                          "canal fechado neste run")
         if published_any:
             summary.published.append(rotulo)
+            publicados_hoje[offer.source] = publicados_hoje.get(offer.source, 0) + 1
             count += 1
         if not any(aberto(ch) for ch in channels):
             break   # ninguém mais pode publicar: a próxima oferta não paga nada

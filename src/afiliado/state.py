@@ -111,6 +111,17 @@ class StateDB:
         ).fetchone()
         return row is not None
 
+    def recently_posted(self, days: int) -> set[tuple[str, str]]:
+        """Todos os `(fonte, item)` publicados nos últimos N dias, de uma vez.
+
+        `was_posted_recently` por oferta virou 5.000 idas ao SQLite por run
+        quando o estoque de candidatas (fase 5C) passou a ter milhares de
+        itens; o dedupe é o mesmo, a consulta é uma."""
+        cutoff = (_now() - timedelta(days=days)).isoformat()
+        return {(r[0], r[1]) for r in self.conn.execute(
+            "SELECT DISTINCT source, item_id FROM posted WHERE posted_at>=?",
+            (cutoff,)).fetchall()}
+
     def recent_titles(self, days: int = 7, limit: int = 30) -> list[str]:
         cutoff = (_now() - timedelta(days=days)).isoformat()
         rows = self.conn.execute(
@@ -189,6 +200,26 @@ class StateDB:
             (source, item_id, cutoff),
         ).fetchall()
         return [r[0] for r in rows]
+
+    def price_histories(self, source: str, item_ids: list[str],
+                        days: int) -> dict[str, list[int]]:
+        """`price_history` de vários itens de uma vez (mais recentes primeiro).
+
+        Mesma razão de `recently_posted`: com o estoque de candidatas, uma
+        consulta por oferta eram milhares por run. Os IDs vão em lotes de 500
+        para não esbarrar no teto de parâmetros do SQLite."""
+        cutoff = (self.local_today() - timedelta(days=days)).isoformat()
+        historicos: dict[str, list[int]] = {}
+        unicos = list(dict.fromkeys(item_ids))
+        for i in range(0, len(unicos), 500):
+            lote = unicos[i:i + 500]
+            marcadores = ",".join("?" * len(lote))
+            for item_id, price in self.conn.execute(
+                    f"SELECT item_id, price_cents FROM price_log WHERE source=? "
+                    f"AND day>=? AND item_id IN ({marcadores}) ORDER BY day DESC",
+                    (source, cutoff, *lote)).fetchall():
+                historicos.setdefault(item_id, []).append(price)
+        return historicos
 
     def prune_price_log(self, days: int) -> None:
         """Apaga observações anteriores ao corte da janela."""

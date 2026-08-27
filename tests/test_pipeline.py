@@ -1216,6 +1216,82 @@ def test_fonte_sem_candidate_max_age_days_nao_usa_estoque(tmp_path, monkeypatch)
     db.close()
 
 
+# =============================================================================
+# Fase 5C (M2) — cota por fonte
+# =============================================================================
+
+CFG_COTA = {**CFG,
+            "selection": {**CFG["selection"], "posts_per_run": 1,
+                          "source_quota": {"shopee": 0.5, "meli": 0.5}},
+            "channels": {"telegram": {"enabled": True, "max_per_day": 60}}}
+
+
+class FonteChamada(FakeSource):
+    def __init__(self, name, offers):
+        self.name = name
+        self._offers = offers
+
+
+def test_ml_abaixo_da_cota_publica_antes_da_shopee(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    # 30 ofertas da Shopee já publicadas hoje: a cota dela (30 de 60) acabou.
+    for k in range(30):
+        db.record_post(Post(offer=make_offer(item_id=f"ontem-{k}"),
+                            copy=CopyParts("h", "d", "c"), affiliate_link="l"),
+                       "telegram", "x")
+    shopee = FonteChamada("shopee", [make_offer(item_id="s", commission_pct=50.0)])
+    meli = FonteChamada("meli", [make_offer(item_id="MLB1", source="meli",
+                                            commission_pct=1.0)])
+    ch = FakeChannel()
+    pipeline.run(CFG_COTA, [shopee, meli], [ch], db, validator=no_network_validator)
+    assert [p.offer.source for p in ch.sent] == ["meli"]   # apesar do EV menor
+    db.close()
+
+
+def test_sem_candidata_do_ml_a_shopee_completa(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    for k in range(40):
+        db.record_post(Post(offer=make_offer(item_id=f"ontem-{k}"),
+                            copy=CopyParts("h", "d", "c"), affiliate_link="l"),
+                       "telegram", "x")
+    shopee = FonteChamada("shopee", [make_offer(item_id="s")])
+    meli = FonteChamada("meli", [])                 # pool vazio
+    ch = FakeChannel()
+    pipeline.run(CFG_COTA, [shopee, meli], [ch], db, validator=no_network_validator)
+    assert [p.offer.item_id for p in ch.sent] == ["s"]
+    db.close()
+
+
+def test_trinta_dias_com_cota_meio_a_meio(tmp_path, monkeypatch):
+    """Teste obrigatório (2): 60/dia, cota 50/50, pool ML de 200 e estoque
+    Shopee de 5.000 — nenhum item repete em 30 dias e o ML fica em ~50%
+    enquanto tem candidata."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    shopee = FonteChamada("shopee", [make_offer(item_id=f"s{i}") for i in range(5000)])
+    meli = FonteChamada("meli", [make_offer(item_id=f"MLB{i}", source="meli")
+                                 for i in range(200)])
+    cfg = {**CFG_COTA, "selection": {**CFG_COTA["selection"], "posts_per_run": 60}}
+    ch = NamedFakeChannel("telegram")
+    ch.max_per_day = 60
+    publicados = []
+    for dia in range(1, 31):
+        _congela(monkeypatch, 23, 50, dia=dia)
+        n = len(ch.sent)
+        pipeline.run(cfg, [shopee, meli], [ch], db, validator=no_network_validator)
+        publicados.append([p.offer.source for p in ch.sent[n:]])
+    todos = [p.offer.item_id for p in ch.sent]
+    assert len(todos) == 30 * 60 == len(set(todos))       # nada repete em 30 dias
+    do_ml = [d.count("meli") for d in publicados]
+    # os primeiros dias esvaziam o pool do ML (200 itens = 3 dias e meio a 60/dia)
+    assert do_ml[0] == 30 and do_ml[1] == 30
+    assert sum(do_ml) == 200                              # o ML entregou tudo que tinha
+    assert all(len(d) == 60 for d in publicados)          # a Shopee completou o resto
+    db.close()
+
+
 def test_candidata_vencida_sai_do_estoque(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")

@@ -44,6 +44,13 @@ selection:
   # quando o estoque de boas ofertas esgota. 0 ou ausente desliga o piso (todas
   # as ofertas que passam os demais filtros seguem elegíveis).
   min_ev_brl: 0.50
+  # Fase 5C (M2): fração do teto diário do Telegram (channels.telegram.max_per_day)
+  # que cada loja deve ocupar. Normalizada entre as fontes LIGADAS — com o ML
+  # desligado a Shopee fica com 100%, não com metade. Ao escolher a próxima
+  # oferta da fila, o pipeline prefere as fontes ainda abaixo da meta do dia;
+  # se nenhuma delas tem candidata, qualquer fonte serve (uma completa a
+  # outra — a cota reparte o teto, nunca o deixa ocioso).
+  source_quota: {shopee: 0.5, meli: 0.5}
   # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
   # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
   # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.

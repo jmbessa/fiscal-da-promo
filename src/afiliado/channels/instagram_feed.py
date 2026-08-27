@@ -13,60 +13,26 @@ arte passa a ser um **bot secundário** (`ART_HOST_BOT_TOKEN`), que só precisa
 estar no chat de operações; assim o token do bot ADMINISTRADOR do canal
 público nunca é entregue à Meta. Sem essa variável o comportamento é o de
 antes — com um aviso diário no resumo de operações (ver `cli._build_channels`).
+
+Fase 5E: construtor, hospedagem da arte e as chamadas à Graph API mudaram de
+casa para `instagram_common` — o story virou um segundo canal automático e usa
+exatamente as mesmas. Nada do comportamento do feed mudou nessa viagem.
 """
-
-import io
-
-import httpx
-from PIL import Image
 
 from afiliado import creative, pricing
 from afiliado.channels.base import PublishResult
-from afiliado.channels.telegram import get_file_url, send_photo_bytes
+from afiliado.channels.instagram_common import (GRAPH, GRAPH_HOSTS, InstagramBase,
+                                                graph_error, to_jpeg)
 from afiliado.errors import SourceError
 from afiliado.models import Post
 
-GRAPH_HOSTS = {
-    # Conta business vinculada a Página do Facebook; escopos instagram_basic + instagram_content_publish.
-    "facebook_login": "https://graph.facebook.com/v21.0",
-    # "API do Instagram com Login do Instagram": token gerado no painel, sem Página;
-    # escopos instagram_business_basic + instagram_business_content_publish.
-    "instagram_login": "https://graph.instagram.com/v21.0",
-}
-GRAPH = GRAPH_HOSTS["facebook_login"]
+__all__ = ["GRAPH", "GRAPH_HOSTS", "InstagramFeedChannel"]
 
 
-def _graph_error(resp) -> str:
-    if isinstance(resp, dict):
-        err = resp.get("error")
-        if isinstance(err, dict) and err.get("message"):
-            return str(err["message"])
-    return f"resposta inesperada da Graph API: {resp!r}"
-
-
-class InstagramFeedChannel:
+class InstagramFeedChannel(InstagramBase):
     name = "instagram_feed"
     max_per_run = 1
-
-    def __init__(self, ig_user_id: str, access_token: str, bot_token: str, ops_chat_id: str,
-                 client: httpx.Client | None = None, brand_handle: str | None = None,
-                 brand_name: str = "Fiscal da Promo", api: str = "facebook_login",
-                 art_host_bot_token: str = ""):
-        # .strip() mata o footgun clássico de segredo colado com espaço/quebra
-        # de linha nas pontas (env var, clipboard); não cobre caractere de
-        # controle NO MEIO da string — para isso, ver o try/except amplo em
-        # _graph_post (httpx.InvalidURL não é subclasse de httpx.HTTPError).
-        self.ig_user_id = ig_user_id.strip()
-        self.access_token = access_token.strip()
-        self.bot_token = bot_token.strip()
-        # Bot que hospeda a arte (A5): o do canal só é usado como último
-        # recurso, e nesse caso o cli avisa uma vez por dia.
-        self.art_host_bot_token = (art_host_bot_token or "").strip() or self.bot_token
-        self.ops_chat_id = ops_chat_id.strip()
-        self.client = client or httpx.Client(timeout=30)
-        self.brand_handle = brand_handle
-        self.brand_name = brand_name
-        self.graph = GRAPH_HOSTS.get(api, GRAPH_HOSTS["facebook_login"])
+    host_caption = "hospedagem temporária (feed IG)"
 
     def publish(self, post: Post) -> PublishResult:
         # A arte e a legenda recebem o veredito do post (modo + selo) — nada
@@ -78,7 +44,7 @@ class InstagramFeedChannel:
         except SourceError as exc:
             return PublishResult(False, error=f"falha ao gerar arte do feed: {exc}")
 
-        image_url = self._host_art(_to_jpeg(art))
+        image_url = self._host_art(to_jpeg(art))
         if image_url is None:
             return PublishResult(False, error="falha ao hospedar arte temporariamente")
 
@@ -91,7 +57,7 @@ class InstagramFeedChannel:
         })
         creation_id = media_resp.get("id") if isinstance(media_resp, dict) else None
         if not creation_id:
-            return PublishResult(False, error=_graph_error(media_resp))
+            return PublishResult(False, error=graph_error(media_resp))
 
         publish_resp = self._graph_post(f"{self.graph}/{self.ig_user_id}/media_publish", {
             "creation_id": creation_id,
@@ -99,27 +65,9 @@ class InstagramFeedChannel:
         })
         post_id = publish_resp.get("id") if isinstance(publish_resp, dict) else None
         if not post_id:
-            return PublishResult(False, error=_graph_error(publish_resp))
+            return PublishResult(False, error=graph_error(publish_resp))
 
         return PublishResult(True, str(post_id))
-
-    def _host_art(self, art: bytes) -> str | None:
-        """URL pública temporária da arte. O token que aparece nela é o do bot
-        de hospedagem — nunca o do bot administrador do canal, quando há um
-        secundário configurado (A5)."""
-        token = self.art_host_bot_token
-        photo_result = send_photo_bytes(token, self.ops_chat_id, art,
-                                        caption="hospedagem temporária (feed IG)",
-                                        client=self.client, filename="art.jpg", mime="image/jpeg")
-        if not photo_result.get("ok"):
-            return None
-        photos = (photo_result.get("result") or {}).get("photo") or []
-        if not photos:
-            return None
-        file_id = photos[-1].get("file_id")
-        if not file_id:
-            return None
-        return get_file_url(token, file_id, client=self.client)
 
     @staticmethod
     def _sanitize_title(title: str) -> str:
@@ -145,24 +93,3 @@ class InstagramFeedChannel:
             f"{copy.cta}\n"
             "🔗 Link na bio e no canal do Telegram"
         )
-
-    def _graph_post(self, url: str, payload: dict) -> dict:
-        try:
-            r = self.client.post(url, data=payload)
-            return r.json()
-        except ValueError:
-            return {"error": {"message": "resposta não-JSON"}}
-        except Exception as exc:
-            # Nunca levanta: além de httpx.HTTPError (rede), cobre
-            # httpx.InvalidURL — que NÃO é subclasse de HTTPError e escaparia
-            # se ig_user_id/access_token vierem com caractere de controle
-            # embutido (ex.: "\n" no meio de uma env var mal colada).
-            return {"error": {"message": f"rede: {exc}"}}
-
-
-def _to_jpeg(png_bytes: bytes, quality: int = 90) -> bytes:
-    """A API de publicação do Instagram aceita apenas JPEG; converte a arte PNG."""
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    out = io.BytesIO()
-    img.save(out, "JPEG", quality=quality, optimize=True)
-    return out.getvalue()

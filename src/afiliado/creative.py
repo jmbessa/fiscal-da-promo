@@ -64,6 +64,15 @@ FEED_TITLE_WIDTH = 952
 FEED_TITLE_ALT_SIZE = 48
 FEED_TITLE_ALT_WEIGHT = 600
 
+# Espaçamentos abaixo da pill de preço. Ficam aqui porque cada um é usado em
+# DOIS lugares — no cálculo do guarda de overflow (`_*_body_dims`) e no
+# desenho (`_draw_*_body`). Enquanto eram literais repetidos, mexer só no
+# desenho fazia o guarda achar que cabia o que já não cabia.
+STORY_META_GAP = 44     # respiro entre o preço e a linha de avaliações
+STORY_SELO_GAP = 28
+FEED_META_GAP = 20
+FEED_SELO_GAP = 24
+
 DOWNLOAD_TIMEOUT = 20
 
 DEFAULT_BRAND_NAME = "Fiscal da Promo"
@@ -543,11 +552,11 @@ def _story_body_dims(draw, offer, verdict, title_size, title_weight, title_lines
     meta = None
     if include_meta:
         meta = _meta_dims(draw, offer, 30)
-        y += 18 + meta["height"]
+        y += STORY_META_GAP + meta["height"]
     selo = None
     if include_selo and verdict.seal:
         selo = _selo_dims(draw, verdict, 25, 20, 24, 16)
-        y += 28 + selo["height"]
+        y += STORY_SELO_GAP + selo["height"]
     return y, title, price, meta, selo
 
 
@@ -559,11 +568,11 @@ def _feed_body_dims(draw, offer, verdict, title_size, title_weight, title_lines_
     meta = None
     if include_meta:
         meta = _meta_dims(draw, offer, 27)
-        y += 20 + meta["height"]
+        y += FEED_META_GAP + meta["height"]
     selo = None
     if include_selo and verdict.seal:
         selo = _selo_dims(draw, verdict, 23, 20, 24, 16)
-        y += 24 + selo["height"]
+        y += FEED_SELO_GAP + selo["height"]
     return y, title, price, meta, selo
 
 
@@ -610,24 +619,29 @@ def _feed_body_options(draw, offer, verdict, allowed_bottom, pill_left=("", Fals
 
 def _draw_story_body(draw, canvas_width, offer, title, price, meta, selo) -> None:
     y = _draw_title(draw, canvas_width, 1050, title) + 34
-    y = _draw_price_pill(draw, STORY_PAD, y, price)
+    # A pill é centralizada, como o título, a meta e o selo: no story vertical
+    # ela é o elemento mais pesado da composição, e encostada na margem
+    # esquerda desequilibrava o bloco inteiro.
+    y = _draw_price_pill(draw, (canvas_width - price["width"]) / 2, y, price)
     if meta is not None:
-        _draw_meta(draw, (canvas_width - meta["width"]) / 2, y + 18, offer, meta["font"], MUTED)
-        y += 18 + meta["height"]
+        _draw_meta(draw, (canvas_width - meta["width"]) / 2, y + STORY_META_GAP,
+                   offer, meta["font"], MUTED)
+        y += STORY_META_GAP + meta["height"]
     if selo is not None:
         selo_x = (canvas_width - selo["width"]) / 2
-        _draw_selo(draw, selo_x, y + 28, selo)
+        _draw_selo(draw, selo_x, y + STORY_SELO_GAP, selo)
 
 
 def _draw_feed_body(draw, canvas_width, offer, title, price, meta, selo) -> None:
     y = _draw_title(draw, canvas_width, 790, title) + 24
     y = _draw_price_pill(draw, FEED_PAD, y, price)
     if meta is not None:
-        _draw_meta(draw, (canvas_width - meta["width"]) / 2, y + 20, offer, meta["font"], MUTED)
-        y += 20 + meta["height"]
+        _draw_meta(draw, (canvas_width - meta["width"]) / 2, y + FEED_META_GAP,
+                   offer, meta["font"], MUTED)
+        y += FEED_META_GAP + meta["height"]
     if selo is not None:
         selo_x = (canvas_width - selo["width"]) / 2
-        _draw_selo(draw, selo_x, y + 24, selo)
+        _draw_selo(draw, selo_x, y + FEED_SELO_GAP, selo)
 
 
 # --- Rodapés --------------------------------------------------------------------

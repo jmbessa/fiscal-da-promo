@@ -8,9 +8,11 @@ from pathlib import Path
 import httpx
 
 from afiliado import config, llm, pipeline
+from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import GRAPH_HOSTS, graph_error
 from afiliado.channels.instagram_feed import InstagramFeedChannel
 from afiliado.channels.instagram_story import InstagramStoryChannel
+from afiliado.channels.instagram_story_link import InstagramStoryLinkChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
 from afiliado.sources.meli import DEFAULT_OFFERS_PATH, MeliSource
@@ -31,6 +33,18 @@ def _build_parser() -> argparse.ArgumentParser:
                            "30 min e precisa de mais que a VPS, que roda a cada 5)")
     pdoc = sub.add_parser("doctor", help="verifica credenciais e dependências")
     pdoc.add_argument("--config", default="config.yaml")
+    # Fase 5F: os canais de story ganham comando próprio porque o
+    # `instagram_story_link` (instagrapi) NÃO pode rodar no GitHub Actions — IP
+    # de datacenter, diferente a cada execução, é o que mais dispara
+    # `challenge_required`. Este comando é para o dono agendar na máquina dele.
+    pst = sub.add_parser("stories", help="roda SÓ os canais de story (na máquina do dono)")
+    pst.add_argument("--posts", type=int, default=None,
+                     help="sobrepõe selection.posts_per_run")
+    pst.add_argument("--dry-run", action="store_true",
+                     help="APIs reais, mas imprime em vez de publicar")
+    pst.add_argument("--config", default="config.yaml")
+    plog = sub.add_parser("ig-login", help="cria/renova a sessão do instagrapi")
+    plog.add_argument("--config", default="config.yaml")
     return p
 
 
@@ -54,6 +68,25 @@ ART_HOST_AVISO_TMPL = ("⚠️ {canal}: arte hospedada pelo bot do canal — "
 # testes que não têm nada a ver com esta fase.
 ART_HOST_AVISO = ART_HOST_AVISO_TMPL.format(canal="instagram_feed")
 ART_HOST_AVISO_STORY = ART_HOST_AVISO_TMPL.format(canal="instagram_story")
+
+# Fase 5F. Os canais que produzem STORY, e só eles, são o que `afiliado
+# stories` monta — o Telegram e o feed continuam saindo pelo `afiliado run`.
+CANAIS_DE_STORY = ("instagram_story_link", "instagram_story", "story_dispatch")
+
+# O canal da API privada é montado SÓ pelo `afiliado stories`. `afiliado run` é
+# o que roda no GitHub Actions, cujo IP é de datacenter e muda a cada execução:
+# sessão de app móvel forjada + IP novo a cada hora é o padrão que mais dispara
+# `challenge_required`. Ligado no config e chamado pelo comando errado, o canal
+# é ignorado com este aviso — em vez de rodar onde não devia.
+AVISO_STORY_LINK_FORA_DO_RUN = (
+    "⚠️ canal instagram_story_link ligado, mas ignorado neste comando — ele só roda "
+    "em `afiliado stories`, na máquina do dono (nunca no GitHub Actions)")
+STORY_LINK_SEM_ENV = ("⚠️ canal instagram_story_link ignorado: variável "
+                      "IG_USERNAME/IG_PASSWORD ausente "
+                      "(ver docs/runbooks/instagrapi-stories.md)")
+STORY_LINK_SEM_SESSAO = ("⚠️ instagram_story_link: sem sessão salva em {caminho} — "
+                         "rode `afiliado ig-login` antes (login novo a cada run é o "
+                         "que atrai desafio)")
 
 
 def _meli(cfg: dict | None = None) -> MeliSource | None:
@@ -118,6 +151,57 @@ def _instagram_api(cfg: dict) -> str:
     return api if api in GRAPH_HOSTS else "instagram_login"
 
 
+def story_link_cfg(cfg: dict) -> dict:
+    """A entrada `channels.instagram_story_link` como dict (bool também vale).
+    Além de `enabled`/`max_per_day`, ela carrega `max_sem_link` e
+    `session_path` — que o canal, o `ig-login` e o `doctor` precisam ler."""
+    raw = (cfg.get("channels") or {}).get(InstagramStoryLinkChannel.name)
+    return dict(raw) if isinstance(raw, dict) else {"enabled": bool(raw)}
+
+
+def ig_session_path(cfg: dict) -> Path:
+    """Caminho da sessão do instagrapi. Um só lugar: o canal, o `ig-login` e o
+    `doctor` têm de falar do MESMO arquivo."""
+    return Path(story_link_cfg(cfg).get("session_path")
+                or instagram_story_link.DEFAULT_SESSION_PATH)
+
+
+def _monta_story_link(ch_cfg: dict, cfg: dict, channels: list, avisos: list[str],
+                      brand_handle: str | None, brand_name: str,
+                      api_privada: bool) -> None:
+    """Monta o `instagram_story_link` (instagrapi, story COM figurinha).
+
+    Ele não se parece com os outros canais do Instagram: não usa Graph API, não
+    hospeda arte no Telegram, e as credenciais dele são usuário e SENHA. E só é
+    montado quando `api_privada` é verdadeiro — isto é, sob `afiliado stories`.
+    """
+    enabled, max_per_day = _channel_settings(ch_cfg.get(InstagramStoryLinkChannel.name))
+    if not enabled:
+        return
+    if not api_privada:
+        _aviso(avisos, AVISO_STORY_LINK_FORA_DO_RUN)
+        return
+    usuario, senha = _env("IG_USERNAME"), _env("IG_PASSWORD")
+    if not (usuario and senha):
+        # A senha NUNCA entra em aviso, log ou resumo — só a ausência dela.
+        _aviso(avisos, STORY_LINK_SEM_ENV)
+        return
+    bruto = story_link_cfg(cfg)
+    sessao = ig_session_path(cfg)
+    ch = InstagramStoryLinkChannel(
+        usuario, senha, session_path=sessao, brand_handle=brand_handle,
+        brand_name=brand_name,
+        max_sem_link=int(bruto.get("max_sem_link")
+                         or instagram_story_link.MAX_SEM_LINK_PADRAO))
+    if max_per_day is not None:
+        ch.max_per_day = int(max_per_day)
+    channels.append(ch)
+    if not sessao.is_file():
+        # Sem sessão o canal faz login com senha no meio do run. Funciona — e é
+        # exatamente o comportamento que atrai desafio se virar rotina.
+        _aviso(avisos, STORY_LINK_SEM_SESSAO.format(caminho=sessao))
+
+
 def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[str],
                      brand_handle: str | None, brand_name: str) -> None:
     """Monta um canal do Instagram (`instagram_feed` ou `instagram_story`).
@@ -150,7 +234,8 @@ def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[
         _aviso(avisos, ART_HOST_AVISO_TMPL.format(canal=cls.name))
 
 
-def _build_channels(cfg: dict) -> tuple[list, list[str]]:
+def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
+                    api_privada: bool = False) -> tuple[list, list[str]]:
     """Monta os canais habilitados em config.yaml a partir das envs
     disponíveis e devolve também os avisos de montagem.
 
@@ -160,8 +245,15 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
     no canal construído (`ch.max_per_day`), lido pelo pipeline via getattr.
     Canal ligado sem env necessária: aviso (stdout + resumo de ops) e segue
     sem ele — nunca derruba o run. Nenhum canal recebe a régua: o veredito
-    (modo + selo) já vem decidido no `Post` (fase 5B)."""
+    (modo + selo) já vem decidido no `Post` (fase 5B).
+
+    Fase 5F: `somente` recorta quais chaves de `channels:` existem para esta
+    montagem (é o que faz `afiliado stories` levar só os canais de story), e
+    `api_privada` autoriza o `instagram_story_link` — que fora do `afiliado
+    stories` não é montado, nem no Actions nem na VPS."""
     ch_cfg = cfg.get("channels") or {"telegram": True}
+    if somente is not None:
+        ch_cfg = {k: v for k, v in ch_cfg.items() if k in somente}
     brand_cfg = cfg.get("brand") or {}
     brand_handle = brand_cfg.get("handle") or None
     brand_name = brand_cfg.get("name") or "Fiscal da Promo"
@@ -201,6 +293,11 @@ def _build_channels(cfg: dict) -> tuple[list, list[str]]:
     for cls in (InstagramFeedChannel, InstagramStoryChannel):
         _monta_instagram(cls, ch_cfg, cfg, channels, avisos,
                          brand_handle=brand_handle, brand_name=brand_name)
+
+    # Fase 5F: o story COM figurinha de link, pela API privada. Último de
+    # propósito — é o canal de maior risco e o único que não roda em toda parte.
+    _monta_story_link(ch_cfg, cfg, channels, avisos, brand_handle=brand_handle,
+                      brand_name=brand_name, api_privada=api_privada)
 
     return channels, avisos
 
@@ -374,6 +471,42 @@ def doctor(cfg: dict) -> int:
     return 0 if ok else 1
 
 
+def ig_login(cfg: dict) -> int:
+    """Cria ou renova `data/ig_session.json`, a sessão do instagrapi.
+
+    As credenciais vêm do AMBIENTE (`.env`), nunca de argumento de linha de
+    comando: argumento fica no histórico do shell e no `ps` de qualquer usuário
+    da máquina. 2FA só por TOTP (`IG_TOTP_SEED`) — o instagrapi não faz SMS.
+
+    Imprime sucesso/falha e o caminho da sessão. Nada mais: nem usuário, nem
+    senha, nem o texto cru de uma exceção que possa carregá-la.
+    """
+    usuario, senha, semente = _env("IG_USERNAME"), _env("IG_PASSWORD"), _env("IG_TOTP_SEED")
+    caminho = ig_session_path(cfg)
+    if not (usuario and senha):
+        print("❌ ig-login: IG_USERNAME/IG_PASSWORD ausentes no ambiente — preencha o "
+              ".env (ver docs/runbooks/instagrapi-stories.md)")
+        return 1
+    try:
+        cl = instagram_story_link.nova_sessao()
+    except ImportError:
+        print(f"❌ ig-login: {instagram_story_link.SEM_INSTAGRAPI}")
+        return 1
+    try:
+        instagram_story_link.entra(cl, usuario, senha, caminho, totp_seed=semente)
+        instagram_story_link.guarda_sessao(cl, caminho)
+    except Exception as exc:      # noqa: BLE001 - vira mensagem, nunca traceback
+        # O texto da exceção é de terceiro: raspado antes de ir ao terminal.
+        detalhe = instagram_story_link.sem_segredos(str(exc), senha, semente)
+        print(f"❌ ig-login: falhou ({type(exc).__name__}: {detalhe})")
+        if not semente:
+            print("   Se a conta tem 2FA, defina IG_TOTP_SEED (app autenticador; "
+                  "o instagrapi não faz SMS).")
+        return 1
+    print(f"✅ ig-login: sessão salva em {caminho}")
+    return 0
+
+
 def load_dotenv(path: str | Path = ".env", override: bool = True) -> int:
     """Carrega KEY=VALUE de um .env local para o ambiente. Por padrão o .env
     do projeto TEM precedência sobre variáveis globais da máquina — evita que
@@ -435,18 +568,30 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load_config(args.config)
     if args.cmd == "doctor":
         return doctor(cfg)
-    if args.posts_per_run is not None:
+    if args.cmd == "ig-login":
+        return ig_login(cfg)
+
+    # `stories` (fase 5F) é o MESMO run — mesmo ritmo, dedupe, teto diário e
+    # resumo de operações — com os canais recortados nos de story. O nome do
+    # argumento muda só porque `run` já tinha o dele.
+    somente_story = args.cmd == "stories"
+    posts_por_run = getattr(args, "posts", None) if somente_story else args.posts_per_run
+    if posts_por_run is not None:
         # O teto diário e o RITMO continuam mandando (fase 5A): isto só diz
         # quantas ofertas UM run pode chegar a publicar. Um agendador de 30 em
         # 30 min precisa de mais folga por run que um de 5 em 5.
         cfg = {**cfg, "selection": {**cfg["selection"],
-                                    "posts_per_run": int(args.posts_per_run)}}
+                                    "posts_per_run": int(posts_por_run)}}
 
     db = StateDB(cfg["state"]["path"], timezone=pipeline.schedule_settings(cfg)["timezone"])
     sources, avisos = _build_sources(cfg, db)
     channels = []
     if not args.dry_run:
-        channels, avisos_canais = _build_channels(cfg)
+        # A API privada só é montada sob `afiliado stories` — ver
+        # AVISO_STORY_LINK_FORA_DO_RUN.
+        channels, avisos_canais = _build_channels(
+            cfg, somente=CANAIS_DE_STORY if somente_story else None,
+            api_privada=somente_story)
         avisos += avisos_canais
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     ops = os.environ.get("TELEGRAM_OPS_CHAT_ID", "")

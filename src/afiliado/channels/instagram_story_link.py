@@ -125,6 +125,50 @@ def _instagrapi():
     return Client, StoryLink, erros
 
 
+def nova_sessao():
+    """Um `Client` do instagrapi, ainda sem login. Levanta `ImportError`
+    quando o extra `stories` não foi instalado."""
+    return _instagrapi()[0]()
+
+
+def entra(cl, username: str, password: str, session_path: str | Path,
+          totp_seed: str = "") -> None:
+    """Login com sessão persistida — o caminho ÚNICO de autenticação do
+    projeto (canal e `afiliado ig-login` passam por aqui).
+
+    Com a sessão no disco, o instagrapi reaproveita cookies e perfil de device
+    e só re-autentica se precisar: é isso que evita "device novo a cada login",
+    o padrão que dispara `challenge_required`. 2FA só por TOTP (app
+    autenticador) — o instagrapi não faz SMS.
+
+    Levanta o que o instagrapi levantar: quem chama decide o que dizer, e
+    ninguém aqui tenta de novo em laço.
+    """
+    caminho = Path(session_path)
+    if caminho.is_file():
+        cl.load_settings(caminho)
+    if totp_seed:
+        cl.login(username, password, verification_code=cl.totp_generate_code(totp_seed))
+    else:
+        cl.login(username, password)
+
+
+def guarda_sessao(cl, session_path: str | Path) -> None:
+    """`dump_settings` no caminho da sessão, criando a pasta se preciso."""
+    caminho = Path(session_path)
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    cl.dump_settings(caminho)
+
+
+def sem_segredos(texto: str, *segredos: str) -> str:
+    """Raspa credenciais de qualquer texto antes de ele virar mensagem — vale
+    inclusive para o texto de uma exceção de terceiro, que ninguém revisou."""
+    for segredo in segredos:
+        if segredo and segredo in texto:
+            texto = texto.replace(segredo, "***")
+    return texto
+
+
 def story_link(web_uri: str):
     """`StoryLink(webUri=...)` — a figurinha, do jeito que o instagrapi a
     nomeia. Fica numa função para o import continuar preguiçoso e para o teste
@@ -309,15 +353,16 @@ class InstagramStoryLinkChannel:
         if self.client is not None:
             return self.client
         try:
-            Client, _, erros_de_sessao = _instagrapi()
+            _, _, erros_de_sessao = _instagrapi()
+            cl = nova_sessao()
         except ImportError as exc:
             raise _NaoDaPraEntrar(SEM_INSTAGRAPI, AVISO_SEM_INSTAGRAPI) from exc
 
-        cl = Client()
         try:
-            if self.session_path.is_file():
-                cl.load_settings(self.session_path)
-            cl.login(self.username, self.password)
+            # Sem `totp_seed` de propósito: 2FA é assunto do `afiliado ig-login`,
+            # que o dono roda à mão. Aqui, conta com 2FA e sessão morta vira
+            # mensagem acionável — não uma tentativa de adivinhar código.
+            entra(cl, self.username, self.password, self.session_path)
         except erros_de_sessao as exc:
             # Desafio, senha trocada, conta suspensa: a sessão morreu e só o
             # dono resolve. Dizer isso é diferente de dizer "deu erro".
@@ -338,8 +383,7 @@ class InstagramStoryLinkChannel:
         mantém o device estável. Falhar aqui NÃO cancela a publicação — o login
         já aconteceu; o que se perde é a economia do próximo."""
         try:
-            self.session_path.parent.mkdir(parents=True, exist_ok=True)
-            cl.dump_settings(self.session_path)
+            guarda_sessao(cl, self.session_path)
         except Exception as exc:      # noqa: BLE001 - nunca derruba o publish
             self._avisa(f"⚠️ instagram_story_link: não consegui guardar a sessão em "
                         f"{self.session_path} ({type(exc).__name__}) — o próximo run "
@@ -367,6 +411,4 @@ class InstagramStoryLinkChannel:
     def _sem_senha(self, texto: str) -> str:
         """Nenhuma mensagem deste canal carrega `IG_PASSWORD` — nem quando ela
         vem DENTRO do texto de uma exceção de terceiro."""
-        if self.password and self.password in texto:
-            texto = texto.replace(self.password, "***")
-        return texto
+        return sem_segredos(texto, self.password)

@@ -962,6 +962,259 @@ def test_run_monta_o_story_a_partir_do_config_yaml(monkeypatch, tmp_path):
     assert story.brand_name == "Fiscal da Promo"
 
 
+# -- fase 5F: `afiliado stories` e `afiliado ig-login` --------------------------
+#
+# O canal `instagram_story_link` (instagrapi, story COM figurinha de link) NÃO
+# roda no GitHub Actions: IP de datacenter que muda a cada execução + sessão de
+# app móvel forjada é o padrão que mais dispara `challenge_required`. Ele tem
+# comando próprio, para o dono rodar da máquina dele. Nada aqui importa
+# instagrapi nem toca o Instagram.
+
+SENHA_DE_TESTE = "S3nh4-D0-D0n0"
+
+
+def _env_do_story_link(monkeypatch):
+    _env_do_instagram(monkeypatch)
+    monkeypatch.setenv("IG_USERNAME", "ofiscaldapromo")
+    monkeypatch.setenv("IG_PASSWORD", SENHA_DE_TESTE)
+    monkeypatch.delenv("IG_TOTP_SEED", raising=False)
+
+
+def _config_com_story_link(tmp_path, extra: str = "") -> str:
+    cfg_text = (open("config.yaml", encoding="utf-8").read()
+                .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+                .replace("data/watchlist.json",
+                         str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    sessao = str(tmp_path / "ig_session.json").replace("\\", "/")
+    cfg_text += ("\nchannels:\n"
+                 "  telegram: true\n"
+                 "  instagram_feed: true\n"
+                 "  instagram_story:\n"
+                 "    enabled: false\n"          # regra de ouro: nunca os dois
+                 "  instagram_story_link:\n"
+                 "    enabled: true\n"
+                 "    max_per_day: 6\n"
+                 "    max_sem_link: 2\n"
+                 f"    session_path: {sessao}\n") + extra
+    caminho = tmp_path / "config.yaml"
+    caminho.write_text(cfg_text, encoding="utf-8")
+    return str(caminho)
+
+
+def _captura_run(monkeypatch) -> dict:
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        chamado.update(channels=channels, dry_run=dry_run, cfg=cfg,
+                       avisos=list(warnings_iniciais or []))
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    return chamado
+
+
+def test_stories_roda_so_os_canais_de_story(monkeypatch, tmp_path):
+    """Mudança 4: `afiliado stories` reaproveita o pipeline inteiro (ritmo,
+    dedupe, teto diário, resumo) com os canais de story e mais nada — o
+    Telegram e o feed continuam saindo pelo `afiliado run`, no Actions."""
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--config", _config_com_story_link(tmp_path)]) == 0
+
+    canal = chamado["channels"][0]
+    assert [c.name for c in chamado["channels"]] == ["instagram_story_link"]
+    assert canal.max_per_day == 6 and canal.max_sem_link == 2
+    assert canal.brand_handle == "@ofiscaldapromo"
+    assert str(canal.session_path) == str(tmp_path / "ig_session.json")
+    assert chamado["dry_run"] is False
+
+
+def test_run_nao_monta_o_canal_de_api_privada_nem_ligado(monkeypatch, tmp_path, capsys):
+    """A trava que importa: `afiliado run` é o que roda no Actions. Mesmo com o
+    canal ligado no config, ele não é montado ali — e o aviso diz por quê."""
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["run", "--config", _config_com_story_link(tmp_path)]) == 0
+
+    nomes = [c.name for c in chamado["channels"]]
+    assert "instagram_story_link" not in nomes
+    assert "telegram" in nomes                       # o resto do run continua
+    assert cli.AVISO_STORY_LINK_FORA_DO_RUN in chamado["avisos"]
+    assert "afiliado stories" in cli.AVISO_STORY_LINK_FORA_DO_RUN
+    assert "Actions" in cli.AVISO_STORY_LINK_FORA_DO_RUN
+    assert cli.AVISO_STORY_LINK_FORA_DO_RUN in capsys.readouterr().out
+
+
+def test_stories_dry_run_nao_publica_nem_escreve(monkeypatch, tmp_path):
+    """Regra da 5A: `--dry-run` não constrói canal nenhum (logo não publica) e
+    o pipeline não escreve no banco."""
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--dry-run",
+                     "--config", _config_com_story_link(tmp_path)]) == 0
+    assert chamado["channels"] == [] and chamado["dry_run"] is True
+
+
+def test_stories_aceita_posts(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--dry-run", "--posts", "3",
+                     "--config", _config_com_story_link(tmp_path)]) == 0
+    assert chamado["cfg"]["selection"]["posts_per_run"] == 3
+
+
+def test_stories_sem_credencial_avisa_e_nao_monta(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    monkeypatch.delenv("IG_PASSWORD", raising=False)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--config", _config_com_story_link(tmp_path)]) == 0
+    assert chamado["channels"] == []
+    aviso = next(a for a in chamado["avisos"] if "instagram_story_link" in a)
+    assert "IG_USERNAME/IG_PASSWORD" in aviso
+    assert SENHA_DE_TESTE not in capsys.readouterr().out
+
+
+def test_stories_sem_sessao_salva_avisa_para_rodar_ig_login(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    chamado = _captura_run(monkeypatch)
+
+    assert cli.main(["stories", "--config", _config_com_story_link(tmp_path)]) == 0
+    assert any("ig-login" in a for a in chamado["avisos"])
+
+
+# -- `afiliado ig-login` -------------------------------------------------------
+
+class _ClienteFalso:
+    """Duplo do `Client` do instagrapi para o `ig-login`: nada de rede."""
+
+    ultimo = None
+
+    def __init__(self, erro=None):
+        self.chamadas = []
+        self.erro = erro
+        _ClienteFalso.ultimo = self
+
+    def load_settings(self, caminho):
+        self.chamadas.append(("load_settings", str(caminho)))
+
+    def dump_settings(self, caminho):
+        self.chamadas.append(("dump_settings", str(caminho)))
+        from pathlib import Path
+        Path(caminho).write_text('{"uuids": {}}', encoding="utf-8")
+
+    def totp_generate_code(self, seed):
+        self.chamadas.append(("totp", seed))
+        return "654321"
+
+    def login(self, usuario, senha, **kwargs):
+        self.chamadas.append(("login", usuario, kwargs.get("verification_code")))
+        if self.erro is not None:
+            raise self.erro
+        return True
+
+
+def _instagrapi_falso(monkeypatch, erro=None):
+    from afiliado.channels import instagram_story_link as mod
+    monkeypatch.setattr(mod, "_instagrapi", lambda: (lambda: _ClienteFalso(erro), None, ()))
+
+
+def test_ig_login_cria_a_sessao_e_nao_imprime_credencial(monkeypatch, tmp_path, capsys):
+    """Mudança 3: as credenciais vêm do AMBIENTE, nunca da linha de comando —
+    argumento de CLI fica no histórico do shell e no `ps` de qualquer usuário."""
+    _env_do_story_link(monkeypatch)
+    _instagrapi_falso(monkeypatch)
+    cfg_file = _config_com_story_link(tmp_path)
+
+    assert cli.main(["ig-login", "--config", cfg_file]) == 0
+
+    sessao = tmp_path / "ig_session.json"
+    assert sessao.is_file()
+    assert [c[0] for c in _ClienteFalso.ultimo.chamadas] == ["login", "dump_settings"]
+    saida = capsys.readouterr().out
+    assert "✅" in saida and str(sessao) in saida     # só sucesso e o caminho
+    assert SENHA_DE_TESTE not in saida
+
+
+def test_ig_login_usa_totp_quando_ha_semente(monkeypatch, tmp_path):
+    """2FA do instagrapi é só TOTP (app autenticador); SMS não funciona."""
+    _env_do_story_link(monkeypatch)
+    monkeypatch.setenv("IG_TOTP_SEED", "SEMENTE")
+    _instagrapi_falso(monkeypatch)
+
+    assert cli.main(["ig-login", "--config", _config_com_story_link(tmp_path)]) == 0
+    chamadas = _ClienteFalso.ultimo.chamadas
+    assert ("totp", "SEMENTE") in chamadas
+    assert ("login", "ofiscaldapromo", "654321") in chamadas
+
+
+def test_ig_login_reaproveita_a_sessao_existente(monkeypatch, tmp_path):
+    _env_do_story_link(monkeypatch)
+    _instagrapi_falso(monkeypatch)
+    (tmp_path / "ig_session.json").write_text('{"uuids": {}}', encoding="utf-8")
+
+    assert cli.main(["ig-login", "--config", _config_com_story_link(tmp_path)]) == 0
+    assert [c[0] for c in _ClienteFalso.ultimo.chamadas] == [
+        "load_settings", "login", "dump_settings"]
+
+
+def test_ig_login_sem_env_falha_dizendo_o_que_falta(monkeypatch, tmp_path, capsys):
+    _env_do_story_link(monkeypatch)
+    monkeypatch.delenv("IG_PASSWORD", raising=False)
+
+    assert cli.main(["ig-login", "--config", _config_com_story_link(tmp_path)]) == 1
+    saida = capsys.readouterr().out
+    assert "❌" in saida and "IG_USERNAME/IG_PASSWORD" in saida
+
+
+def test_ig_login_que_falha_nao_vaza_a_senha(monkeypatch, tmp_path, capsys):
+    """Teste 10 do brief, do lado do comando: nem quando a senha vem DENTRO do
+    texto da exceção do instagrapi."""
+    _env_do_story_link(monkeypatch)
+    _instagrapi_falso(monkeypatch, erro=RuntimeError(f"login {SENHA_DE_TESTE} recusado"))
+
+    assert cli.main(["ig-login", "--config", _config_com_story_link(tmp_path)]) == 1
+    saida = capsys.readouterr().out
+    assert "❌" in saida and "RuntimeError" in saida
+    assert SENHA_DE_TESTE not in saida
+    assert not (tmp_path / "ig_session.json").exists()
+
+
+def test_ig_login_sem_instagrapi_instalado_diz_como_instalar(monkeypatch, tmp_path, capsys):
+    from afiliado.channels import instagram_story_link as mod
+
+    def sem_biblioteca():
+        raise ImportError("No module named 'instagrapi'")
+
+    _env_do_story_link(monkeypatch)
+    monkeypatch.setattr(mod, "_instagrapi", sem_biblioteca)
+    assert cli.main(["ig-login", "--config", _config_com_story_link(tmp_path)]) == 1
+    assert "pip install" in capsys.readouterr().out
+
+
 # --- Fase 5E (revisão): o doctor confere a PERMISSÃO de publicar --------------
 # `GET /{ig_user}?fields=username` passa só com `instagram_basic` e dizia ✅ com
 # a permissão de PUBLICAR perdida. Agora que o story também sai pela API, essa

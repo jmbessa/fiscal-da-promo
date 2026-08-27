@@ -7,6 +7,14 @@ from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
 
 MAX_CANDIDATES_FOR_PROMPT = 30
+# Fase 5C (M3/A8): o slate apresentado ao ranker é a união de três recortes —
+# 10 por valor esperado, 10 por vendas, 10 por desconto ALEGÁVEL — com no
+# máximo 4 itens da mesma categoria. Antes o LLM via só os 30 maiores EV, que
+# com a comissão crua eram os 30 mais caros.
+SLATE_POR_CRITERIO = 10
+MAX_POR_CATEGORIA_NO_SLATE = 4
+# Expoente que amortece a comissão no EV (1.0 = comissão crua, como antes).
+DEFAULT_COMMISSION_EXP = 0.7
 
 
 @dataclass(frozen=True)
@@ -165,12 +173,22 @@ def _desconto_alegavel(offer: Offer, cfg: dict | None = None) -> int:
 
 
 def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> float:
-    """Retorno esperado por post: comissão em R$ ponderada pela popularidade."""
+    """Retorno esperado por post: comissão em R$ (AMORTECIDA) ponderada pela
+    popularidade.
+
+    A8: com a comissão crua, o fator dela variava 50× (R$ 20 → R$ 1.000)
+    contra 2,5× de popularidade e 1,5× de desconto — uma câmera de R$ 800 a 3%
+    com 100 vendas ganhava de uma creatina de R$ 30 a 10% com 50 mil vendas, e
+    o LLM só via os 30 itens mais caros. `commission_brl ** commission_exp`
+    (0,7) põe os três fatores na mesma ordem de grandeza sem inverter a
+    ordem de nada: expoente 1,0 devolve o comportamento anterior."""
     w = cfg["selection"].get("ev_weights") or {}
     wp = float(w.get("popularity", 0.3))
+    expoente = float(pricing.setting(w, "commission_exp", DEFAULT_COMMISSION_EXP))
     commission_brl = offer.commission_brl or (
         (offer.price_current_cents / 100) * (offer.commission_pct / 100))
-    score = commission_brl * (1 + wp * math.log10(offer.sales + 1))
+    base = commission_brl ** expoente if commission_brl > 0 else 0.0
+    score = base * (1 + wp * math.log10(offer.sales + 1))
     # Bônus só pelo desconto que o VEREDITO autoriza alegar — o "de" inflado
     # do vendedor não vale nada aqui, e o desconto que a régua proíbe alegar
     # também não.
@@ -183,6 +201,66 @@ def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> flo
 
 def order_by_ev(offers: list[Offer], cfg: dict, watchlist: Watchlist | None = None) -> list[Offer]:
     return sorted(offers, key=lambda o: ev_score(o, cfg, watchlist), reverse=True)
+
+
+def build_slate(candidates: list[Offer], cfg: dict,
+                watchlist: Watchlist | None = None) -> list[Offer]:
+    """O que o ranker vê: a UNIÃO de três recortes das candidatas, alternando
+    a origem — o melhor por valor esperado, o mais vendido, o de maior
+    desconto alegável, e de novo (fase 5C, M3/A8).
+
+    Três consequências desenhadas:
+    - o campeão de vendas entra mesmo com EV baixo (a creatina de R$ 30 com
+      50 mil vendas não some atrás de 30 câmeras);
+    - nenhuma categoria ocupa mais de `MAX_POR_CATEGORIA_NO_SLATE` das vagas —
+      um item bloqueado pela cota cede o lugar ao próximo do MESMO recorte, e
+      não a um item de outro critério;
+    - a ORDEM já é o fallback determinístico: quando o LLM cai, `rank_offers`
+      pega os primeiros daqui, que alternam origem em vez de repetir o topo
+      do EV.
+
+    O recorte de desconto só considera o que o veredito autoriza alegar (modo
+    A): ranquear por um desconto que o post não vai dizer é o mesmo erro que a
+    5B tirou do `ev_score`. Categoria vazia (fonte que não informa) não entra
+    na cota — senão TODAS as ofertas sem categoria disputariam 4 vagas."""
+    recortes = [
+        order_by_ev(candidates, cfg, watchlist),
+        sorted(candidates, key=lambda o: o.sales, reverse=True),
+        sorted((o for o in candidates if _desconto_alegavel(o, cfg) > 0),
+               key=lambda o: _desconto_alegavel(o, cfg), reverse=True),
+    ]
+    posicoes = [0] * len(recortes)
+    restantes = [SLATE_POR_CRITERIO] * len(recortes)
+    escolhidos: list[Offer] = []
+    vistos: set[tuple[str, str]] = set()
+    por_categoria: dict[str, int] = {}
+
+    def cabe(offer: Offer) -> bool:
+        if (offer.source, offer.item_id) in vistos:
+            return False
+        return (not offer.category
+                or por_categoria.get(offer.category, 0) < MAX_POR_CATEGORIA_NO_SLATE)
+
+    while len(escolhidos) < MAX_CANDIDATES_FOR_PROMPT:
+        rodada = False
+        for i, recorte in enumerate(recortes):
+            if restantes[i] <= 0 or len(escolhidos) >= MAX_CANDIDATES_FOR_PROMPT:
+                continue
+            while posicoes[i] < len(recorte):
+                offer = recorte[posicoes[i]]
+                posicoes[i] += 1
+                if not cabe(offer):
+                    continue
+                vistos.add((offer.source, offer.item_id))
+                if offer.category:
+                    por_categoria[offer.category] = por_categoria.get(offer.category, 0) + 1
+                escolhidos.append(offer)
+                restantes[i] -= 1
+                rodada = True
+                break
+        if not rodada:
+            break
+    return escolhidos
 
 
 def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,
@@ -212,7 +290,7 @@ def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict,
     n = cfg["selection"]["posts_per_run"]
     if len(candidates) <= n:
         return list(candidates)
-    presented = order_by_ev(candidates, cfg, watchlist)[:MAX_CANDIDATES_FOR_PROMPT]
+    presented = build_slate(candidates, cfg, watchlist)
     data = llm.ask_json(_rank_prompt(presented, recent_titles, n, watchlist, cfg),
                         model=cfg["llm"]["model"])
     # Só uma LISTA vale: `{"chosen": null}` levantava TypeError fora de
@@ -226,4 +304,6 @@ def rank_offers(candidates: list[Offer], recent_titles: list[str], cfg: dict,
         picked = [by_id[i] for i in ids if i in by_id][:n]
         if len(picked) == n:
             return picked
-    return order_by_ev(presented, cfg, watchlist)[:n]
+    # Fallback determinístico: a própria união, na ordem em que ela alterna
+    # EV → vendas → desconto (M3) — não o topo do EV outra vez.
+    return presented[:n]

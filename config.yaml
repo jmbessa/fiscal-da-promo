@@ -62,10 +62,20 @@ selection:
   category_ids:
     shopee: ["100630", "100636", "100001", "100637", "100632"]
     meli: []      # vazio: o pool curado (meli.offers_path) já vem pré-filtrado
-  # Pesos do score de valor esperado (fase 1.5): EV = comissão em R$ × (1 + popularity × log10(vendas+1))
+  # Pesos do score de valor esperado (fase 1.5):
+  #   EV = (comissão em R$ ** commission_exp) × (1 + popularity × log10(vendas+1))
+  #        × (1 + discount × desconto_alegável/100)
   ev_weights:
     popularity: 0.3
-    discount: 0.5     # bônus só por desconto VERIFICADO (real_discount_pct)
+    discount: 0.5     # bônus só por desconto que o VEREDITO autoriza alegar
+    # Fase 5C (A8): a comissão entra amortecida. Crua, o fator dela variava 50x
+    # (R$ 20 → R$ 1.000) contra 2,5x de popularidade e 1,5x de desconto: uma
+    # câmera de R$ 800 a 3% com 100 vendas ganhava de uma creatina de R$ 30 a
+    # 10% com 50 mil vendas, e o LLM só via os 30 itens mais caros. Com 0.7,
+    # 8x de comissão viram 4,3x de EV. 1.0 devolve o comportamento anterior.
+    # O EV deixa de ser "reais por post" e vira um score — min_ev_brl acima é
+    # lido na MESMA escala (0,50 continua cortando comissão abaixo de ~R$ 0,38).
+    commission_exp: 0.7
 
 # Fase 3 (parte 1): fontes de ofertas habilitadas. Seção opcional — ausente,
 # equivale a só shopee (comportamento de antes desta fase). O Mercado Livre

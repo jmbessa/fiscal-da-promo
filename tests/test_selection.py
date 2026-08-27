@@ -231,17 +231,18 @@ def test_filter_offers_category_lista_legado(tmp_path):
 
 
 def test_ev_score():
+    # A comissão entra AMORTECIDA (fase 5C, M3): ** ev_weights.commission_exp.
     o1 = make_offer()  # price_current=24999, commission_pct=12.0, sales=0
-    assert selection.ev_score(o1, CFG) == pytest.approx(29.9988)
+    assert selection.ev_score(o1, CFG) == pytest.approx(29.9988 ** 0.7)
     o2 = make_offer(sales=999)  # log10(1000)=3 -> multiplicador 1.9
-    assert selection.ev_score(o2, CFG) == pytest.approx(56.99772)
+    assert selection.ev_score(o2, CFG) == pytest.approx(29.9988 ** 0.7 * 1.9)
 
 
 def test_ev_score_prefere_comissao_absoluta():
     # commission_brl vindo da API tem precedência sobre a estimativa via
     # commission_pct, mesmo quando os dois valores são incoerentes entre si.
     offer = make_offer(commission_brl=5.0, commission_pct=999.0)
-    assert selection.ev_score(offer, CFG) == pytest.approx(5.0)
+    assert selection.ev_score(offer, CFG) == pytest.approx(5.0 ** 0.7)
 
 
 def test_order_by_ev():
@@ -264,13 +265,21 @@ def test_rank_offers_uses_llm_choice(monkeypatch):
 
 
 def test_rank_offers_fallback_on_llm_failure(monkeypatch):
-    cands = [make_offer(item_id="a", commission_pct=5.0),
-             make_offer(item_id="b", commission_pct=20.0)]
+    # O fallback é o slate (M3): alterna maior EV e maior número de vendas —
+    # antes repetia o topo do EV, que com a comissão crua eram os mais caros.
+    cands = [make_offer(item_id="a", commission_pct=5.0, sales=90_000),
+             make_offer(item_id="b", commission_pct=20.0, sales=1),
+             make_offer(item_id="c", commission_pct=12.0, sales=2)]
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
-    ranked = selection.rank_offers(cands + [make_offer(item_id="c", commission_pct=12.0)], [], CFG)
-    assert ranked[0].item_id == "b"  # maior EV primeiro
-    assert ranked[1].item_id == "c"
+    ranked = selection.rank_offers(cands, [], CFG)
+    assert [o.item_id for o in ranked] == ["b", "a"]
     assert len(ranked) == 2
+    # Com a comissão CRUA (comportamento anterior), "a" — 90 mil vendas —
+    # ficava em terceiro e nunca era publicado.
+    cru = {**CFG, "selection": {**CFG["selection"],
+                                "ev_weights": {"popularity": 0.3, "discount": 0.5,
+                                               "commission_exp": 1.0}}}
+    assert [o.item_id for o in selection.order_by_ev(cands, cru)] == ["b", "c", "a"]
 
 
 def test_rank_offers_skips_llm_when_few_candidates(monkeypatch):
@@ -291,7 +300,7 @@ def test_rank_offers_rejects_duplicate_ids(monkeypatch):
     ]
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: {"chosen": ["3", "3"]})
     ranked = selection.rank_offers(cands, [], CFG)
-    fallback = selection.order_by_ev(cands, CFG)[:2]
+    fallback = selection.build_slate(cands, CFG)[:2]
     assert ranked == fallback
     assert len(ranked) == 2
     assert len({o.item_id for o in ranked}) == 2  # distinct offers
@@ -305,7 +314,7 @@ def test_rank_offers_partial_valid_ids_falls_back(monkeypatch):
     ]
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: {"chosen": ["3", "does-not-exist"]})
     ranked = selection.rank_offers(cands, [], CFG)
-    fallback = selection.order_by_ev(cands, CFG)[:2]
+    fallback = selection.build_slate(cands, CFG)[:2]
     assert ranked == fallback
 
 
@@ -334,8 +343,8 @@ def test_rank_offers_caps_candidates_at_30(monkeypatch):
     monkeypatch.setattr(llm, "ask_json", fake_ask_json)
     ranked = selection.rank_offers(cands, [], CFG)
     assert captured["prompt"].count("- id=") <= 30
-    top30 = selection.order_by_ev(cands, CFG)[:30]
-    assert ranked == top30[:CFG["selection"]["posts_per_run"]]
+    slate = selection.build_slate(cands, CFG)
+    assert ranked == slate[:CFG["selection"]["posts_per_run"]]
 
 
 def test_ev_score_with_watchlist_boost():
@@ -412,3 +421,87 @@ def test_sem_metas_a_fila_segue_o_ranking():
     fila = [make_offer(item_id="s1"), make_offer(item_id="m1", source="meli")]
     assert selection.next_index_by_quota(fila, {}, {}) == 0
     assert selection.next_index_by_quota([], {}, {}) is None
+
+
+# =============================================================================
+# Fase 5C (M3/A8) — comissão amortecida e slate diverso
+# =============================================================================
+
+def test_ev_amortece_a_comissao():
+    """A8: a amplitude do fator comissão era 50x (R$ 20 → R$ 1.000) contra 2,5x
+    de popularidade. `commission_brl ** 0.7` derruba isso para ~15x."""
+    barato = make_offer(item_id="b", commission_brl=3.0, sales=0)
+    caro = make_offer(item_id="c", commission_brl=24.0, sales=0)
+    assert selection.ev_score(barato, CFG) == pytest.approx(3.0 ** 0.7)
+    razao = selection.ev_score(caro, CFG) / selection.ev_score(barato, CFG)
+    assert razao == pytest.approx(8 ** 0.7)          # 8x de comissão vira 4,3x de EV
+    # expoente 1.0 desliga a amortização (comportamento anterior)
+    cfg1 = {**CFG, "selection": {**CFG["selection"],
+                                 "ev_weights": {"popularity": 0.3, "discount": 0.5,
+                                                "commission_exp": 1.0}}}
+    assert selection.ev_score(caro, cfg1) == pytest.approx(24.0)
+
+
+def test_ev_com_comissao_zero_nao_explode():
+    assert selection.ev_score(make_offer(commission_brl=0.0, commission_pct=0.0), CFG) == 0.0
+
+
+def _camera(i):
+    return make_offer(item_id=f"cam{i}", category="eletro", commission_brl=24.0,
+                      sales=100, price_current_cents=80000)
+
+
+def _creatina(i):
+    return make_offer(item_id=f"cre{i}", category="saude", commission_brl=3.0,
+                      sales=50000, price_current_cents=3000)
+
+
+def test_slate_traz_o_campeao_de_vendas_mesmo_com_ev_baixo():
+    candidatas = [_camera(i) for i in range(30)] + [_creatina(0)]
+    slate = selection.build_slate(candidatas, CFG)
+    assert "cre0" in {o.item_id for o in slate}
+
+
+def test_slate_limita_quatro_por_categoria():
+    candidatas = ([_camera(i) for i in range(30)] + [_creatina(i) for i in range(30)]
+                  + [make_offer(item_id=f"casa{i}", category="casa", commission_brl=5.0,
+                                sales=900) for i in range(30)])
+    slate = selection.build_slate(candidatas, CFG)
+    from collections import Counter
+    por_categoria = Counter(o.category for o in slate)
+    assert max(por_categoria.values()) <= 4
+    assert len(por_categoria) >= 3                # nenhuma categoria ocupa o slate
+    assert len(slate) == len(set(o.item_id for o in slate))
+
+
+def test_slate_alterna_as_origens():
+    """O fallback determinístico é a própria união, alternando EV, vendas e
+    desconto — não o topo do EV de novo."""
+    candidatas = [_camera(i) for i in range(3)] + [_creatina(i) for i in range(3)] + [
+        make_offer(item_id=f"promo{i}", category=f"cat{i}", commission_brl=1.0, sales=10,
+                   price_current_cents=1000, price_ref_cents=5000, price_p25_cents=2000,
+                   price_window_days=90) for i in range(3)]
+    slate = selection.build_slate(candidatas, CFG)
+    assert [o.item_id[:3] for o in slate[:3]] == ["cam", "cre", "pro"]
+
+
+def test_slate_nunca_passa_do_teto_do_prompt():
+    candidatas = [make_offer(item_id=f"x{i}", category=f"c{i}", commission_brl=float(i + 1),
+                             sales=i * 100) for i in range(200)]
+    assert len(selection.build_slate(candidatas, CFG)) <= selection.MAX_CANDIDATES_FOR_PROMPT
+
+
+def test_rank_offers_cai_no_slate_quando_o_llm_falha(monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    candidatas = [_camera(i) for i in range(3)] + [_creatina(i) for i in range(3)]
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 2}}
+    escolhidas = selection.rank_offers(candidatas, [], cfg)
+    assert [o.item_id for o in escolhidas] == [o.item_id
+                                               for o in selection.build_slate(candidatas, cfg)[:2]]
+
+
+def test_rank_offers_so_escolhe_do_slate_apresentado(monkeypatch):
+    candidatas = [_camera(i) for i in range(30)] + [_creatina(0)]
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: {"chosen": ["cre0"]})
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 1}}
+    assert [o.item_id for o in selection.rank_offers(candidatas, [], cfg)] == ["cre0"]

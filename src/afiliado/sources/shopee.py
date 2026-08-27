@@ -170,8 +170,12 @@ class ShopeeSource:
         Quem acumula o resultado das fatias é o estoque de candidatas
         (`StateDB.upsert_candidates`, chamado pelo pipeline)."""
         sh = cfg["shopee"]
-        teto = int(sh.get("calls_per_run") or DEFAULT_CALLS_PER_RUN)
-        plano = self._plano(sh)[:teto] if teto > 0 else self._plano(sh)
+        # 0 (ou negativo) = sem teto: roda o plano inteiro. `or DEFAULT`
+        # transformaria o 0 explícito em 8 (A11).
+        teto = int(_ou_padrao(sh, "calls_per_run", DEFAULT_CALLS_PER_RUN))
+        plano = self._plano(sh)
+        if teto > 0:
+            plano = plano[:teto]
         offers: list[Offer] = []
         seen_ids: set[str] = set()
         stats = DiscoveryStats()
@@ -318,9 +322,11 @@ class ShopeeSource:
             raise SourceError(f"shopee: itemId inválido ({offer.item_id!r})") from exc
         data = self._post({"query": ITEM_OFFER_QUERY, "variables": {"itemId": item_id}})
         nodes = (data.get("productOfferV2") or {}).get("nodes") or []
-        vivo = next((novo for node in nodes
-                     if str(node.get("itemId") or "") == str(offer.item_id)
-                     for novo in [_parse_node(node)] if novo is not None), None)
+        vivo = None
+        for node in nodes:
+            if str(node.get("itemId") or "") == str(offer.item_id):
+                vivo = _parse_node(node)     # None se a oferta expirou
+                break
         if vivo is None:
             raise SourceError(f"shopee: item {offer.item_id} saiu da listagem")
         return dataclasses.replace(

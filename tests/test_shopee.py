@@ -450,6 +450,30 @@ def test_quarenta_runs_cobrem_as_raizes_sem_redescobrir(tmp_path):
     db.close()
 
 
+def test_o_config_real_varre_as_raizes_inteiras_em_40_runs(tmp_path):
+    """Com o `config.yaml` DE VERDADE: 8 chamadas por run e, em 40 runs
+    (~3h20 na VPS, 1,25 dia no Actions), as 5 janelas-raiz inteiras — 200
+    fatias, nenhuma repetida. É o que sustenta 60 posts/dia a dedupe 30."""
+    from afiliado.config import load_config
+    cfg = load_config("config.yaml")
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_falsa(chamadas, por_pagina=2, ultima_pagina=40), tmp_path)
+    for _ in range(40):
+        src.fetch_offers(cfg)
+    assert len(chamadas) == 40 * cfg["shopee"]["calls_per_run"] == 320
+    raizes = [c for c in chamadas if not c.get("keyword")
+              and str(c["productCatId"]) in cfg["shopee"]["category_ids"]]
+    assert {(str(c["productCatId"]), c["page"]) for c in raizes} == {
+        (cat, pag) for cat in cfg["shopee"]["category_ids"] for pag in range(1, 41)}
+    assert len(raizes) == 200                      # nenhuma fatia de raiz repetida
+    subs = [c for c in chamadas if not c.get("keyword") and c not in raizes]
+    assert len({(c["productCatId"], c["page"]) for c in subs}) == len(subs) == 80
+    assert all(c["page"] >= 2 for c in subs)       # subcategoria começa na p2
+    kws = [c for c in chamadas if c.get("keyword")]
+    assert len({(c["keyword"], c["page"]) for c in kws}) == len(kws) == 40
+    db.close()
+
+
 def test_keyword_percorre_termos_e_paginas(tmp_path):
     chamadas = []
     cfg = {"shopee": {**CFG_5C["shopee"], "category_ids": [], "subcategory_ids": [],

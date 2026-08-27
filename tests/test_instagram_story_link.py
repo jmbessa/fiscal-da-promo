@@ -531,6 +531,24 @@ def test_nenhuma_mensagem_do_canal_carrega_a_senha(capsys, tmp_path, monkeypatch
     assert SENHA not in saida.out and SENHA not in saida.err
 
 
+def test_nenhum_print_do_projeto_toca_a_senha():
+    """A outra metade do teste 10 do brief: uma varredura no fonte INTEIRO, não
+    só neste canal. Nenhum `print` do projeto pode receber a senha — nem por
+    variável, nem por atributo. Imprimir o NOME da variável ("IG_PASSWORD
+    ausente", no doctor) é o oposto disso e continua permitido: é presença,
+    nunca valor."""
+    proibidos = {"senha", "password", "IG_PASSWORD"}
+    src = Path(mod.__file__).resolve().parents[2]
+    for arquivo in src.rglob("*.py"):
+        arvore = ast.parse(arquivo.read_text(encoding="utf-8"))
+        for no in ast.walk(arvore):
+            if not (isinstance(no, ast.Call) and getattr(no.func, "id", "") == "print"):
+                continue
+            usados = {n.id for n in ast.walk(no) if isinstance(n, ast.Name)}
+            usados |= {n.attr for n in ast.walk(no) if isinstance(n, ast.Attribute)}
+            assert not usados & proibidos, f"{arquivo}: print com {usados & proibidos}"
+
+
 def test_o_canal_nao_imprime_nada():
     """Este canal roda na máquina do dono, num terminal. `print` de qualquer
     coisa aqui é uma credencial a um passo de distância do histórico do shell —

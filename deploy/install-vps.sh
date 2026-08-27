@@ -55,15 +55,19 @@ python3 -m venv "$APP_DIR/.venv"
 
 echo "==> 6/7 .env e permissões"
 if [ ! -f "$APP_DIR/.env" ]; then
-  # TODAS as variáveis que o pipeline lê (as mesmas 11 dos GitHub Secrets).
+  # TODAS as variáveis que o pipeline lê (as mesmas 12 dos GitHub Secrets).
   # As do Instagram e do Mercado Livre podem ficar vazias: o canal/fonte
   # correspondente é ignorado com aviso no chat de operações.
+  # ART_HOST_BOT_TOKEN (fase 5C, A5): bot SECUNDÁRIO, só precisa estar no chat
+  # de operações. É o token dele que vai à Meta na URL da arte do feed —
+  # vazio, vai o do bot administrador do canal, e o run avisa todo dia.
   cat > "$APP_DIR/.env" <<'ENVTEMPLATE'
 SHOPEE_APP_ID=
 SHOPEE_APP_SECRET=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHANNEL_ID=
 TELEGRAM_OPS_CHAT_ID=
+ART_HOST_BOT_TOKEN=
 CLAUDE_CODE_OAUTH_TOKEN=
 IG_USER_ID=
 IG_ACCESS_TOKEN=

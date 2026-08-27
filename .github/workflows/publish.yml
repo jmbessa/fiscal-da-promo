@@ -1,25 +1,38 @@
-# Fase 1.8: a produção de alta cadência (a cada 5 min) roda via cron na VPS —
-# ver docs/runbooks/vps-setup.md. O Actions NÃO acompanha essa cadência (cron
-# do GitHub tem piso de 5 min, mas com atrasos típicos de 5–30 min, e custo de
-# minutos muito acima da cota gratuita rodando 192x/dia). Este workflow é
-# redundância/backup horário e disparo manual (workflow_dispatch), não a
-# fonte principal de execuções.
+# Fase 5C (M8): o Actions é a PRODUÇÃO. Decisão do dono — não depender de uma
+# VPS que a Oracle Always Free recolhe quando fica ociosa. A VPS vira opcional,
+# para quem quiser a cadência de 5 min (ver docs/runbooks/vps-setup.md).
+#
+# Cadência: a cada 30 min entre 08:00 e 23:30 BRT = 32 runs/dia. Com o ritmo da
+# fase 5A (`pacing_budget`), cada run publica só o orçamento acumulado desde o
+# anterior, então `--posts-per-run 4` cobre os ~2 posts que 30 min de janela
+# liberam (60/dia ÷ 32 runs ≈ 1,9) com folga para recuperar um run perdido.
+#
+# Custo: 32 runs × ~1,5 min (com cache de pip e npm) ≈ 48 min/dia ≈ 1.440
+# min/mês, dentro dos 2.000 min/mês do plano grátis para repositório privado.
+# Sem os caches o setup sozinho passava de 2,5 min/run (2.400 min/mês) e
+# estouraria a cota — se algum dia estourar, corte o cron das 12:00-18:00 BRT
+# para 1×/hora antes de mexer no resto.
 name: publish
 on:
   schedule:
-    - cron: "0 11-23 * * *"   # 08h–20h BRT
-    - cron: "0 0-2 * * *"     # 21h–23h BRT
+    - cron: "0,30 11-23 * * *"   # 08:00–20:30 BRT
+    - cron: "0,30 0-2 * * *"     # 21:00–23:30 BRT
   workflow_dispatch:
     inputs:
       dry_run:
         description: "dry-run (não publica)"
         type: boolean
         default: false
+# Dois runs simultâneos furariam o teto e o dedupe: o segundo espera.
 concurrency:
   group: publish
   cancel-in-progress: false
 permissions:
   contents: write
+env:
+  # Pin: `npm install -g @anthropic-ai/claude-code` sem versão instalava o que
+  # estivesse publicado no dia, com todos os segredos no ambiente.
+  CLAUDE_CODE_VERSION: "2.1.246"
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -28,30 +41,68 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: npm install -g @anthropic-ai/claude-code
+      - name: Cache do Claude Code (npm global)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-claude-code-${{ env.CLAUDE_CODE_VERSION }}
+      - run: npm install -g @anthropic-ai/claude-code@${{ env.CLAUDE_CODE_VERSION }} --prefer-offline
       - run: pip install -e .
       - name: Executar pipeline
-        run: afiliado run ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: afiliado run --posts-per-run 4 ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           SHOPEE_APP_ID: ${{ secrets.SHOPEE_APP_ID }}
           SHOPEE_APP_SECRET: ${{ secrets.SHOPEE_APP_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           TELEGRAM_OPS_CHAT_ID: ${{ secrets.TELEGRAM_OPS_CHAT_ID }}
+          ART_HOST_BOT_TOKEN: ${{ secrets.ART_HOST_BOT_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          # Verificado ao vivo em 2026-08-26: `/products/{id}/items` ACEITA o
+          # token de aplicação (client_credentials, HTTP 200 em 3 produtos do
+          # pool). O `MeliSource` tenta client_credentials primeiro, então no
+          # runner efêmero ele NUNCA rotaciona refresh_token e não há nada a
+          # gravar de volta em secret. MELI_REFRESH_TOKEN fica só como rede de
+          # segurança; se um dia o client_credentials for recusado, ver
+          # "Token do ML no runner efêmero" em docs/runbooks/meli-setup.md.
           MELI_CLIENT_ID: ${{ secrets.MELI_CLIENT_ID }}
           MELI_CLIENT_SECRET: ${{ secrets.MELI_CLIENT_SECRET }}
           MELI_REFRESH_TOKEN: ${{ secrets.MELI_REFRESH_TOKEN }}
       - name: Commitar estado
         if: ${{ always() && !inputs.dry_run }}
+        # `git push` sem `pull --rebase` PERDIA o estado do run anterior (dedupe
+        # e teto furados). Em conflito no binário o run ATUAL vence: durante um
+        # rebase, --theirs é o commit que está sendo aplicado, ou seja, o nosso.
+        # Nunca perder o run é mais importante que preservar o histórico do
+        # state.db — o pior caso é reesquecer posts de um run.
         run: |
+          set -euo pipefail
           git config user.name "afiliado-bot"
           git config user.email "afiliado-bot@users.noreply.github.com"
           git add data/state.db
-          git diff --cached --quiet || git commit -m "chore: atualiza estado após run [skip ci]"
-          git push
+          if git diff --cached --quiet; then
+            echo "estado inalterado — nada a commitar"
+            exit 0
+          fi
+          git commit -m "chore: atualiza estado após run [skip ci]"
+          for tentativa in 1 2 3; do
+            if ! git pull --rebase --no-edit; then
+              git checkout --theirs data/state.db || git checkout --ours data/state.db
+              git add data/state.db
+              GIT_EDITOR=true git rebase --continue || git rebase --skip
+              echo "::warning::conflito binário em data/state.db — o estado deste run venceu"
+            fi
+            if git push; then
+              exit 0
+            fi
+            echo "push recusado (tentativa $tentativa) — refazendo o rebase"
+          done
+          echo "::error::não foi possível commitar data/state.db após 3 tentativas"
+          exit 1

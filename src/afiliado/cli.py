@@ -24,6 +24,9 @@ def _build_parser() -> argparse.ArgumentParser:
     prun.add_argument("--dry-run", action="store_true",
                       help="APIs reais, mas imprime em vez de publicar")
     prun.add_argument("--config", default="config.yaml")
+    prun.add_argument("--posts-per-run", type=int, default=None,
+                      help="sobrepõe selection.posts_per_run (o Actions roda a cada "
+                           "30 min e precisa de mais que a VPS, que roda a cada 5)")
     pdoc = sub.add_parser("doctor", help="verifica credenciais e dependências")
     pdoc.add_argument("--config", default="config.yaml")
     return p
@@ -340,6 +343,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load_config(args.config)
     if args.cmd == "doctor":
         return doctor(cfg)
+    if args.posts_per_run is not None:
+        # O teto diário e o RITMO continuam mandando (fase 5A): isto só diz
+        # quantas ofertas UM run pode chegar a publicar. Um agendador de 30 em
+        # 30 min precisa de mais folga por run que um de 5 em 5.
+        cfg = {**cfg, "selection": {**cfg["selection"],
+                                    "posts_per_run": int(args.posts_per_run)}}
 
     db = StateDB(cfg["state"]["path"], timezone=pipeline.schedule_settings(cfg)["timezone"])
     sources, avisos = _build_sources(cfg, db)

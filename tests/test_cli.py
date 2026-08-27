@@ -753,3 +753,26 @@ def test_doctor_com_ml_desligado_nao_falha_por_falta_de_link(monkeypatch, tmp_pa
     cfg = _doctor_com_meli(monkeypatch, tmp_path, links=None, ligado=False)
     assert cli.doctor(cfg) == 0
     assert "⚠️ Mercado Livre: pool de links ausente" in capsys.readouterr().out
+
+
+# --- Fase 5C (M8): o Actions roda a cada 30 min, a VPS a cada 5 --------------
+
+def test_posts_per_run_da_linha_de_comando_sobrepoe_o_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        open("config.yaml", encoding="utf-8").read()
+        .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/")),
+        encoding="utf-8")
+    visto = {}
+
+    def fake_run(cfg, *a, **k):
+        visto["n"] = cfg["selection"]["posts_per_run"]
+        return cli.pipeline.RunSummary()
+
+    monkeypatch.setattr(cli.pipeline, "run", fake_run)
+    cli.main(["run", "--dry-run", "--config", str(cfg_file)])
+    assert visto["n"] == 1                                    # o do config.yaml
+    cli.main(["run", "--dry-run", "--posts-per-run", "4", "--config", str(cfg_file)])
+    assert visto["n"] == 4

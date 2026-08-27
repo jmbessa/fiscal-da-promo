@@ -296,11 +296,42 @@ autentica por **sessão via cookies do navegador**, não por OAuth.
   vencedor mudou dentro da janela, a série é a do vencedor atual (e a mínima
   histórica do produto pode ser de outro anúncio — o leitor rejeita `mínima >
   p25`; o skill usa a mínima semanal nesse caso e conta quantos foram).
-- **Actions (`publish.yml`) é efêmero — cuidado com `refresh_token`:** cada
-  execução do workflow começa do zero, sem `data/meli_token.json`
-  persistido entre runs. Se a autenticação cair no fluxo `refresh_token`
-  (passo 2b), a rotação se perde a cada execução e a autenticação quebra na
-  seguinte. Nesse caso, a fonte do ML só deve rodar na VPS
-  (`docs/runbooks/vps-setup.md`), onde `data/meli_token.json` sobrevive
-  entre execuções — não no Actions. Com `client_credentials` funcionando
-  (passo 2a, sem estado), o Actions serve normalmente.
+## Token do ML no runner efêmero (Actions) — testado ao vivo
+
+Cada execução do workflow começa do zero, sem `data/meli_token.json` entre
+runs. Se a autenticação caísse no fluxo `refresh_token` (passo 2b), a rotação
+se perderia a cada execução e a autenticação quebraria na seguinte — e o
+Actions precisaria gravar o token novo de volta no secret (`gh secret set` com
+um PAT de escopo `repo`).
+
+**Não precisa.** Teste ao vivo em 2026-08-26, com as credenciais reais e
+`data/meli_offers.json` do pool:
+
+| passo | resultado |
+|---|---|
+| `POST /oauth/token` com `grant_type=client_credentials` | **HTTP 200**, `expires_in` 21600 s (6 h), escopo com `read` e `offline_access` |
+| `GET /products/MLB66637233/items` com esse token | **HTTP 200**, 38 vendedores, preços reais |
+| `GET /products/MLB26796581/items` | **HTTP 200**, 1 vendedor |
+| `GET /products/MLB68104527/items` | **HTTP 200**, 9 vendedores |
+
+Ou seja: o endpoint que o `refresh_price` usa aceita o **token de aplicação**.
+Como `MeliSource._authenticate` tenta `client_credentials` PRIMEIRO e só cai
+para `refresh_token` se ele for recusado, no Actions o refresh token nunca é
+usado nem rotacionado — não há estado a preservar, e o workflow **não precisa
+de `GH_PAT` nem de `gh secret set`**.
+
+`MELI_REFRESH_TOKEN` continua nos secrets só como rede de segurança. Se um dia
+o `client_credentials` passar a ser recusado (app reconfigurado, grant
+revogado), o sintoma será `meli: autenticação falhou` no chat de operações a
+partir do segundo run — e aí, sim, ou o ML volta a rodar só na VPS
+(`docs/runbooks/vps-setup.md`, onde `data/meli_token.json` sobrevive), ou o
+workflow ganha um passo de escrita de volta no secret com um PAT:
+
+- [ ] GitHub → Settings → Developer settings → Personal access tokens →
+      **Fine-grained token**, repositório único, permissão **Secrets:
+      Read and write** (e `Contents: Read and write`, que o workflow já usa).
+- [ ] Cadastre como secret `GH_PAT` e acrescente ao workflow, depois do run:
+      `gh secret set MELI_REFRESH_TOKEN < <(jq -r .refresh_token data/meli_token.json)`
+      com `GH_TOKEN: ${{ secrets.GH_PAT }}` no `env:`.
+- [ ] Um PAT com escrita em secrets é uma chave que abre o repositório
+      inteiro — só crie se o `client_credentials` realmente parar.

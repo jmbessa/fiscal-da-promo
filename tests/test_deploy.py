@@ -22,8 +22,11 @@ def test_timer_nao_dispara_run_atrasado_fora_da_janela():
     assert _unidade("afiliado.timer")["Persistent"] == "false"
 
 
+# 12 desde a fase 5C: ART_HOST_BOT_TOKEN entrou com o bot secundário que
+# hospeda a arte do feed (A5).
 ENV_VARS = ("SHOPEE_APP_ID", "SHOPEE_APP_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID",
-            "TELEGRAM_OPS_CHAT_ID", "CLAUDE_CODE_OAUTH_TOKEN", "IG_USER_ID", "IG_ACCESS_TOKEN",
+            "TELEGRAM_OPS_CHAT_ID", "ART_HOST_BOT_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+            "IG_USER_ID", "IG_ACCESS_TOKEN",
             "MELI_CLIENT_ID", "MELI_CLIENT_SECRET", "MELI_REFRESH_TOKEN")
 
 

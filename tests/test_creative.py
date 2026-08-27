@@ -453,3 +453,41 @@ def test_story_plan_e_feed_plan_expoem_selo_badge_e_riscado():
     assert feed_plan(offer, v)["meta"] is False
     for plan in (story_plan(offer, NO_CLAIM), feed_plan(offer, NO_CLAIM)):
         assert plan["selo"] == "" and plan["badge_pct"] == 0 and plan["riscado"] == ""
+
+
+def test_price_pill_do_feed_tambem_e_centralizada():
+    """O feed era o único formato com a pill fora do eixo — ao lado do selo e
+    da meta, ambos centralizados, aquilo lia como descuido. Pedido do dono em
+    2026-08-27, depois de ver os dois formatos lado a lado."""
+    from afiliado.creative import FEED_SIZE, _feed_body_dims, _pill_left, render_feed
+
+    offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    dims = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, _pill_left(offer, NO_CLAIM),
+                            FEED_TITLE_WIDTH)
+    png = render_feed(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
+    largura = FEED_SIZE[0]
+    left, _, right, _ = _gold_bbox(png, (0, 780, largura, 1160))
+    esperado = (largura - dims["width"]) / 2
+    assert abs(left - esperado) <= 2
+    assert abs((largura - right) - esperado) <= 2
+
+
+def test_respiro_do_feed_nao_derruba_a_meta_por_alguns_pixels():
+    """O respiro do story (88) aplicado ao feed derrubava a linha de avaliações
+    por SEIS pixels — o feed tem 570px a menos de altura. 64 é a proporção
+    equivalente e cabe com folga. Este teste é o que impede alguém de igualar
+    os dois números de novo sem medir."""
+    from afiliado.creative import (FEED_META_GAP, FEED_PAD, FEED_SIZE,
+                                   STORY_META_GAP, _feed_body_dims,
+                                   _feed_footer_geometry, _pill_left)
+
+    assert FEED_META_GAP < STORY_META_GAP, "o feed é mais curto; o respiro não pode ser igual"
+    offer = make_offer(title="Creme Multirreparador Calmante, Cicaplast Baume B5+ La Roche Posay",
+                       price_current_cents=7445, rating=4.9, sales=13000)
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    footer = _feed_footer_geometry(*FEED_SIZE, FEED_PAD)
+    bottom, _, _, meta, _ = _feed_body_dims(
+        draw, offer, NO_CLAIM, 56, 700, 1, True, True, _pill_left(offer, NO_CLAIM))
+    assert meta is not None
+    assert bottom <= footer["divider_y"] - 36

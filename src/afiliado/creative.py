@@ -70,7 +70,7 @@ FEED_TITLE_ALT_WEIGHT = 600
 # desenho fazia o guarda achar que cabia o que já não cabia.
 STORY_META_GAP = 88     # respiro entre o preço e a linha de avaliações
 STORY_SELO_GAP = 28
-FEED_META_GAP = 20
+FEED_META_GAP = 64     # 88 no story x (1350/1920): o feed tem 570px a menos
 FEED_SELO_GAP = 24
 
 DOWNLOAD_TIMEOUT = 20
@@ -634,7 +634,10 @@ def _draw_story_body(draw, canvas_width, offer, title, price, meta, selo) -> Non
 
 def _draw_feed_body(draw, canvas_width, offer, title, price, meta, selo) -> None:
     y = _draw_title(draw, canvas_width, 790, title) + 24
-    y = _draw_price_pill(draw, FEED_PAD, y, price)
+    # Centralizada como no story (pedido do dono, 2026-08-27): o feed era o
+    # único formato com a pill fora do eixo, e ao lado do selo e da meta —
+    # ambos centralizados — aquilo lia como descuido, não como escolha.
+    y = _draw_price_pill(draw, (canvas_width - price["width"]) / 2, y, price)
     if meta is not None:
         _draw_meta(draw, (canvas_width - meta["width"]) / 2, y + FEED_META_GAP,
                    offer, meta["font"], MUTED)

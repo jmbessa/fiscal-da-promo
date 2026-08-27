@@ -465,6 +465,9 @@ def test_canal_desarmado_nao_toca_mais_no_instagram():
 
     res = canal.publish(post)
     assert not res.ok and "desarmado" in res.error
+    # O desarme vale pelo DIA (C2): a mensagem diz como sair dele, em vez de
+    # sugerir que o próximo run resolve sozinho.
+    assert "hoje" in res.error and "ig-login" in res.error
     assert len(cliente.chamadas) == chamadas       # nem upload, nem leitura
 
 
@@ -807,6 +810,43 @@ def test_sessao_invalida_da_mensagem_acionavel_sem_laco_de_retry(tmp_path, monke
     assert [c[0] for c in registro].count("login") == 1
     assert canal.max_per_run == 0
     assert any("ig-login" in a for a in canal.warnings)
+
+
+def test_falha_de_rede_no_login_tambem_prende_o_dia(tmp_path, monkeypatch):
+    """Decisão explícita, e o custo é conhecido: um dia mudo. O que se
+    repetiria a cada run aqui é uma tentativa de LOGIN, e login novo a cada run
+    é justamente o que atrai desafio. A saída é um `afiliado ig-login`."""
+    from afiliado.state import StateDB
+
+    db = StateDB(tmp_path / "s.db")
+    _instagrapi_falso(monkeypatch, _com_link(make_post()),
+                      erro_login=RuntimeError("connection reset"), registro=[])
+    canal = InstagramStoryLinkChannel("ofiscaldapromo", SENHA,
+                                      session_path=tmp_path / "s.json", estado=db,
+                                      sleep=Relogio(), http_client=_http())
+    assert not canal.publish(make_post()).ok
+    assert db.day_flag(mod.CHAVE_DESARMADO) == mod.AVISO_SESSAO
+    db.close()
+
+
+def test_biblioteca_ausente_NAO_prende_o_dia(tmp_path, monkeypatch):
+    """A contraprova: `pip install` resolve em um minuto, e não custou chamada
+    nenhuma ao Instagram. Prender o canal até amanhã faria o dono instalar o
+    extra e não entender por que o dia seguiu mudo."""
+    from afiliado.state import StateDB
+
+    def sem_biblioteca():
+        raise ImportError("No module named 'instagrapi'")
+
+    db = StateDB(tmp_path / "s.db")
+    monkeypatch.setattr(mod, "_instagrapi", sem_biblioteca)
+    canal = InstagramStoryLinkChannel("ofiscaldapromo", SENHA,
+                                      session_path=tmp_path / "s.json", estado=db,
+                                      sleep=Relogio(), http_client=_http())
+    assert not canal.publish(make_post()).ok
+    assert canal.disponivel is False                 # fechado neste run...
+    assert db.day_flag(mod.CHAVE_DESARMADO) == ""    # ...e só neste run
+    db.close()
 
 
 def test_instagrapi_ausente_vira_erro_acionavel(tmp_path, monkeypatch):

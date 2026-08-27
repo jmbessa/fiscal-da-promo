@@ -459,6 +459,27 @@ Foi o que a **fase 5F** implementou:
 - Sessão persistida em `data/ig_session.json` via `afiliado ig-login`; o extra
   `stories` é opcional e o import é preguiçoso.
 
+**Rodada de correção (2026-08-27, revisão independente).** Uma revisão do
+código encontrou que as duas travas acima vazavam pelas bordas, e as duas
+falhas eram do tipo que só aparece em produção. Ficaram assim:
+
+- O desafio (`ChallengeRequired`) era classificado **só no login** — mas com a
+  sessão salva o `login()` passa direto e o desafio chega no **upload**. Ali
+  ninguém o reconhecia: 3 tentativas por run, canal armado, até 18 chamadas
+  por dia disparando desafio contra uma conta já sinalizada. A classificação
+  agora vale nos três lugares que falam com o Instagram, por nome de exceção.
+- Um story publicado **sem** figurinha não consumia teto nenhum (nem
+  `max_per_run`, nem `max_per_day`) e o desarme vivia só na memória do
+  processo. Medido com o pipeline real: **12 stories sem link por dia**,
+  `count_posts_today == 0`, para sempre. Agora um post que foi ao ar conta
+  para o teto e para o dedupe mesmo com `ok=False`, e o desarme é gravado no
+  dia local — rearma na virada do dia, numa verificação boa, ou num
+  `afiliado ig-login` bem-sucedido.
+- A regra de ouro virou código: com o `instagram_story` ligado, o canal de
+  figurinha **não sobe** (antes o `afiliado stories` publicava o mesmo post
+  pelas duas APIs, na mesma conta e no mesmo minuto). E o comando local passou
+  a usar banco de estado próprio, `data/state_stories.db`.
+
 Operação, riscos e o que fazer quando o canal desarmar:
 [`docs/runbooks/instagrapi-stories.md`](../../runbooks/instagrapi-stories.md).
 

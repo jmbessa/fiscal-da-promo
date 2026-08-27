@@ -320,8 +320,12 @@ class InstagramStoryLinkChannel:
 
     def publish(self, post: Post) -> PublishResult:
         if not self.disponivel:
-            # Desarmado: nem arte, nem rede. O motivo já foi ao resumo.
-            return PublishResult(False, error="canal desarmado neste run — ver o aviso acima")
+            # Desarmado: nem arte, nem rede. O motivo já foi ao resumo — e o
+            # desarme vale pelo DIA, não pelo run (C2), então a mensagem diz
+            # como sair dele em vez de sugerir que o próximo run resolve.
+            return PublishResult(False, error=(
+                "canal desarmado hoje — ver o aviso; rearma na virada do dia ou com "
+                "`afiliado ig-login`"))
 
         # A arte é a MESMA do canal oficial, com o MESMO veredito: story pela
         # Graph API e story com figurinha não podem contar histórias diferentes.
@@ -354,6 +358,11 @@ class InstagramStoryLinkChannel:
             # Nada de retry: o canal se fecha e diz o que fazer. A biblioteca
             # ausente é a única falha que não prende o canal até amanhã — ela
             # não gasta chamada nenhuma ao Instagram.
+            #
+            # Falha de REDE no login também prende o dia, de propósito: o que
+            # se repetiria a cada run é uma tentativa de LOGIN, e login novo a
+            # cada run é justamente o que atrai desafio. O custo é um dia mudo;
+            # a saída é um `afiliado ig-login`, que rearma na hora.
             self._desarma(exc.aviso, persiste=exc.aviso != AVISO_SEM_INSTAGRAPI)
             return PublishResult(False, error=self._sem_senha(str(exc)))
         except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta

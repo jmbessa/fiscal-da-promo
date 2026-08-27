@@ -101,13 +101,18 @@ ao vivo → link) em `docs/runbooks/meli-setup.md`.
   sem publicar. Sem efeitos colaterais: não escreve no `state.db`, não baixa a
   imagem e não toca no link de afiliado.
 - `afiliado run` — executa e publica de verdade.
-- `afiliado stories [--posts N] [--dry-run]` — o mesmo pipeline com **só os
-  canais de story**, para o dono rodar da própria máquina (fase 5F). É o único
-  comando que monta o `instagram_story_link` (instagrapi, story com figurinha de
-  link); `afiliado run` ignora esse canal mesmo ligado, porque ele não pode
-  rodar no GitHub Actions.
+- `afiliado stories [--posts N] [--dry-run]` — o mesmo pipeline com **só o
+  canal de API privada** (`instagram_story_link`, instagrapi, story com
+  figurinha de link), para o dono rodar da própria máquina (fase 5F). É o
+  único comando que o monta; `afiliado run` o ignora mesmo ligado, porque ele
+  não pode rodar no GitHub Actions. O contrário também vale: os canais que o
+  Actions publica — inclusive o `instagram_story` da Graph API — **não** sobem
+  aqui, e este comando usa um **banco próprio** (`state.stories_path`, padrão
+  `data/state_stories.db`, no `.gitignore`), então o dedupe dele é
+  independente do resto.
 - `afiliado ig-login` — cria/renova `data/ig_session.json`, a sessão do
-  instagrapi, lendo `IG_USERNAME`/`IG_PASSWORD` do ambiente. Ver
+  instagrapi, lendo `IG_USERNAME`/`IG_PASSWORD` do ambiente. Um login
+  bem-sucedido também **rearma** o canal, se ele tiver se desarmado hoje. Ver
   `docs/runbooks/instagrapi-stories.md`.
 
 ## Portões e política de falhas (fase 5A)

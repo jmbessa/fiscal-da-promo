@@ -34,9 +34,8 @@ publicada carrega prova de desconto real.
    preço ou link), arte de story e feed renderizada por template com identidade
    visual consistente.
 5. **Distribuição** — Telegram como motor de volume (**60 ofertas/dia**,
-   somadas as duas lojas), Instagram como motor de audiência (feed automático
-   via API oficial; stories **semi-automáticos** — a arte e o link chegam
-   prontos ao chat de operações e o dono posta no app), com tetos diários por
+   somadas as duas lojas), Instagram como motor de audiência (**feed e stories
+   automáticos** via API oficial, desde a fase 5E), com tetos diários por
    canal.
 6. **Operação** — cada execução reporta publicados, descartados e alertas a um
    canal de operações; estado e histórico ficam versionados.
@@ -63,7 +62,7 @@ categoria e cadência são recalibradas a partir desses números.
 
 - **Entregue:** pipeline completo Shopee → Telegram, ranking por valor
   esperado, watchlist semanal com selo de preço verificado, geração de artes,
-  stories semi-automáticos e feed via API oficial (aguardando credenciais).
+  feed e stories publicados pela API oficial do Instagram.
 - **Próximos passos:** ativação em produção com credenciais reais; Mercado
-  Livre como segunda fonte; automação total dos stories quando a conta tiver
-  maturidade; WhatsApp como canal adicional; migração para servidor dedicado.
+  Livre como segunda fonte; WhatsApp como canal adicional; migração para
+  servidor dedicado.

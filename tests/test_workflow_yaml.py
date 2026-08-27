@@ -29,6 +29,14 @@ def test_publish_roda_a_cada_30_min_das_08_as_2330_brt():
     assert horas * 2 == 32                       # 2 disparos por hora
 
 
+def test_o_job_tem_timeout_curto():
+    # C1 da revisão da 5C: sem `timeout-minutes` vale o padrão do GitHub, 6 h.
+    # Um run que entra em martelo contra a API da loja (backoff de 0,5+1,5+4,0 s
+    # em cada uma de milhares de chamadas) queimaria 360 min — 18% da cota
+    # mensal — antes de alguém perceber.
+    assert _workflow()["jobs"]["run"]["timeout-minutes"] == 20
+
+
 def test_publish_nao_roda_dois_ao_mesmo_tempo():
     concurrency = _workflow()["concurrency"]
     assert concurrency["group"] == "publish"

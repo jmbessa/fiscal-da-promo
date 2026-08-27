@@ -51,6 +51,16 @@ selection:
   # se nenhuma delas tem candidata, qualquer fonte serve (uma completa a
   # outra — a cota reparte o teto, nunca o deixa ocioso).
   source_quota: {shopee: 0.5, meli: 0.5}
+  # Rodada de correção da 5C (C1): teto de descartes de UM run. Com o estoque
+  # de candidatas, a fila de publicação é o estoque inteiro e cada descarte
+  # custou uma chamada de `refresh_price`: uma API que começa a recusar produzia
+  # 5.000 descartes e 5.000 chamadas num run só (medido), com 0,5+1,5+4,0 s de
+  # backoff em cada 429 — horas martelando a conta de afiliado. Atingido o teto,
+  # o run encerra com "⚠️ N descartes no run — fila interrompida". O outro freio
+  # não é configurável: 10 erros de FONTE seguidos da mesma loja tiram aquela
+  # loja da fila até o próximo run (pipeline.MAX_FALHAS_SEGUIDAS_POR_FONTE).
+  # 0 desliga o teto — não faça isso com o estoque ligado.
+  max_descartes_por_run: 50
   # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
   # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
   # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.

@@ -1365,3 +1365,107 @@ def test_candidata_vencida_sai_do_estoque(tmp_path, monkeypatch):
     assert [o.item_id for o in db.load_candidates("shopee", 3)] == ["nova"]
     assert db.conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 1
     db.close()
+
+
+# =============================================================================
+# Rodada de correção da 5C (C1) — freios da fila de publicação
+# =============================================================================
+
+
+class FonteQueSoErra(FakeSource):
+    """Fonte cujo `refresh_price` sempre levanta `SourceError` — a API que
+    começou a recusar. Conta as chamadas, que é o que sangra a conta."""
+
+    def __init__(self, offers, name="shopee"):
+        super().__init__(offers)
+        self.name = name
+        self.chamadas = 0
+
+    def refresh_price(self, offer):
+        self.chamadas += 1
+        raise SourceError(f"{self.name}: item {offer.item_id} saiu da listagem")
+
+
+def test_estoque_gigante_com_refresh_quebrado_nao_martela_a_api(tmp_path, monkeypatch):
+    """C1 da revisão: `fila` virou o estoque INTEIRO e `refresh_price` uma
+    chamada de API real. Um `SourceError` por oferta dava 5.000 descartes e
+    5.000 chamadas num run só — com o backoff de 0,5+1,5+4,0 s do `_post`, um
+    martelo de horas contra a conta de afiliado."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FonteQueSoErra([make_offer(item_id=str(i)) for i in range(5000)])
+    summary = pipeline.run(CFG, [fonte], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert fonte.chamadas <= 50
+    assert len(summary.discarded) <= 50
+    assert any("fonte shopee: 10 falhas seguidas — fonte fechada neste run" in w
+               for w in summary.warnings)
+    assert any("descartes no run — fila interrompida" in w for w in summary.warnings)
+    db.close()
+
+
+def test_o_teto_de_descartes_encerra_a_fila(tmp_path, monkeypatch):
+    """O outro freio: descarte que NÃO é erro de fonte (validação, link) não
+    aciona o circuito, e sem teto varreria o estoque inteiro."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    def validator(post, cfg, client=None):
+        raise ValidationError("imagem fora do ar")
+
+    fonte = FakeSource([make_offer(item_id=str(i)) for i in range(5000)])
+    summary = pipeline.run(CFG, [fonte], [FakeChannel()], db, validator=validator)
+    assert len(summary.discarded) == pipeline.DEFAULT_MAX_DESCARTES_POR_RUN == 50
+    assert "⚠️ 50 descartes no run — fila interrompida" in summary.warnings
+    db.close()
+
+
+def test_teto_de_descartes_vem_do_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    def validator(post, cfg, client=None):
+        raise ValidationError("imagem fora do ar")
+
+    cfg = {**CFG, "selection": {**CFG["selection"], "max_descartes_por_run": 5}}
+    fonte = FakeSource([make_offer(item_id=str(i)) for i in range(100)])
+    summary = pipeline.run(cfg, [fonte], [FakeChannel()], db, validator=validator)
+    assert len(summary.discarded) == 5
+    db.close()
+
+
+def test_o_circuito_fecha_so_a_fonte_que_falha(tmp_path, monkeypatch):
+    """Espelha `MAX_FALHAS_SEGUIDAS_POR_CANAL`: a fonte que erra 10 vezes
+    seguidas sai da fila deste run — as candidatas da OUTRA continuam."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    shopee = FonteQueSoErra([make_offer(item_id=f"s{i}") for i in range(100)])
+    meli = FonteChamada("meli", [make_offer(item_id="MLB1", source="meli")])
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 1}}
+    ch = FakeChannel()
+    summary = pipeline.run(cfg, [shopee, meli], [ch], db, validator=no_network_validator)
+    assert shopee.chamadas == pipeline.MAX_FALHAS_SEGUIDAS_POR_FONTE == 10
+    assert [p.offer.item_id for p in ch.sent] == ["MLB1"]
+    assert not any("fonte meli" in w for w in summary.warnings)
+    db.close()
+
+
+def test_falhas_alternadas_nao_fecham_a_fonte(tmp_path, monkeypatch):
+    """O circuito conta falhas SEGUIDAS: itens que saem da listagem no meio de
+    uma fila saudável não podem fechar a fonte."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class QuebraNosPares(FakeSource):
+        def refresh_price(self, offer):
+            if int(offer.item_id) % 2 == 0:
+                raise SourceError(f"shopee: item {offer.item_id} saiu da listagem")
+            return offer
+
+    cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 20}}
+    fonte = QuebraNosPares([make_offer(item_id=str(i)) for i in range(40)])
+    ch = FakeChannel()
+    summary = pipeline.run(cfg, [fonte], [ch], db, validator=no_network_validator)
+    assert len(ch.sent) == 20                      # os 20 ímpares publicaram
+    assert not any("fonte fechada" in w for w in summary.warnings)
+    db.close()

@@ -29,6 +29,19 @@ AGRUPA_DESCARTES_A_PARTIR_DE = 4
 # errado) fecha até o próximo run — a variante "canal falhando" do C2: sem
 # isto cada oferta da fila pagava LLM + link para uma publicação que ia falhar.
 MAX_FALHAS_SEGUIDAS_POR_CANAL = 3
+# Rodada de correção da 5C (C1): os dois freios da FILA de publicação.
+# Com o estoque de candidatas, `fila` é o estoque inteiro (milhares) e
+# `refresh_price` virou chamada de API real: um `SourceError` por oferta
+# produzia um descarte e uma chamada por item, sem parar — medido, 5.000
+# descartes e 5.000 chamadas num único run. Com o backoff de 0,5+1,5+4,0 s do
+# `_post`, uma API que começa a limitar vira um martelo de horas contra a conta
+# de afiliado. Espelham o freio de canal acima:
+#   - `selection.max_descartes_por_run` encerra a fila no N-ésimo descarte
+#     (qualquer motivo); 0 desliga o teto.
+#   - `MAX_FALHAS_SEGUIDAS_POR_FONTE` erros de FONTE seguidos da mesma loja
+#     tiram aquela loja da fila até o próximo run.
+DEFAULT_MAX_DESCARTES_POR_RUN = 50
+MAX_FALHAS_SEGUIDAS_POR_FONTE = 10
 # Fase 5C (A12): canal `manual` (story_dispatch) entrega a arte ao chat de
 # operações; quem posta no Instagram é o dono. Quando SÓ canais manuais
 # aceitaram a oferta, o resumo diz isto em vez de "publicado".
@@ -360,7 +373,19 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     metas = selection.source_targets(cfg, [s.name for s in sources])
     publicados_hoje = db.posted_today_by_source() if metas else {}
 
+    # Freios da fila (C1 da revisão): teto de descartes e circuito por fonte.
+    teto_descartes = int(pricing.setting(sel, "max_descartes_por_run",
+                                         DEFAULT_MAX_DESCARTES_POR_RUN))
+    falhas_por_fonte: dict[str, int] = {}
+    fontes_fechadas: set[str] = set()
+    fila_interrompida = False
+
     while count < target:
+        # Este teste estava no FIM do laço e todo `continue` (descarte) pulava
+        # por cima dele: com a fila do tamanho do estoque, um run com todos os
+        # canais fechados varria milhares de ofertas pagando refresh/link/LLM.
+        if not dry_run and not any(aberto(ch) for ch in channels):
+            break   # ninguém mais pode publicar: a próxima oferta não paga nada
         indice = selection.next_index_by_quota(fila, metas, publicados_hoje)
         if indice is None:
             break
@@ -388,8 +413,24 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             post = Post(offer=offer, copy=copy, affiliate_link=link, message_text=text,
                         verdict=veredito)
             validator(post, cfg)
+            falhas_por_fonte[offer.source] = 0     # o circuito conta SEGUIDAS
         except Exception as exc:
             summary.discarded.append((rotulo, str(exc)))
+            if isinstance(exc, (SourceError, httpx.HTTPError)):
+                # Erro que veio da API da loja (refresh_price, link): é ela que
+                # está recusando, e insistir item a item é o que queima a conta.
+                seguidas = falhas_por_fonte.get(offer.source, 0) + 1
+                falhas_por_fonte[offer.source] = seguidas
+                if (seguidas >= MAX_FALHAS_SEGUIDAS_POR_FONTE
+                        and offer.source not in fontes_fechadas):
+                    fontes_fechadas.add(offer.source)
+                    warn(f"⚠️ fonte {offer.source}: {MAX_FALHAS_SEGUIDAS_POR_FONTE} "
+                         "falhas seguidas — fonte fechada neste run")
+                    fila = [o for o in fila if o.source not in fontes_fechadas]
+                    fila_interrompida = True
+            if 0 < teto_descartes <= len(summary.discarded):
+                fila_interrompida = True
+                break
             continue
 
         if dry_run:
@@ -430,8 +471,12 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             summary.published.append(f"{rotulo} — {DESPACHO_MANUAL}" if so_manuais else rotulo)
             publicados_hoje[offer.source] = publicados_hoje.get(offer.source, 0) + 1
             count += 1
-        if not any(aberto(ch) for ch in channels):
-            break   # ninguém mais pode publicar: a próxima oferta não paga nada
+
+    if fila_interrompida:
+        # Um dos dois freios cortou a fila: o resumo diz quantos descartes
+        # houve ANTES de o run parar — sem isto o run terminava "normal" com
+        # 5.000 descartes agrupados numa linha só.
+        warn(f"⚠️ {len(summary.discarded)} descartes no run — fila interrompida")
 
     for ch in channels:
         if ch.name in tetos_atingidos:

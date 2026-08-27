@@ -48,6 +48,10 @@ env:
 jobs:
   run:
     runs-on: ubuntu-latest
+    # Sem isto vale o padrão do GitHub: 6 h. Um run em martelo contra a API da
+    # loja (backoff de 0,5+1,5+4,0 s em cada chamada) queimaria 360 min — 18%
+    # da cota mensal — antes de alguém perceber. Um run saudável leva minutos.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

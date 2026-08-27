@@ -14,7 +14,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from afiliado.channels.instagram_story import InstagramStoryChannel
+from afiliado.channels.instagram_story import AVISO_POLLING_CEGO, InstagramStoryChannel
 from tests.test_state import make_post
 
 
@@ -91,7 +91,30 @@ def _canal(handler, sleep=None, **kw) -> InstagramStoryChannel:
 
 
 def _corpo(corpos, etapa) -> dict:
-    return parse_qs(next(c for k, c in corpos if k == etapa).decode())
+    # keep_blank_values=True NÃO é detalhe: com o padrão do `parse_qs`, um
+    # `caption=` no fio (legenda vazia, mas PRESENTE) simplesmente sumia do
+    # dicionário, e o `"caption" not in corpo` do teste do container passava
+    # sem prender nada. Ver `test_o_guarda_do_caption_guarda_valor_vazio`.
+    return parse_qs(next(c for k, c in corpos if k == etapa).decode(),
+                    keep_blank_values=True)
+
+
+def _handler_status(resposta, corpos=None):
+    """Base normal, mas o GET do container devolve `resposta` (ou levanta, se
+    `resposta` for uma exceção). É por aqui que entram as formas que a Meta
+    pode devolver e o canal nunca viu ao vivo."""
+    base = _handler(corpos=corpos)
+
+    def handler(request):
+        if request.url.host == "graph.facebook.com" and "fields=" in str(request.url):
+            if corpos is not None:
+                corpos.append(("status", str(request.url)))
+            if isinstance(resposta, Exception):
+                raise resposta
+            return httpx.Response(200, json=resposta)
+        return base(request)
+
+    return handler
 
 
 # -- 1. o container do story ---------------------------------------------------
@@ -339,6 +362,116 @@ def test_o_story_conta_como_publicacao_e_nao_como_despacho(tmp_path, monkeypatch
 
 def test_o_canal_nao_declara_manual():
     assert not getattr(InstagramStoryChannel, "manual", False)
+
+
+def test_o_guarda_do_caption_guarda_valor_vazio():
+    """Guarda do guarda (revisão da 5E). Com o padrão do `parse_qs`
+    (`keep_blank_values=False`), `caption=` no fio desaparecia do dicionário e
+    o `"caption" not in corpo` do teste do container passava mesmo com a
+    legenda sendo enviada. A implementação estava certa; a asserção é que não
+    prendia nada."""
+    corpos = [("media", b"image_url=x&caption=&media_type=STORIES")]
+    assert _corpo(corpos, "media")["caption"] == [""]
+
+
+# -- 7. o polling só relata o que observou (revisão da 5E) ---------------------
+
+def test_polling_que_nunca_chegou_a_meta_nao_inventa_in_progress():
+    """Todos os GETs morrem na rede e o publish falha depois. O erro precisa
+    dizer que o status nunca foi LIDO: antes ele afirmava "container ainda
+    IN_PROGRESS após 5 tentativas" — um status que o canal nunca observou — e
+    a causa real ("rede: sem rede") morria numa variável local."""
+    def handler(request):
+        if request.url.path.endswith("/media_publish"):
+            return httpx.Response(400, json={"error": {"message": "sem permissão"}})
+        return _handler_status(httpx.ConnectError("sem rede"))(request)
+
+    res = _canal(handler).publish(make_post())
+    assert not res.ok
+    assert "sem permissão" in res.error          # o que a Meta respondeu
+    assert "não consegui ler o status do container" in res.error
+    assert "sem rede" in res.error               # a causa que estava sendo jogada fora
+    assert "IN_PROGRESS" not in res.error        # status inventado
+
+
+def test_container_sem_status_code_nao_vira_in_progress_no_erro():
+    """O suspeito nº 1 do primeiro run real: 200 com `{"id": ...}` e nenhum
+    `status_code`. Não ler é diferente de ler IN_PROGRESS."""
+    def handler(request):
+        if request.url.path.endswith("/media_publish"):
+            return httpx.Response(400, json={"error": {"message": "sem permissão"}})
+        return _handler_status({"id": "creation123"})(request)
+
+    res = _canal(handler).publish(make_post())
+    assert not res.ok and "sem permissão" in res.error
+    assert "não consegui ler o status do container" in res.error
+    assert "IN_PROGRESS" not in res.error
+
+
+def test_status_code_ausente_publica_assim_mesmo_e_avisa_que_o_polling_e_cego():
+    """O ramo mais provável de quebrar no primeiro run: sem `status_code` o
+    canal gasta 5 GETs e 4 s de espera em TODO story, publica assim mesmo e
+    não dizia nada. O custo agora tem um aviso com nome."""
+    corpos, relogio = [], _Relogio()
+    ch = _canal(_handler_status({"id": "creation123"}, corpos=corpos), sleep=relogio)
+    res = ch.publish(make_post())
+    assert res.ok and res.message_id == "story789"      # o story vai ao ar
+    assert len([k for k, _ in corpos if k == "status"]) == 5
+    assert relogio.pausas == [1.0] * 4                  # 4 s por story, todo dia
+    assert ch.warnings == [AVISO_POLLING_CEGO]
+    assert "status_code" in AVISO_POLLING_CEGO and "instagram_story" in AVISO_POLLING_CEGO
+
+
+def test_status_code_desconhecido_espera_publica_e_nao_e_polling_cego():
+    """"PUBLISHED" não é FINISHED nem terminal: o canal espera as 5 leituras e
+    publica assim mesmo. Mas LEU o status — não é polling cego, e o erro (se o
+    publish falhar) diz o status de verdade."""
+    corpos, relogio = [], _Relogio()
+    ch = _canal(_handler_status({"status_code": "PUBLISHED", "status": "Published"},
+                                corpos=corpos), sleep=relogio)
+    assert ch.publish(make_post()).ok
+    assert len([k for k, _ in corpos if k == "status"]) == 5
+    assert relogio.pausas == [1.0] * 4
+    assert ch.warnings == []
+
+
+def test_publish_falho_com_status_desconhecido_diz_o_status_lido():
+    def handler(request):
+        if request.url.path.endswith("/media_publish"):
+            return httpx.Response(400, json={"error": {"message": "sem permissão"}})
+        return _handler_status({"status_code": "PUBLISHED", "status": "Published"})(request)
+
+    res = _canal(handler).publish(make_post())
+    assert not res.ok
+    assert "sem permissão" in res.error and "PUBLISHED" in res.error
+
+
+def test_o_polling_cego_vira_uma_linha_por_dia_no_resumo(tmp_path, monkeypatch):
+    """O aviso do canal precisa CHEGAR ao chat de operações — o pipeline
+    recolhe o que o canal juntou publicando e o passa pelo mesmo `warn` do
+    resto (logo: uma vez por dia local)."""
+    from afiliado import llm, pipeline
+    from afiliado.state import StateDB
+    from tests.test_models import make_offer
+    from tests.test_pipeline import CFG, FakeSource, no_network_validator
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = _canal(_handler_status({"id": "creation123"}))
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
+                           validator=no_network_validator)
+    assert AVISO_POLLING_CEGO in summary.warnings
+    assert ch.warnings == []                 # drenado pelo pipeline
+    segundo = pipeline.run(CFG, [FakeSource([make_offer(item_id="b")])], [ch], db,
+                           validator=no_network_validator)
+    assert AVISO_POLLING_CEGO not in segundo.warnings     # mesmo dia: uma vez só
+    db.close()
+
+
+def test_container_normal_nao_avisa_nada():
+    ch = _canal(_handler(("IN_PROGRESS", "FINISHED")))
+    assert ch.publish(make_post()).ok
+    assert ch.warnings == []
 
 
 def test_variante_instagram_login_usa_o_outro_host():

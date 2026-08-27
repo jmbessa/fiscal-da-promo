@@ -1279,6 +1279,47 @@ def test_so_canal_manual_e_despacho_nao_publicacao(tmp_path, monkeypatch):
     db.close()
 
 
+class CanalQueAvisa(NamedFakeChannel):
+    """Canal que só descobre um problema PUBLICANDO (fase 5E: a Meta não
+    devolveu `status_code` do container e o polling ficou cego) e o deixa em
+    `warnings` para o pipeline recolher."""
+
+    def __init__(self, name, aviso):
+        super().__init__(name)
+        self.warnings: list[str] = []
+        self.aviso = aviso
+
+    def publish(self, post):
+        self.warnings.append(self.aviso)
+        return super().publish(post)
+
+
+def test_aviso_que_o_canal_descobre_publicando_entra_no_resumo(tmp_path, monkeypatch):
+    """Avisos de montagem (canal sem env) já chegavam ao ops pelo
+    `warnings_iniciais`. O que o canal descobre DEPOIS, publicando, não tinha
+    caminho nenhum — ficava numa lista dentro do objeto. Agora sai pelo mesmo
+    `warn`: uma vez por dia, e a lista do canal é drenada."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = CanalQueAvisa("instagram_story", "⚠️ instagram_story: polling cego")
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
+                           validator=no_network_validator)
+    assert "⚠️ instagram_story: polling cego" in summary.warnings
+    assert ch.warnings == []
+    db.close()
+
+
+def test_canal_sem_lista_de_avisos_continua_publicando(tmp_path, monkeypatch):
+    """`warnings` é opcional: os outros canais não têm e não podem quebrar."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = NamedFakeChannel("telegram")
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [ch], db,
+                           validator=no_network_validator)
+    assert summary.published == ["Tênis Nike SB"]
+    db.close()
+
+
 def test_heartbeat_separa_despachos_de_publicacoes(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")

@@ -159,6 +159,19 @@ class _Warner:
         return True
 
 
+def _drena_avisos(ch) -> list[str]:
+    """Tira do canal os avisos que ele juntou publicando e esvazia a lista.
+
+    `warnings` é OPCIONAL (só o `instagram_story` tem hoje): canal sem a lista
+    — ou com outra coisa no lugar — não pode quebrar o run."""
+    avisos = getattr(ch, "warnings", None)
+    if not isinstance(avisos, list) or not avisos:
+        return []
+    drenados = list(avisos)
+    avisos.clear()
+    return drenados
+
+
 def candidate_max_age_days(cfg: dict, source: str) -> int:
     """`<fonte>.candidate_max_age_days` do config: por quantos dias uma
     candidata descoberta continua elegível. 0/ausente = a fonte não usa o
@@ -468,6 +481,13 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                     tetos_atingidos.add(ch.name)   # teto de verdade: vira aviso
                 continue                            # ritmo/max_per_run: silêncio
             res = ch.publish(post)
+            # Aviso que só existe DEPOIS de publicar (fase 5E: a Meta não
+            # devolveu `status_code` do container e o polling ficou cego — 5
+            # GETs e 4 s de espera em todo story). Os avisos de MONTAGEM já
+            # tinham caminho (`warnings_iniciais`); este não tinha nenhum e
+            # morria dentro do canal. Sai pelo mesmo `warn`: uma vez por dia.
+            for aviso in _drena_avisos(ch):
+                warn(aviso)
             if res.ok:
                 usados[ch.name] = usados.get(ch.name, 0) + 1
                 if orcamento[ch.name] is not None:

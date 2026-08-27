@@ -68,7 +68,7 @@ FEED_TITLE_ALT_WEIGHT = 600
 # DOIS lugares — no cálculo do guarda de overflow (`_*_body_dims`) e no
 # desenho (`_draw_*_body`). Enquanto eram literais repetidos, mexer só no
 # desenho fazia o guarda achar que cabia o que já não cabia.
-STORY_META_GAP = 44     # respiro entre o preço e a linha de avaliações
+STORY_META_GAP = 88     # respiro entre o preço e a linha de avaliações
 STORY_SELO_GAP = 28
 FEED_META_GAP = 20
 FEED_SELO_GAP = 24

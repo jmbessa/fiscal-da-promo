@@ -1,0 +1,372 @@
+"""Canal `instagram_story_link` (fase 5F): story COM figurinha de link, pela
+API PRIVADA do Instagram (instagrapi).
+
+**Por que ele existe.** A Graph API nega figurinhas, com todas as letras, na
+referência do endpoint que o `instagram_story` usa: *"Publishing stickers (i.e.
+link, poll, location) is not supported"*. O Meta Business Suite oferece link em
+story, mas — verificado pelo dono no compositor real, 2026-08-27 — *"os links
+serão mostrados apenas nos stories do Facebook"*. Não existe caminho de
+primeira parte. O levantamento inteiro está em
+`docs/superpowers/reviews/2026-08-27-sticker-de-link.md`.
+
+**Por que a verificação é o coração deste módulo, e não um extra.** O sticker
+de link do instagrapi ficou quebrado **em silêncio** de 2025-11-03 a 2026-04-16
+(issue #2320): o story ia ao ar, o upload retornava sucesso, e o link
+simplesmente não estava lá. Para um pipeline de afiliados esse é o pior modo de
+falha que existe — gasta cota, gasta a atenção do seguidor e não converte nada.
+Por isso o canal LÊ O STORY DE VOLTA (`story_info`) e distingue três estados,
+sem nunca confundir um com o outro:
+
+    COM_LINK        `story.links` traz o webUri pedido  → publicação de verdade
+    SEM_LINK        o story respondeu e o link não está → FALHA (e conta para o desarme)
+    NÃO_VERIFICADO  `story_info` não respondeu          → FALHA, dizendo que não sabe
+
+O terceiro estado é a lição da 5E: não relate observação que você não fez. Um
+504 do Instagram não é evidência de que o instagrapi quebrou, então ele não
+mexe no contador de desarme — só o SEM_LINK mexe.
+
+**Onde este canal roda.** Na máquina do dono (`afiliado stories`), com IP
+residencial e sessão estável. NUNCA no GitHub Actions: IP de datacenter que
+muda a cada execução + sessão de app móvel forjada é o padrão que mais dispara
+`challenge_required`. E nunca junto com o `instagram_story` (Graph API) na
+mesma conta — o `doctor` reclama se os dois estiverem ligados.
+
+**O preço.** É API privada: exige usuário e SENHA (não é token revogável), e o
+próprio mantenedor do instagrapi desaconselha produção. A moeda de risco é a
+conta. Por isso a senha não sai daqui: nenhuma mensagem, aviso ou exceção deste
+módulo a carrega — `_sem_senha` raspa até o texto de exceção de terceiro.
+"""
+
+import tempfile
+import time
+from pathlib import Path
+from typing import Callable, NamedTuple
+
+import httpx
+
+from afiliado import creative
+from afiliado.channels.base import PublishResult
+from afiliado.channels.instagram_common import to_jpeg
+from afiliado.errors import SourceError
+from afiliado.models import Post
+
+# Sessão persistida: cookies + perfil de device. Reusá-la é o que evita "device
+# novo a cada login", que é o que dispara desafio. Está no .gitignore.
+DEFAULT_SESSION_PATH = "data/ig_session.json"
+
+# Falhas de verificação SEGUIDAS antes de o canal se desarmar. 2 porque uma
+# pode ser azar; duas seguidas são a assinatura de "o instagrapi quebrou de
+# novo" — e a fase 5F existe porque isso já durou cinco meses uma vez.
+MAX_SEM_LINK_PADRAO = 2
+
+# Exceções do instagrapi que significam "esta sessão morreu". Por NOME: a lista
+# muda entre versões (`AccountSuspended` nasceu em jul/2026) e um import direto
+# quebraria com a versão errada.
+ERROS_DE_SESSAO = ("LoginRequired", "ChallengeRequired", "PleaseWaitFewMinutes",
+                   "AccountSuspended", "BadPassword", "TwoFactorRequired",
+                   "ReloginAttemptExceeded")
+
+# Os três estados da verificação. São excludentes de propósito: o dia em que
+# "não consegui ler" virar "não tem link" é o dia em que o canal começa a
+# mentir no resumo de operações.
+COM_LINK = "com_link"
+SEM_LINK = "sem_link"
+NAO_VERIFICADO = "nao_verificado"
+
+AVISO_DESARMADO = ("⚠️ instagram_story_link: {n} stories sem figurinha — canal "
+                   "desarmado, ligue instagram_story (Graph API) como fallback")
+AVISO_SESSAO = ("⚠️ instagram_story_link: não consegui entrar no Instagram — canal "
+                "desarmado, rode `afiliado ig-login`")
+AVISO_SEM_INSTAGRAPI = ("⚠️ instagram_story_link: instagrapi não instalado — canal "
+                        "desarmado, rode `pip install -e .[stories]`")
+AVISO_SEM_VERIFICACAO = ("⚠️ instagram_story_link: publicando SEM verificação da "
+                         "figurinha — ninguém está conferindo se o link foi junto")
+
+SEM_INSTAGRAPI = ("instagrapi não instalado — `pip install -e .[stories]` "
+                  "(ver docs/runbooks/instagrapi-stories.md)")
+SESSAO_INVALIDA = "sessão do Instagram inválida — rode `afiliado ig-login`"
+
+
+class Verificacao(NamedTuple):
+    """O que a leitura do story DE FATO observou.
+
+    `estado` é um dos três acima; `detalhe` é o que ajuda a agir (a causa do
+    erro, ou "a figurinha aponta para outro endereço"). Nada aqui é inferido:
+    tudo veio da resposta — ou da ausência dela.
+    """
+    estado: str
+    detalhe: str = ""
+
+
+class _NaoDaPraEntrar(Exception):
+    """Entrar no Instagram é impossível AGORA (sessão morta, desafio,
+    biblioteca ausente). Carrega o aviso com que o canal se desarma: insistir
+    em laço é o caminho mais curto para perder a conta."""
+
+    def __init__(self, mensagem: str, aviso: str):
+        super().__init__(mensagem)
+        self.aviso = aviso
+
+
+def _instagrapi():
+    """Import PREGUIÇOSO do instagrapi: `(Client, StoryLink, erros_de_sessão)`.
+
+    Preguiçoso porque o extra `stories` é opcional — quem não o instalou tem o
+    pipeline inteiro funcionando, e a suíte roda numa máquina sem ele. Levanta
+    `ImportError` quando falta, e quem chama transforma isso em mensagem
+    acionável.
+    """
+    from instagrapi import Client
+    from instagrapi import exceptions as excecoes
+    from instagrapi.types import StoryLink
+
+    erros = tuple(e for e in (getattr(excecoes, nome, None) for nome in ERROS_DE_SESSAO)
+                  if isinstance(e, type) and issubclass(e, BaseException))
+    return Client, StoryLink, erros
+
+
+def story_link(web_uri: str):
+    """`StoryLink(webUri=...)` — a figurinha, do jeito que o instagrapi a
+    nomeia. Fica numa função para o import continuar preguiçoso e para o teste
+    poder injetar um duplo."""
+    return _instagrapi()[1](webUri=web_uri)
+
+
+def mesma_url(a, b) -> bool:
+    """O `webUri` volta de um modelo pydantic (`HttpUrl`), que normaliza a URL
+    — uma barra final a mais não pode virar "story sem link". Nada de baixar
+    caixa: `shope.ee/AbC` e `shope.ee/abc` são links diferentes."""
+    return str(a or "").strip().rstrip("/") == str(b or "").strip().rstrip("/")
+
+
+def _pk(media) -> str:
+    """O `pk` do story publicado — objeto do instagrapi ou dict, tanto faz.
+    Vazio quer dizer "não sei qual story é este", e sem ele não há verificação
+    possível."""
+    valor = media.get("pk") if isinstance(media, dict) else getattr(media, "pk", None)
+    return str(valor) if valor else ""
+
+
+def _grava_temporario(dados: bytes) -> Path:
+    """A arte num arquivo: o instagrapi recebe CAMINHO, não bytes. Quem apaga é
+    o `finally` do `publish` — sempre, inclusive quando o upload levanta."""
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as arquivo:
+        arquivo.write(dados)
+        return Path(arquivo.name)
+
+
+class InstagramStoryLinkChannel:
+    name = "instagram_story_link"
+    # Um story por run, como o canal oficial: o ritmo diário sai do
+    # `max_per_day` do config, distribuído pela janela do `schedule:`.
+    max_per_run = 1
+    # Pausa entre publicar e ler de volta. Duas chamadas coladas à API privada
+    # são rajada de bot; 3 s é barato e não parece robô.
+    pausa = 3.0
+
+    def __init__(self, username: str, password: str,
+                 session_path: str | Path = DEFAULT_SESSION_PATH,
+                 client=None, sleep: Callable[[float], None] = time.sleep,
+                 brand_handle: str | None = None, brand_name: str = "Fiscal da Promo",
+                 verificar: bool = True, max_sem_link: int = MAX_SEM_LINK_PADRAO,
+                 link_factory: Callable[[str], object] | None = None,
+                 http_client: httpx.Client | None = None):
+        self.username = (username or "").strip()
+        # A senha só é lida em `cl.login`. Não vai a log, a exceção, a resumo:
+        # ver `_sem_senha`, por onde passa TODA mensagem deste canal.
+        self.password = password or ""
+        self.session_path = Path(session_path)
+        # `client` injetado é o duplo do teste (e o cliente já logado, depois do
+        # primeiro login); `http_client` é outra coisa — é quem baixa a imagem
+        # do produto para a arte.
+        self.client = client
+        self.sleep = sleep
+        self.brand_handle = brand_handle
+        self.brand_name = brand_name
+        self.verificar = bool(verificar)
+        self.max_sem_link = max(1, int(max_sem_link))
+        self.link_factory = link_factory or story_link
+        self.http_client = http_client
+        # Estado do run: o pipeline drena `warnings` depois de cada publish.
+        self.disponivel = True
+        self.sem_link_seguidos = 0
+        self.warnings: list[str] = []
+
+    # -- publicação ------------------------------------------------------------
+
+    def publish(self, post: Post) -> PublishResult:
+        if not self.disponivel:
+            # Desarmado: nem arte, nem rede. O motivo já foi ao resumo.
+            return PublishResult(False, error="canal desarmado neste run — ver o aviso acima")
+
+        # A arte é a MESMA do canal oficial, com o MESMO veredito: story pela
+        # Graph API e story com figurinha não podem contar histórias diferentes.
+        try:
+            art = creative.render_story(post.offer, post.copy, post.verdict,
+                                        client=self.http_client, handle=self.brand_handle,
+                                        brand_name=self.brand_name)
+        except SourceError as exc:
+            return PublishResult(False, error=f"falha ao gerar arte do story: {exc}")
+
+        caminho = _grava_temporario(to_jpeg(art))
+        try:
+            return self._publica(post, caminho)
+        finally:
+            # Sempre. 6 stories/dia para sempre é lixo suficiente para encher
+            # o disco de quem roda isto na própria máquina.
+            caminho.unlink(missing_ok=True)
+
+    def _publica(self, post: Post, caminho: Path) -> PublishResult:
+        try:
+            cl = self._cliente()
+        except _NaoDaPraEntrar as exc:
+            # Nada de retry: o canal se fecha e diz o que fazer.
+            self._desarma(exc.aviso)
+            return PublishResult(False, error=self._sem_senha(str(exc)))
+        except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta
+            self._desarma(AVISO_SESSAO)
+            return PublishResult(False, error=self._sem_senha(
+                f"falha ao entrar no Instagram ({type(exc).__name__}: {exc}) — "
+                "se persistir, rode `afiliado ig-login`"))
+
+        # O link é o de AFILIADO, curto — o mesmo que vai ao Telegram.
+        try:
+            media = cl.photo_upload_to_story(
+                caminho, links=[self.link_factory(post.affiliate_link)])
+        except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta
+            return PublishResult(False, error=self._sem_senha(
+                f"falha ao publicar o story ({type(exc).__name__}: {exc})"))
+
+        pk = _pk(media)
+        if not self.verificar:
+            # Existe para depurar. O silêncio é justamente o que custou cinco
+            # meses de stories sem link — então ele não é silencioso.
+            self._avisa(AVISO_SEM_VERIFICACAO)
+            return PublishResult(True, pk)
+        if not pk:
+            return PublishResult(False, error=(
+                "story enviado, mas o instagrapi não devolveu o pk — NÃO foi possível "
+                "verificar a figurinha de link"))
+
+        self.sleep(self.pausa)
+        return self._resultado(pk, self._verifica(cl, pk, post.affiliate_link))
+
+    # -- verificação (o motivo desta fase) -------------------------------------
+
+    def _verifica(self, cl, pk: str, uri: str) -> Verificacao:
+        """Lê o story de volta e diz o que VIU.
+
+        Não confie no retorno do upload: foi exatamente ele que disse "publiquei"
+        durante cinco meses enquanto a figurinha não ia junto. E não confunda
+        "não consegui ler" com "não tem link" — são estados diferentes, com
+        ações diferentes.
+        """
+        try:
+            story = cl.story_info(pk)
+        except Exception as exc:      # noqa: BLE001 - qualquer falha é "não sei"
+            return Verificacao(NAO_VERIFICADO,
+                               self._sem_senha(f"{type(exc).__name__}: {exc}"))
+        if story is None:
+            return Verificacao(NAO_VERIFICADO, "story_info não devolveu o story")
+        links = list(getattr(story, "links", None) or [])
+        if any(mesma_url(getattr(link, "webUri", ""), uri) for link in links):
+            return Verificacao(COM_LINK)
+        # Figurinha apontando para OUTRO endereço é, para o seguidor, a mesma
+        # tragédia que figurinha nenhuma.
+        return Verificacao(SEM_LINK, "a figurinha aponta para outro endereço" if links else "")
+
+    def _resultado(self, pk: str, verificacao: Verificacao) -> PublishResult:
+        if verificacao.estado == COM_LINK:
+            self.sem_link_seguidos = 0
+            return PublishResult(True, pk)
+
+        if verificacao.estado == NAO_VERIFICADO:
+            # O story pode estar perfeito; não sabemos. Isto NÃO conta para o
+            # desarme: condenar o instagrapi por um 504 do Instagram desligaria
+            # o canal por causa da rede.
+            return PublishResult(False, error=(
+                f"story publicado (pk={pk}), mas NÃO foi possível verificar a figurinha "
+                f"de link: {verificacao.detalhe}"))
+
+        # SEM_LINK. O story fica no ar: apagar é destrutivo e o post em si não
+        # faz mal — o que ele não faz é converter.
+        self.sem_link_seguidos += 1
+        if self.sem_link_seguidos >= self.max_sem_link:
+            self._desarma(AVISO_DESARMADO.format(n=self.sem_link_seguidos))
+        detalhe = f" — {verificacao.detalhe};" if verificacao.detalhe else " —"
+        return PublishResult(False, error=(
+            f"story publicado SEM figurinha de link (pk={pk}){detalhe} "
+            "instagrapi provavelmente quebrou"))
+
+    # -- sessão ----------------------------------------------------------------
+
+    def _cliente(self):
+        """Cliente logado, preguiçoso e memorizado: um login por processo.
+
+        Com a sessão no disco o instagrapi reaproveita cookies e device e só
+        re-autentica se precisar — é o que evita "device novo a cada login".
+        """
+        if self.client is not None:
+            return self.client
+        try:
+            Client, _, erros_de_sessao = _instagrapi()
+        except ImportError as exc:
+            raise _NaoDaPraEntrar(SEM_INSTAGRAPI, AVISO_SEM_INSTAGRAPI) from exc
+
+        cl = Client()
+        try:
+            if self.session_path.is_file():
+                cl.load_settings(self.session_path)
+            cl.login(self.username, self.password)
+        except erros_de_sessao as exc:
+            # Desafio, senha trocada, conta suspensa: a sessão morreu e só o
+            # dono resolve. Dizer isso é diferente de dizer "deu erro".
+            raise _NaoDaPraEntrar(
+                f"{SESSAO_INVALIDA} ({type(exc).__name__}: {exc})", AVISO_SESSAO) from exc
+        except Exception as exc:      # noqa: BLE001 - vira mensagem acionável
+            # Rede, biblioteca, o que for: NÃO afirmamos que a sessão morreu —
+            # só que não deu para entrar, e o que fazer se continuar.
+            raise _NaoDaPraEntrar(
+                f"falha ao entrar no Instagram ({type(exc).__name__}: {exc}) — "
+                "se persistir, rode `afiliado ig-login`", AVISO_SESSAO) from exc
+        self._guarda_sessao(cl)
+        self.client = cl
+        return cl
+
+    def _guarda_sessao(self, cl) -> None:
+        """`dump_settings` depois de todo login: a sessão que sobrevive é o que
+        mantém o device estável. Falhar aqui NÃO cancela a publicação — o login
+        já aconteceu; o que se perde é a economia do próximo."""
+        try:
+            self.session_path.parent.mkdir(parents=True, exist_ok=True)
+            cl.dump_settings(self.session_path)
+        except Exception as exc:      # noqa: BLE001 - nunca derruba o publish
+            self._avisa(f"⚠️ instagram_story_link: não consegui guardar a sessão em "
+                        f"{self.session_path} ({type(exc).__name__}) — o próximo run "
+                        "vai logar de novo")
+
+    # -- estado do canal -------------------------------------------------------
+
+    def _desarma(self, aviso: str) -> None:
+        """Indisponível pelo resto do run.
+
+        `max_per_run = 0` é o atributo que o pipeline JÁ lê para decidir se um
+        canal ainda pode publicar (`aberto()`): zerá-lo fecha este canal sem
+        que o pipeline precise conhecê-lo. `disponivel` é o mesmo fato com
+        nome, para quem lê o código (e para o `publish` recusar chamada direta).
+        """
+        self.disponivel = False
+        self.max_per_run = 0
+        self._avisa(aviso)
+
+    def _avisa(self, texto: str) -> None:
+        texto = self._sem_senha(texto)
+        if texto not in self.warnings:
+            self.warnings.append(texto)
+
+    def _sem_senha(self, texto: str) -> str:
+        """Nenhuma mensagem deste canal carrega `IG_PASSWORD` — nem quando ela
+        vem DENTRO do texto de uma exceção de terceiro."""
+        if self.password and self.password in texto:
+            texto = texto.replace(self.password, "***")
+        return texto

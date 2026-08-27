@@ -61,6 +61,11 @@ if [ ! -f "$APP_DIR/.env" ]; then
   # ART_HOST_BOT_TOKEN (fase 5C, A5): bot SECUNDÁRIO, só precisa estar no chat
   # de operações. É o token dele que vai à Meta na URL da arte do feed —
   # vazio, vai o do bot administrador do canal, e o run avisa todo dia.
+  # IG_USERNAME/IG_PASSWORD (fase 5F): é a senha da conta do Instagram, não é
+  # token revogável — quem a tem publica, apaga e troca a senha. Só existem
+  # para o canal `instagram_story_link` (instagrapi, story COM figurinha de
+  # link), que NUNCA roda na VPS nem no GitHub Actions: ele roda na máquina do
+  # dono, com `afiliado stories`. Deixe as duas VAZIAS aqui.
   cat > "$APP_DIR/.env" <<'ENVTEMPLATE'
 SHOPEE_APP_ID=
 SHOPEE_APP_SECRET=
@@ -71,6 +76,10 @@ ART_HOST_BOT_TOKEN=
 CLAUDE_CODE_OAUTH_TOKEN=
 IG_USER_ID=
 IG_ACCESS_TOKEN=
+# As duas abaixo são a SENHA da conta do Instagram (não é token revogável) e
+# só servem ao `afiliado stories` na máquina do dono. Deixe vazias na VPS.
+IG_USERNAME=
+IG_PASSWORD=
 MELI_CLIENT_ID=
 MELI_CLIENT_SECRET=
 MELI_REFRESH_TOKEN=

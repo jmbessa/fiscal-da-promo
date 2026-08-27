@@ -7,6 +7,9 @@ preview-*.png
 .claude/previews/
 data/meli_token.json
 data/meli_token.json.tmp
+# sessão do instagrapi (fase 5F): cookies + perfil de device da conta. É
+# credencial VIVA — commitá-la entrega a conta a quem clonar o repo.
+data/ig_session.json
 # resultados brutos das consultas ao JoomPulse (skills /meli-pool-refresh e
 # /watchlist-refresh): cache local para retomar sem repetir consulta
 data/joompulse_raw/

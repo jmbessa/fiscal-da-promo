@@ -41,6 +41,18 @@ execução: ele pode mudar de plano.
   "todos os títulos, depois todos os preços".
 - Um pool pequeno e válido é melhor que um grande pela metade: 40 ofertas
   bastam para dias de publicação com dedupe de 30 dias.
+
+## Produtos que o programa recusa (leia antes do Passo 1)
+
+`data/meli_nao_afiliaveis.json` lista `product_id` para os quais o painel
+devolve `error_code 111 — URL not allowed in affiliates program`. **Exclua-os
+do pool sempre**: sem link não há comissão, e cada um custaria um descarte e
+uma chamada de API por execução, para sempre. Medido em 2026-08-26: 3 de 40
+produtos do pool caíram nessa condição (7,5%) — não é raro.
+
+Depois de gerar o pool, rode `/meli-links-refresh`: os `product_id` que
+voltarem com `error_code 111` devem ser **acrescentados** àquele arquivo e
+**removidos** do pool antes de commitar.
 - **Cada resultado bruto é salvo ANTES da próxima consulta** em
   `data/joompulse_raw/meli-pool-refresh/<AAAA-MM-DD>/<passo>_<lote>.json`
   (o JSON exato devolvido; o diretório está no `.gitignore`).

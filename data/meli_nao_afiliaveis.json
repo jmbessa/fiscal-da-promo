@@ -1,0 +1,9 @@
+{
+  "_nota": "Produtos que o programa de afiliados do Mercado Livre RECUSA: o endpoint createLink devolve error_code 111, 'URL not allowed in affiliates program'. Nao adianta tentar de novo — nao ha link, logo nao ha comissao. O skill /meli-pool-refresh le esta lista e nao inclui estes product_id no pool; sem isso eles voltariam a cada refresh e gastariam um descarte e uma chamada de API por execucao. Se o Mercado Livre passar a aceitar algum deles, remova a entrada daqui.",
+  "verificado_em": "2026-08-26",
+  "product_ids": [
+    "MLB2073750500",
+    "MLB75631257",
+    "MLB65763631"
+  ]
+}

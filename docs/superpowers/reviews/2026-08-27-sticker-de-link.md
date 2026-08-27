@@ -434,6 +434,42 @@ Contexto Brasil: o Instagram Shopping segue disponível no país e product tags/
 
 ---
 
+## VEREDITO FINAL (2026-08-27, depois da verificação do dono)
+
+O caminho #2 caiu: o Meta Business Suite mostra link em story **só no
+Facebook**. Com ele fora, **não existe caminho de primeira parte** que ponha
+figurinha de link em story do Instagram. Sobram três famílias, todas com o
+mesmo preço:
+
+| O que resta | Preço |
+|---|---|
+| API privada (instagrapi, Storrito) | a **senha** da conta + histórico de quebra silenciosa |
+| Automação de aparelho Android | infraestrutura 24/7 que quebra a cada update do app |
+| Anúncio de Stories | R$ 800+/mês e **não** aparece no anel do perfil |
+
+**Decisão: ficamos no caminho #1** (Graph API, sem figurinha). O que muda é
+que a compensação deixa de ser opcional — ver abaixo.
+
+### A compensação: fazer o "link na bio" valer a pena
+
+A perda medida do sticker para o link na bio é de 2 a 4 vezes em cliques, mas
+esse número pressupõe uma bio que leva a lugar nenhum. Duas coisas recuperam
+boa parte dela, ambas de custo zero e risco zero:
+
+1. **Uma página de ofertas do dia gerada pelo próprio pipeline**, publicada no
+   GitHub Pages que o projeto já usa (`jmbessa.github.io/fiscal-da-promo`, hoje
+   só serve de callback do OAuth do ML). O story manda para a bio, a bio leva a
+   uma lista das ofertas de hoje com os links de afiliado — em vez de um perfil
+   estático. É o mesmo dado que já temos no `state.db`; sai como fase 5D.
+2. **A arte do story trabalhando mais o CTA**: "LINK NA BIO" legível de longe,
+   seta apontando para o topo, e a menção ao canal do Telegram — onde o link
+   **é** clicável e a conversão não tem intermediário.
+
+Vale lembrar do que a pesquisa de crescimento já tinha estabelecido: **story
+não traz seguidor novo**, ele converte quem já segue. O canal do Telegram é a
+superfície onde o clique acontece sem atrito. Perder o sticker dói menos neste
+projeto do que doeria num que vivesse só de Instagram.
+
 ## Recomendação operacional
 
 **Ordem de ação:**
@@ -445,7 +481,13 @@ Contexto Brasil: o Instagram Shopping segue disponível no país e product tags/
 
 ## Lacunas de evidência que eu não consegui fechar (declaradas de propósito)
 
-1. **Meta Business Suite suporta figurinha de link em story agendado?** Contestado. As páginas oficiais da Meta (`facebook.com/business/help/529979981436890` e `/520244998527406`) são renderizadas por JS e retornam só o título. **Só verificação manual resolve.**
+1. ~~**Meta Business Suite suporta figurinha de link em story agendado?**~~
+   **FECHADA em 2026-08-27 pelo dono, no compositor real.** O MBS oferece link
+   em story, mas com o aviso: *"Os links serão mostrados apenas nos stories do
+   Facebook."* Ou seja: **não vale para o Instagram.** O caminho #2 da tabela
+   está MORTO — as três fontes de 2026 que diziam o contrário estavam
+   generalizando o comportamento do Facebook para o Instagram. Evidência:
+   **FORTE** (observação direta no produto, com a conta do projeto).
 2. **Taxa real de ban do instagrapi para contas Business que apenas publicam.** Não existe dado público confiável. Os números "0,5% vs 15–30%" que circulam são marketing sem fonte.
 3. **Detecção de Appium/ADB pelo Instagram em 2025–2026.** Só fórum, e os tópicos relevantes bloqueiam acesso automatizado (403).
 4. **Como `user_tags` em story renderiza visualmente** no app em 2026.

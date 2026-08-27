@@ -20,6 +20,17 @@ def _channel_with(handler) -> StoryDispatchChannel:
     return StoryDispatchChannel("TOKEN", "OPSCHAT", client=client)
 
 
+def test_o_canal_so_declara_que_e_manual():
+    """Menor da revisão da 5C: `dispatch_note` era uma cópia morta de
+    `pipeline.DESPACHO_MANUAL` — dois lugares para mudar o mesmo texto, e
+    ninguém lia este. Quem escreve o resumo é o pipeline; o canal só declara
+    que é manual."""
+    from afiliado import pipeline
+    assert StoryDispatchChannel.manual is True
+    assert not hasattr(StoryDispatchChannel, "dispatch_note")
+    assert pipeline.DESPACHO_MANUAL
+
+
 def test_veredito_do_post_decide_o_modo_da_arte():
     # Oferta com 20% verificável (26,00 -> 20,80) e veredito B (mínimo 30 no
     # config): a arte enviada é a do modo B — a mesma que render_story

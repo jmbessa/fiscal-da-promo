@@ -166,10 +166,25 @@ def test_publish_faz_pull_rebase_antes_de_empurrar_o_estado():
 
 
 def test_em_conflito_no_binario_o_run_atual_vence_com_aviso():
+    """Menor da revisão da 5C: `git rebase --continue || git rebase --skip`
+    DESCARTAVA o commit do run atual — o oposto do que o comentário prometia.
+    O conflito passa a ser resolvido abortando o rebase, voltando ao que o
+    remoto tem (nada dos outros se perde) e recolocando o state.db deste run."""
     script = _passo("Commitar estado")["run"]
-    # Durante um rebase, --theirs é o commit sendo aplicado: o deste run.
-    assert "git checkout --theirs data/state.db" in script
+    assert "git rebase --skip" not in script
+    assert "git rebase --abort" in script
+    assert 'git reset --hard "origin/${GITHUB_REF_NAME}"' in script
+    assert script.index("git reset --hard") < script.index("cp \"$ESTADO_DO_RUN\"")
     assert "::warning::" in script and "state.db" in script
+
+
+def test_o_primeiro_run_nao_falha_por_falta_do_state_db():
+    """Menor da revisão: com `set -e`, `git add` de um caminho inexistente
+    derruba o passo — o primeiro run (banco ainda não criado) virava vermelho
+    sem ter feito nada de errado."""
+    script = _passo("Commitar estado")["run"]
+    assert "if [ ! -f data/state.db ]" in script
+    assert script.index("if [ ! -f data/state.db ]") < script.index("git add data/state.db")
 
 
 def test_o_commit_de_estado_nao_dispara_a_suite():

@@ -166,9 +166,11 @@ class ShopeeSource:
         por mês, 8 posts/dia sustentáveis com dedupe de 30 (C1). A medição de
         2026-08-26 mostrou que cada (categoria, sortType) é uma janela de 40
         páginas × 50 = 2.000 itens, e que a p1 muda 1–2 itens em 50 a cada
-        ~9 h: um run não precisa ver tudo, o DIA precisa. Com 8 chamadas/run e
-        192 runs/dia (~1.500 chamadas), as raízes inteiras saem a cada 40 runs
-        (~3h20) e o espaço todo em cerca de um dia.
+        ~9 h: um run não precisa ver tudo, o DIA precisa. Com 8 chamadas/run, as
+        raízes inteiras saem a cada 40 runs — ~3h20 na VPS (192 runs/dia,
+        ~1.500 chamadas) e ~2,5 dias no Actions (16 runs/dia, 128 chamadas). A
+        margem contra o dedupe de 30 dias vem do TAMANHO do espaço (≈5.460
+        elegíveis nas raízes contra 1.800 posts/mês), não da frequência.
 
         Quem acumula o resultado das fatias é o estoque de candidatas
         (`StateDB.upsert_candidates`, chamado pelo pipeline)."""

@@ -295,6 +295,33 @@ def test_ops_summary_sent_when_something_happened(monkeypatch, tmp_path):
     assert len(enviados) == 1
 
 
+def test_ops_summary_sent_when_only_despachos(monkeypatch, tmp_path):
+    """A12 (rodada de correção): tirar o despacho de `published` não pode
+    silenciar o resumo — um run que só despachou artes AINDA é um run que
+    aconteceu, e o ops precisa ver a lista."""
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        open("config.yaml", encoding="utf-8").read()
+        .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+        .replace("data/watchlist.json",
+                 str(tmp_path / "sem-watchlist.json").replace("\\", "/")),
+        encoding="utf-8")
+    enviados = []
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append(a))
+
+    def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
+                 warnings_iniciais=None):
+        return pipeline.RunSummary(dispatched=["Kit de arte"])
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--config", str(cfg_file)]) == 0
+    assert len(enviados) == 1 and "Kit de arte" in enviados[0][2]
+
+
 def test_ops_summary_forced_by_config(monkeypatch, tmp_path):
     monkeypatch.setenv("SHOPEE_APP_ID", "id")
     monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
@@ -689,12 +716,38 @@ def test_art_host_bot_token_chega_ao_canal(monkeypatch):
     assert avisos == []
 
 
-def test_sem_art_host_bot_token_avisa_uma_vez_por_dia(monkeypatch):
+def test_sem_art_host_bot_token_o_canal_usa_o_do_proprio_bot_e_avisa(monkeypatch):
     cfg = _env_do_feed(monkeypatch)
     canais, avisos = cli._build_channels(cfg)
     assert canais[0].art_host_bot_token == "TOKDOCANAL"          # comportamento atual
-    assert avisos == ["⚠️ instagram_feed: arte hospedada pelo bot do canal — "
-                      "defina ART_HOST_BOT_TOKEN"]
+    assert avisos == [cli.ART_HOST_AVISO]
+
+
+def test_o_aviso_do_art_host_so_chega_uma_vez_por_dia(tmp_path, monkeypatch):
+    """O teste anterior tinha este nome e não testava nada disso: ele olhava a
+    lista devolvida por `_build_channels`, que é a mesma em todo run. Quem
+    deduplica é o `warn_once` do pipeline (fase 5A, A3) — e é o resumo dele que
+    o chat de operações lê."""
+    from afiliado import llm, pipeline
+    from afiliado.state import StateDB
+    from tests.test_models import make_offer
+    from tests.test_pipeline import (CFG, FakeChannel, FakeSource, _congela,
+                                     no_network_validator)
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    def roda(item_id):
+        return pipeline.run(CFG, [FakeSource([make_offer(item_id=item_id)])],
+                            [FakeChannel()], db, validator=no_network_validator,
+                            warnings_iniciais=[cli.ART_HOST_AVISO])
+
+    _congela(monkeypatch, 9, 0, dia=26)
+    assert cli.ART_HOST_AVISO in roda("a").warnings
+    assert cli.ART_HOST_AVISO not in roda("b").warnings      # mesmo dia: uma vez só
+    _congela(monkeypatch, 9, 0, dia=27)
+    assert cli.ART_HOST_AVISO in roda("c").warnings          # dia novo, aviso de novo
+    db.close()
 
 
 # --- Fase 5C (M5/A6): o doctor olha o pool de links do ML --------------------
@@ -747,6 +800,22 @@ def test_doctor_com_pool_de_links_completo(monkeypatch, tmp_path, capsys):
                            ligado=True)
     assert cli.doctor(cfg) == 0
     assert "✅ Mercado Livre: 2 de 2 produto(s) do pool com link" in capsys.readouterr().out
+
+
+def test_doctor_com_pool_de_ofertas_vazio_diz_a_causa(monkeypatch, tmp_path, capsys):
+    """Menor da revisão da 5C: com o pool de OFERTAS vazio o doctor dizia
+    "0 de 0 produto(s) do pool com link" e mandava rodar /meli-links-refresh —
+    veredito certo, causa errada. O que falta são PRODUTOS."""
+    import json
+    cfg = _doctor_com_meli(monkeypatch, tmp_path, links=None, ligado=True)
+    vazio = tmp_path / "vazio.json"
+    vazio.write_text(json.dumps({"generated_at": "2026-08-26", "valid_days": 30,
+                                 "offers": []}), encoding="utf-8")
+    cfg["meli"]["offers_path"] = str(vazio)
+    assert cli.doctor(cfg) == 1
+    out = capsys.readouterr().out
+    assert "pool de OFERTAS vazio ou inválido" in out
+    assert "/meli-pool-refresh" in out
 
 
 def test_doctor_com_ml_desligado_nao_falha_por_falta_de_link(monkeypatch, tmp_path, capsys):

@@ -11,7 +11,7 @@ from afiliado import config, llm, pipeline
 from afiliado.channels.instagram_feed import GRAPH_HOSTS, InstagramFeedChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
 from afiliado.channels.telegram import TelegramChannel, send_text
-from afiliado.sources.meli import MeliSource
+from afiliado.sources.meli import DEFAULT_OFFERS_PATH, MeliSource
 from afiliado.sources.shopee import ShopeeSource
 from afiliado.state import StateDB
 from afiliado.watchlist import load_watchlist
@@ -181,20 +181,31 @@ def _doctor_links_do_meli(meli: MeliSource, offers: list, cfg: dict) -> bool:
     """Checa `data/meli_links.json` no doctor (fase 5C, M5/A6): existe? quantos
     produtos do pool têm link? Devolve False (❌) só quando a fonte está
     LIGADA e a cobertura é ZERO — nesse estado o ML não publica nada, e o
-    doctor precisa dizer isso e o que fazer."""
+    doctor precisa dizer isso e o que fazer.
+
+    Com o pool de OFERTAS vazio o veredito é o mesmo (o ML não publica), mas a
+    causa é outra: "0 de 0 produto(s) do pool com link" era verdade e não dizia
+    nada — mandava rodar /meli-links-refresh quando o que falta são PRODUTOS
+    (menor da revisão da 5C)."""
     caminho = meli.links_path
     ligado = bool((cfg.get("sources") or {}).get("meli", False))
     com_link, total = meli.link_coverage(offers)
-    if not meli.links_file_exists:
+    acao = "/meli-links-refresh"
+    if not total:
+        pool = (cfg.get("meli") or {}).get("offers_path") or DEFAULT_OFFERS_PATH
+        situacao = (f"pool de OFERTAS vazio ou inválido ({pool}) — "
+                    "sem produto não há link a gerar")
+        acao = "/meli-pool-refresh (o pool de links vem depois)"
+    elif not meli.links_file_exists:
         situacao = f"pool de links ausente ({caminho})"
     else:
         situacao = f"{com_link} de {total} produto(s) do pool com link ({caminho})"
     if ligado and com_link == 0:
         print(f"❌ Mercado Livre: {situacao} — o ML não vai publicar nada. "
-              "Rode /meli-links-refresh (ver docs/runbooks/meli-setup.md)")
+              f"Rode {acao} (ver docs/runbooks/meli-setup.md)")
         return False
-    if com_link < total:
-        print(f"⚠️ Mercado Livre: {situacao} — rode /meli-links-refresh")
+    if com_link < total or not total:
+        print(f"⚠️ Mercado Livre: {situacao} — rode {acao}")
     else:
         print(f"✅ Mercado Livre: {situacao}")
     return True
@@ -385,7 +396,11 @@ def main(argv: list[str] | None = None) -> int:
         print(summary.text())
     elif token and ops:
         notify_empty = bool((cfg.get("ops") or {}).get("notify_empty_runs", False))
-        houve_algo = summary.published or summary.discarded or summary.warnings
+        # `dispatched` entra aqui: um run que só despachou artes ao chat de ops
+        # aconteceu, e o resumo precisa chegar (A12 tirou o despacho de
+        # `published`, e sem esta linha ele sumiria do ops junto).
+        houve_algo = (summary.published or summary.dispatched
+                      or summary.discarded or summary.warnings)
         if houve_algo or notify_empty:
             send_text(token, ops, summary.text())
     return 0

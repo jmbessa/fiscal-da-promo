@@ -18,9 +18,11 @@ class StoryDispatchChannel:
     # Fase 5C (A12): o que este canal entrega é uma ARTE no chat de operações,
     # não um post no Instagram — quem posta é o dono, à mão. O resultado
     # continua contando para o teto (é o número de artes que dá para postar
-    # num dia), mas o resumo do run diz "despachado", não "publicado".
+    # num dia), mas o run registra a oferta como DESPACHADA, não publicada.
+    # Este `manual = True` é a única coisa que o canal precisa declarar: o texto
+    # do despacho é do pipeline (`pipeline.DESPACHO_MANUAL`) — havia uma cópia
+    # dele aqui, `dispatch_note`, que ninguém lia (menor da revisão da 5C).
     manual = True
-    dispatch_note = "📤 despachado p/ ops (postar no app)"
 
     def __init__(self, bot_token: str, ops_chat_id: str, client: httpx.Client | None = None,
                  brand_handle: str | None = None, brand_name: str = "Fiscal da Promo"):

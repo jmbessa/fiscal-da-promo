@@ -120,7 +120,10 @@ shopee:
   list_type: 0              # 1 e 2 = mesmo conjunto que 0; 3/4 exigem matchId
   page_size: 50             # máximo aceito pela API (limit=100 → erro 11001)
   pages: 40                 # janela real por listagem; o cursor volta à p1 no fim
-  calls_per_run: 8          # 5 raízes + 2 subcategorias + 1 keyword ≈ 1.500 chamadas/dia
+  calls_per_run: 8          # 5 raízes + 2 subcategorias + 1 keyword: 128 chamadas/dia
+                            # no Actions (16 runs), ~1.500 na VPS (192 runs). Cortar
+                            # este número para <= 5 desliga subcategorias e keywords
+                            # em silêncio — o run avisa quando isso acontece.
   candidate_max_age_days: 3 # por quantos dias a candidata descoberta segue na fila
   # Buscar POR categoria muda tudo: sem isso a API devolve majoritariamente a
   # categoria 100644 (fora da nossa lista). Medido em 2026-08-25: desconto médio

@@ -110,25 +110,39 @@ jobs:
       - name: Commitar estado
         if: ${{ always() && !inputs.dry_run }}
         # `git push` sem `pull --rebase` PERDIA o estado do run anterior (dedupe
-        # e teto furados). Em conflito no binário o run ATUAL vence: durante um
-        # rebase, --theirs é o commit que está sendo aplicado, ou seja, o nosso.
-        # Nunca perder o run é mais importante que preservar o histórico do
-        # state.db — o pior caso é reesquecer posts de um run.
+        # e teto furados). Em conflito no binário, o run ATUAL vence — e agora
+        # vence de verdade: a versão anterior terminava em
+        # `git rebase --continue || git rebase --skip`, e o `--skip` DESCARTA o
+        # commit deste run, o oposto do que o comentário prometia. Aqui o
+        # conflito é resolvido abortando o rebase, voltando exatamente ao que o
+        # remoto tem (nada do que os outros commitaram se perde) e recolocando
+        # por cima o `state.db` DESTE run.
         run: |
           set -euo pipefail
           git config user.name "afiliado-bot"
           git config user.email "afiliado-bot@users.noreply.github.com"
+          # Primeiro run (ou run que morreu antes de abrir o banco): o arquivo
+          # não existe, e `git add` de caminho inexistente FALHA o passo inteiro
+          # com `set -e` — o run virava vermelho sem ter feito nada de errado.
+          if [ ! -f data/state.db ]; then
+            echo "data/state.db ainda não existe — nada a commitar"
+            exit 0
+          fi
           git add data/state.db
           if git diff --cached --quiet; then
             echo "estado inalterado — nada a commitar"
             exit 0
           fi
           git commit -m "chore: atualiza estado após run [skip ci]"
+          ESTADO_DO_RUN="${RUNNER_TEMP:-/tmp}/state-do-run.db"
           for tentativa in 1 2 3; do
             if ! git pull --rebase --no-edit; then
-              git checkout --theirs data/state.db || git checkout --ours data/state.db
+              git rebase --abort || true
+              cp data/state.db "$ESTADO_DO_RUN"
+              git reset --hard "origin/${GITHUB_REF_NAME}"
+              cp "$ESTADO_DO_RUN" data/state.db
               git add data/state.db
-              GIT_EDITOR=true git rebase --continue || git rebase --skip
+              git commit -m "chore: atualiza estado após run [skip ci]"
               echo "::warning::conflito binário em data/state.db — o estado deste run venceu"
             fi
             if git push; then

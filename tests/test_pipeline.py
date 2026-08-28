@@ -1807,6 +1807,110 @@ def test_sem_teto_no_canal_nao_ha_cota_nem_linha_de_mistura(tmp_path, monkeypatc
     db.close()
 
 
+# --- Fase 5I (T2): o custo em chamadas que escolheu a cadência ---------------
+#
+# A cadência de 15 min não foi escolhida por gosto: foi medida. Este teste é a
+# medição, com o cliente REAL da Shopee e um transporte dublê (nenhuma rede) —
+# se um dia um run passar a gastar mais chamadas, a conta que sustenta a
+# cadência muda, e é aqui que isso aparece.
+
+
+def _shopee_contada(handler_extra=None):
+    """`ShopeeSource` de verdade contra um transporte dublê que CONTA as
+    chamadas por tipo de query."""
+    import json
+
+    import httpx
+
+    from afiliado.sources.shopee import ShopeeSource
+
+    contagem = {"descoberta": 0, "refresh": 0, "link": 0}
+    proximo = [1000]
+
+    def no(item_id: int) -> dict:
+        return {"itemId": item_id, "productName": f"Produto {item_id} bom e barato",
+                "price": "99.90", "priceMin": "89.90", "priceMax": "129.90",
+                "priceDiscountRate": 40, "commissionRate": "0.12", "commission": "11.99",
+                "sales": 5000, "ratingStar": "4.8",
+                "imageUrl": "https://cf.shopee.com.br/file/abc.jpg",
+                "productLink": f"https://shopee.com.br/product/1/{item_id}",
+                "offerLink": "https://s.shopee.com.br/xyz", "productCatIds": [100636],
+                "periodEndTime": 32503651199}
+
+    def handler(request):
+        payload = json.loads(request.content)
+        query, variables = payload["query"], payload.get("variables", {})
+        if "generateShortLink" in query:
+            contagem["link"] += 1
+            return httpx.Response(200, json={"data": {"generateShortLink":
+                                                      {"shortLink": "https://shope.ee/ok"}}})
+        if "itemId" in variables:
+            contagem["refresh"] += 1
+            return httpx.Response(200, json={"data": {"productOfferV2": {
+                "nodes": [no(int(variables["itemId"]))]}}})
+        contagem["descoberta"] += 1
+        nodes = []
+        for _ in range(50):
+            proximo[0] += 1
+            nodes.append(no(proximo[0]))
+        return httpx.Response(200, json={"data": {"productOfferV2": {
+            "nodes": nodes, "pageInfo": {"hasNextPage": True}}}})
+
+    src = ShopeeSource("APPID", "SECRET",
+                       client=httpx.Client(transport=httpx.MockTransport(handler)))
+    return src, contagem
+
+
+def _config_de_producao(posts_per_run: int) -> dict:
+    import yaml
+    with open("config.yaml", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    return {**cfg,
+            "selection": {**cfg["selection"], "posts_per_run": posts_per_run},
+            "validation": {"allowed_domains": ["shope.ee"]}}
+
+
+def test_um_run_gasta_8_chamadas_de_descoberta_mais_2_por_oferta(tmp_path, monkeypatch):
+    """A conta que escolheu a cadência: 8 (descoberta) + 2 por oferta publicada
+    (`refresh_price` + `generateShortLink`).
+
+    A 15 min são 61 disparos/dia: 61×8 + 60×2 = **608 chamadas/dia** por
+    tarefa, ~1.216 com a de `stories` junto — contra os ~1.920/dia que o
+    cliente da VPS (5 min) já fazia, e sem nenhum 429 nas 147 chamadas medidas
+    em 2026-08-26."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    _congela(monkeypatch, 20, 0)
+    db = StateDB(tmp_path / "s.db")
+    src, contagem = _shopee_contada()
+    src.cursor = db
+    cfg = _config_de_producao(posts_per_run=4)
+    summary = pipeline.run(cfg, [src], [CanalComTeto()], db,
+                           validator=no_network_validator, checa_cadencia=False)
+    assert len(summary.published) == 4
+    assert contagem["descoberta"] == cfg["shopee"]["calls_per_run"] == 8
+    assert contagem["refresh"] == contagem["link"] == len(summary.published)
+    db.close()
+
+
+def test_a_descoberta_acontece_mesmo_no_run_que_nao_publica_nada(tmp_path, monkeypatch):
+    """O detalhe que a conta precisava confirmar: as 8 chamadas NÃO dependem do
+    estoque de candidatas nem de haver canal aberto. `fetch_offers` roda antes
+    do teste de canal aberto, então todo disparo custa 8 — inclusive os do fim
+    do dia, com o teto já gasto."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    _congela(monkeypatch, 23, 3)
+    db = StateDB(tmp_path / "s.db")
+    _ja_postados(db, "telegram", 60)
+    src, contagem = _shopee_contada()
+    src.cursor = db
+    summary = pipeline.run(_config_de_producao(posts_per_run=4), [src], [CanalComTeto()], db,
+                           validator=no_network_validator, checa_cadencia=False)
+    assert summary.published == []
+    assert contagem["descoberta"] == 8
+    assert contagem["refresh"] == contagem["link"] == 0
+    db.close()
+
+
 def test_a_fracao_do_dia_e_zero_antes_e_um_depois_da_janela():
     assert pipeline.fracao_do_dia(datetime(2026, 8, 26, 7, 0), "08:00", "23:15") == 0.0
     assert pipeline.fracao_do_dia(datetime(2026, 8, 26, 23, 59), "08:00", "23:15") == 1.0

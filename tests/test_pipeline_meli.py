@@ -105,3 +105,58 @@ def test_pipeline_publica_oferta_meli_ponta_a_ponta(tmp_path, monkeypatch):
     assert ch.sent[0].offer.item_id == "MLB123456"
     assert len(summary.published) == 1
     db.close()
+
+
+def test_pipeline_publica_a_entrada_sem_historico_em_modo_b(tmp_path, monkeypatch):
+    """Fase 5J ponta a ponta, com a fonte de PRODUÇÃO: uma entrada de pool com
+    a régua toda zerada atravessa `fetch_offers` -> `enrich_offers` ->
+    `filter_offers` -> `refresh_price` -> `verdict` -> validação e é publicada
+    — em modo B, com o preço VIVO e sem alegar desconto nenhum.
+
+    Este é o teste que prova a fase inteira: cada portão do caminho já matou
+    uma fonte inteira em silêncio alguma vez, e o preço só existe a partir do
+    `refresh_price`, que roda no fim."""
+    from afiliado.sources.meli import MeliSource
+    from tests.test_meli import SEM_HISTORICO, write_pool
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    pool = write_pool(tmp_path / "pool.json", [
+        {"product_id": "MLB99", "title": "Creatina Monohidratada 500g", **SEM_HISTORICO,
+         "image_url": "https://http2.mlstatic.com/D_NQ_NP_123-W.jpg",
+         "category": "MLB264586", "buy_box_item_id": "MLB777",
+         "sales": 250000, "rating": 4.9}])
+    links = tmp_path / "links.json"
+    links.write_text('{"MLB99": "https://mercadolivre.com/sec/abc123"}', encoding="utf-8")
+
+    def api(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
+        if request.url.path == "/products/MLB99/items":
+            return httpx.Response(200, json={"results": [{"item_id": "MLB777", "price": 33.90}]})
+        raise AssertionError(f"caminho inesperado: {request.url.path}")
+
+    src = MeliSource("cid", "sec", token_path=tmp_path / "t.json", links_path=links,
+                     client=httpx.Client(transport=httpx.MockTransport(api)))
+    cfg = {**CFG, "meli": {"offers_path": str(pool), "commission_pct": MELI_COMMISSION_PCT}}
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+
+    summary = pipeline.run(cfg, [src], [ch], db,
+                           validator=lambda post, c: validate.validate_post(
+                               post, c, client=_mock_client()))
+
+    assert summary.discarded == [], summary.discarded
+    assert len(ch.sent) == 1
+    post = ch.sent[0]
+    assert post.offer.price_current_cents == 3390        # o preço VIVO do buy box
+    assert post.verdict.mode == "B"
+    assert post.verdict.discount_pct == 0 and post.verdict.seal == ""
+    assert "OFF" not in post.message_text and "<s>" not in post.message_text
+    assert "R$ 33,90" in post.message_text
+    # E o resumo diz que este pool está 100% em modo B.
+    assert ("🏷️ meli: 0 de 1 com régua curada; 1 em modo B esperando histórico"
+            in summary.discovery)
+    # O preço vivo virou a PRIMEIRA observação do histórico próprio: é assim
+    # que a régua começa a se formar (14 dias distintos e ela gradua).
+    assert db.price_history("meli", "MLB99", 1) == [3390]
+    db.close()

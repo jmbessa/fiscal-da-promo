@@ -243,6 +243,7 @@ Register-TarefaDoFiscal -Nome $TarefaFlagrante -Inicio $InicioFlagrante `
                 "de operacoes (NAO publica). Criado por deploy/agendar-windows.ps1.")
 
 Write-Host ""
-Write-Host "Confira com: afiliado doctor   (ele agora checa estas duas tarefas)"
-Write-Host "Veja um run de verdade acontecer ANTES de desligar o schedule: do publish.yml."
+Write-Host "Confira com: afiliado doctor   (ele checa as quatro tarefas acima)"
+Write-Host "O publish.yml ja esta sem schedule: — o Actions so roda por workflow_dispatch."
+Write-Host "Ate ver um run de verdade destas tarefas, a producao nao esta publicando."
 Write-Host "Runbook: docs/runbooks/producao-windows.md"

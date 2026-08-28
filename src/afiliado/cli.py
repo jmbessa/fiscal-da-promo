@@ -756,12 +756,52 @@ def doctor(cfg: dict) -> int:
     if not _doctor_story_link(cfg):
         ok = False
 
+    if not _doctor_preco_real(cfg):
+        ok = False
+
     # Por último de propósito: é o item que responde "quem me chama?", e ele
     # fala do MUNDO (o agendador), não das credenciais.
     if not _doctor_agendador():
         ok = False
 
     return 0 if ok else 1
+
+
+def _tem_playwright() -> bool:
+    """O extra `preco` está instalado? Só a PRESENÇA — nada é aberto aqui."""
+    import importlib.util
+    return importlib.util.find_spec("playwright") is not None
+
+
+def _doctor_preco_real(cfg: dict) -> bool:
+    """Fase 5P: a leitura do preço de checkout, conferida SEM abrir navegador.
+
+    DESLIGADA ele cala. Ela é o estado normal, e um item por diagnóstico sobre
+    algo que não roda é ruído — que é como se ensina o dono a ignorar o doctor.
+
+    Ligada, ele confere as duas coisas que só se descobre tarde demais: o perfil
+    (apontar para o Chrome do dono é o erro que custa a conta) e a presença do
+    extra (sem ele toda leitura se desarma no primeiro item, e o dia inteiro
+    publica o preço da API achando que está lendo).
+    """
+    opcoes = preco_real.config_de(cfg)
+    if not opcoes["enabled"]:
+        return True
+    motivo = preco_real.perfil_proibido(opcoes["profile_dir"])
+    if motivo:
+        print(f"❌ preco_real: {motivo}")
+        return False
+    if not _tem_playwright():
+        print("❌ preco_real: ligado, mas o extra não está instalado — rode "
+              "`pip install -e .[preco]`. Sem ele TODA leitura se desarma no "
+              "primeiro item e o dia publica o preço da API "
+              "(ver docs/runbooks/shopee-preco.md)")
+        return False
+    print(f"✅ preco_real: ligado · perfil próprio em {opcoes['profile_dir']} "
+          f"(channel={opcoes['browser_channel'] or 'chromium empacotado'}, "
+          f"teto={opcoes['timeout_s']:.0f}s, desarma em {opcoes['max_falhas']} "
+          "falhas seguidas)")
+    return True
 
 
 def _doctor_story_link(cfg: dict) -> bool:

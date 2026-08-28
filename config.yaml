@@ -297,7 +297,8 @@ meli:
 # LIGAR É DECISÃO DO DONO, e a ordem é esta:
 #   1. pip install -e .[preco]
 #   2. afiliado preco-real <itemId>   (a leitura à mão, com isto ainda em false)
-#   3. comparar com a tela do celular; só então `enabled: true`.
+#   3. comparar com a tela do celular; só então `enabled: true`
+#   4. afiliado doctor  (ele confere o perfil e o extra; desligada, ele cala).
 #
 # MEDIDO EM 2026-08-28, e é o motivo de ela nascer desligada: num Chrome de
 # PERFIL PRÓPRIO E DESLOGADO (headless e com janela, com aquecimento pela home,

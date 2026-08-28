@@ -1944,6 +1944,43 @@ def test_preco_real_a_mao_diz_o_que_fazer_quando_o_item_nao_esta_no_estoque(
     assert "não está no estoque" in capsys.readouterr().out
 
 
+def test_o_doctor_cala_sobre_a_leitura_desligada(capsys):
+    """Desligada é o estado normal: um item por run sobre algo que não roda é
+    ruído, e ruído é como se ensina o dono a ignorar o doctor."""
+    assert cli._doctor_preco_real({}) is True
+    assert "preco_real" not in capsys.readouterr().out
+
+
+def test_o_doctor_reprova_a_leitura_ligada_com_o_perfil_do_dono(tmp_path, monkeypatch,
+                                                                capsys):
+    monkeypatch.setattr(preco_real.Path, "home", staticmethod(lambda: tmp_path))
+    chrome = tmp_path / "AppData/Local/Google/Chrome/User Data/Default"
+    chrome.mkdir(parents=True)
+    assert cli._doctor_preco_real(
+        {"preco_real": {"enabled": True, "profile_dir": str(chrome)}}) is False
+    assert "navegador real" in capsys.readouterr().out
+
+
+def test_o_doctor_reprova_a_leitura_ligada_sem_playwright(tmp_path, monkeypatch, capsys):
+    """Ligada sem o extra, toda leitura se desarma no primeiro item e o dia
+    inteiro publica o preço da API achando que está lendo."""
+    monkeypatch.setattr(cli, "_tem_playwright", lambda: False)
+    assert cli._doctor_preco_real(
+        {"preco_real": {"enabled": True,
+                        "profile_dir": str(tmp_path / "perfil")}}) is False
+    assert ".[preco]" in capsys.readouterr().out
+
+
+def test_o_doctor_aprova_a_leitura_ligada_e_diz_onde_o_perfil_fica(tmp_path,
+                                                                   monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_tem_playwright", lambda: True)
+    perfil = tmp_path / "perfil"
+    assert cli._doctor_preco_real(
+        {"preco_real": {"enabled": True, "profile_dir": str(perfil)}}) is True
+    saida = capsys.readouterr().out
+    assert "✅ preco_real" in saida and str(perfil) in saida
+
+
 def test_preco_real_a_mao_nao_grava_o_desarme(monkeypatch, tmp_path):
     """Ele é uma sonda: três execuções à mão não podem desarmar a leitura do
     dia seguinte da produção."""

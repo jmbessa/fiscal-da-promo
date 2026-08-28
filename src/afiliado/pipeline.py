@@ -19,6 +19,20 @@ from afiliado.watchlist import Watchlist
 DEFAULT_SCHEDULE = {"timezone": state.DEFAULT_TIMEZONE,
                     "window_start": "08:00", "window_end": "23:55"}
 
+# Fase 5G (G3): intervalo entre dois runs, em minutos, a partir do qual o
+# resumo do ops acusa BURACO NA CADÊNCIA. A medição que motivou a fase: o
+# workflow `publish` teve 1 run em ~25 h e ~16 disparos esperados — o agendador
+# do Actions descartava o resto — e o defeito mais caro não foi ele falhar, foi
+# ninguém ter como perceber.
+# 150 min porque a cadência é de 60: tolera UM disparo perdido (120 min) mais o
+# atraso normal do Actions, e acusa a partir do segundo. Configurável em
+# `schedule.max_gap_minutes`; 0 desliga o aviso.
+DEFAULT_MAX_GAP_MINUTES = 150
+# O intervalo NOMINAL entre disparos, que o código não tem como ler do cron do
+# workflow (ele mora no GitHub, não aqui). Serve só para traduzir o buraco em
+# "disparos perdidos"; quem mudar o cron muda os dois números juntos.
+CADENCIA_MINUTOS = 60
+
 
 # Valores que variam entre descartes com o MESMO motivo ("R$ 33,90", "MLB123").
 _VALOR = re.compile(r"R\$\s?[\d.,]+|\d+")
@@ -115,6 +129,46 @@ def schedule_settings(cfg: dict) -> dict:
     """Seção `schedule:` do config com os defaults de `DEFAULT_SCHEDULE`."""
     raw = cfg.get("schedule") or {}
     return {k: (raw.get(k) or v) for k, v in DEFAULT_SCHEDULE.items()}
+
+
+def max_gap_minutes(cfg: dict) -> int:
+    """`schedule.max_gap_minutes` do config (padrão `DEFAULT_MAX_GAP_MINUTES`).
+    0 desliga o aviso; valor ilegível volta ao padrão."""
+    raw = (cfg.get("schedule") or {}).get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_GAP_MINUTES
+
+
+def aviso_de_cadencia(db: StateDB, limite_minutos: int,
+                      cadencia: int = CADENCIA_MINUTOS) -> str | None:
+    """A linha que denuncia um buraco na cadência, ou None quando não há.
+
+    Dois silêncios são de PROJETO, e os dois têm teste:
+      - o primeiro run da vida (tabela `runs` vazia) não tem com o que comparar;
+      - o run anterior de OUTRO dia local não é buraco. O último disparo é
+        23:07 BRT e o primeiro é 08:07: 9 h de intervalo por desenho, e um
+        falso positivo toda manhã é a maneira mais rápida de ensinar o dono a
+        ignorar o aviso.
+    """
+    if limite_minutos <= 0:
+        return None
+    anterior = db.last_run_finished_at()
+    if anterior is None:
+        return None
+    agora = db.local_now()
+    if anterior.date() != agora.date():
+        return None
+    minutos = (agora - anterior).total_seconds() / 60
+    if minutos <= limite_minutos:
+        return None
+    # Quantos disparos caberiam no buraco, menos o que de fato aconteceu (este).
+    perdidos = max(1, int(minutos / cadencia + 0.5) - 1)
+    horas = f"{minutos / 60:.1f}".replace(".", ",")
+    return (f"⚠️ Buraco na cadência: {horas} h desde o run anterior "
+            f"({anterior:%H:%M}) — ~{perdidos} disparo(s) perdido(s) "
+            f"(cadência de {cadencia} min)")
 
 
 def _minutos(hhmm: str) -> int:
@@ -272,6 +326,19 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         despachos = f"{ontem.dispatched} despachados, " if ontem.dispatched else ""
         warn(f"☀️ Bom dia — ontem: {ontem.published} publicados, {despachos}"
              f"{ontem.discarded} descartados em {ontem.runs} runs", key="heartbeat")
+
+        # Fase 5G (G3): o buraco na cadência, lido ANTES de este run se gravar.
+        # NÃO passa pelo `warn_once`: a chave dele ignora dígitos, e dois
+        # buracos distintos no mesmo dia colapsariam num aviso só — o segundo
+        # sumiria em silêncio, que é a classe de defeito desta fase. Repetir
+        # não é risco: cada run grava o seu `finished_at`, então cada buraco é
+        # contado uma vez, pelo run que veio depois dele.
+        # Fora do dry-run pelo mesmo motivo do heartbeat: o `state.db` que uma
+        # simulação na máquina do dono lê pode ter dias de atraso em relação ao
+        # que o Actions commitou, e o "buraco" seria só isso.
+        buraco = aviso_de_cadencia(db, max_gap_minutes(cfg))
+        if buraco:
+            summary.warnings.append(buraco)
 
     # Avisos de quem montou fontes/canais (ex.: canal ligado sem env) — antes
     # eram só um print no journal e o chat de ops via "✅ Run concluído".

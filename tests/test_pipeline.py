@@ -816,6 +816,109 @@ def test_dry_run_nao_emite_heartbeat(tmp_path, monkeypatch, capsys):
     db.close()
 
 
+# --- Fase 5G (G3): um buraco na cadência vira mensagem ------------------------
+#
+# O defeito mais caro da 5G não foi o agendador falhar (1 de ~16 disparos em
+# 25 h): foi ninguém ter como perceber. A tabela `runs` já guardava
+# `finished_at` — o que faltava era comparar.
+
+def _com_gap(minutos: int | None = None):
+    cfg = {**CFG, "schedule": {}} if minutos is None else {
+        **CFG, "schedule": {"max_gap_minutes": minutos}}
+    return cfg
+
+
+def _roda(db, cfg=None, **kw):
+    return pipeline.run(cfg or CFG, [FakeSource([])], [FakeChannel()], db,
+                        validator=no_network_validator, **kw)
+
+
+def test_buraco_na_cadencia_vira_aviso_no_resumo(tmp_path, monkeypatch):
+    """Nomeia o buraco em horas e diz quantos disparos foram perdidos: com a
+    cadência de 60 min, 4 h entre dois runs são ~3 disparos que não vieram."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 8, 7)
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, 12, 7)
+    summary = _roda(db)
+    assert any("4,0 h" in w and "3 disparo" in w for w in summary.warnings), summary.warnings
+    db.close()
+
+
+def test_a_cadencia_normal_nao_alarma(tmp_path, monkeypatch):
+    """150 min tolera UM disparo perdido (120 min) mais o atraso normal do
+    Actions — o alarme começa no segundo. Um aviso que toca todo dia é um
+    aviso que o dono aprende a ignorar."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 8, 7)
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, 10, 7)                      # 2 h: um disparo perdido
+    assert not any("cadência" in w for w in _roda(db).warnings)
+    db.close()
+
+
+def test_a_virada_do_dia_nao_e_buraco(tmp_path, monkeypatch):
+    """O último disparo é 23:07 BRT e o primeiro é 08:07: 9 h de intervalo POR
+    DESENHO. Só o run anterior do MESMO dia local pode acusar — senão o dono
+    recebe um falso positivo toda manhã."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 23, 7, dia=25)
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, 8, 7, dia=26)
+    assert not any("cadência" in w for w in _roda(db).warnings)
+    db.close()
+
+
+def test_o_primeiro_run_da_vida_nao_alarma(tmp_path, monkeypatch):
+    """Tabela `runs` vazia não é buraco: é o primeiro run."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 12, 7)
+    assert not any("cadência" in w for w in _roda(db).warnings)
+    db.close()
+
+
+def test_o_limiar_do_buraco_e_configuravel(tmp_path, monkeypatch):
+    """`schedule.max_gap_minutes`, padrão 150. Quem mudar a cadência do
+    workflow muda este número junto — não há como o código ler o cron."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    assert pipeline.DEFAULT_MAX_GAP_MINUTES == 150
+    assert pipeline.max_gap_minutes({}) == 150
+    assert pipeline.max_gap_minutes(_com_gap(60)) == 60
+    assert pipeline.max_gap_minutes(_com_gap(0)) == 0            # 0 desliga
+    assert pipeline.max_gap_minutes({"schedule": {"max_gap_minutes": "x"}}) == 150
+
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 8, 7)
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, 10, 7)                                 # 2 h
+    assert pipeline.aviso_de_cadencia(db, pipeline.DEFAULT_MAX_GAP_MINUTES) is None
+    assert pipeline.aviso_de_cadencia(db, 0) is None
+    # E o número chega ao run pelo config, não por um default escondido.
+    assert any("cadência" in w for w in _roda(db, _com_gap(60)).warnings)
+    db.close()
+
+
+def test_o_aviso_de_buraco_sai_em_todo_run_que_o_encontra(tmp_path, monkeypatch):
+    """NÃO passa pelo `warn_once`: a chave dele ignora dígitos, e dois buracos
+    diferentes no mesmo dia colapsariam num aviso só — o segundo sumiria em
+    silêncio, que é exatamente a classe de defeito que esta fase persegue.
+    Repetição não é risco: cada run grava o seu `finished_at`, então o buraco é
+    contado uma vez, pelo run que veio depois dele."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 8, 7)
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, 12, 7)
+    assert any("4,0 h" in w for w in _roda(db).warnings)
+    _congela(monkeypatch, 16, 7)                      # outro buraco, mesmo dia
+    assert any("4,0 h" in w for w in _roda(db).warnings)
+    db.close()
+
+
 # --- Fase 5A (M8): isolamento de fontes ---------------------------------------
 
 class FonteQuebrada:

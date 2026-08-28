@@ -109,6 +109,20 @@ def test_a_cadencia_cabe_na_cota_mensal_de_minutos():
     assert jobs_por_mes * MINUTOS_COBRADOS_POR_JOB <= COTA_MENSAL_MIN * 0.8
 
 
+def test_o_limiar_do_buraco_na_cadencia_conversa_com_o_cron():
+    """Fase 5G (G3): o aviso de buraco compara o intervalo entre dois runs com
+    um número do config — o código não tem como ler o cron, que mora no GitHub.
+    Esta é a trava que obriga os dois a mudarem juntos: o limiar tolera UM
+    disparo perdido e acusa a partir do segundo."""
+    disparos = _disparos_brt()
+    intervalo = min((b - a).total_seconds() / 60 for a, b in zip(disparos, disparos[1:]))
+    assert intervalo == pipeline.CADENCIA_MINUTOS
+    # O número está ESCRITO no config (é lá que o dono o encontra), e é o
+    # mesmo padrão do código.
+    assert _config()["schedule"]["max_gap_minutes"] == pipeline.DEFAULT_MAX_GAP_MINUTES
+    assert 2 * intervalo <= pipeline.max_gap_minutes(_config()) < 4 * intervalo
+
+
 def test_o_job_tem_timeout_curto():
     # C1 da revisão da 5C: sem `timeout-minutes` vale o padrão do GitHub, 6 h.
     # Um run que entra em martelo contra a API da loja (backoff de 0,5+1,5+4,0 s

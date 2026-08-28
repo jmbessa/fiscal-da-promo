@@ -459,6 +459,28 @@ class StateDB:
         self.prune_warned()
         self.prune_day_flags()
 
+    def last_run_finished_at(self) -> datetime | None:
+        """Quando terminou o run ANTERIOR, no fuso LOCAL — ou None se a tabela
+        `runs` está vazia (o primeiro run da vida não tem com o que comparar).
+
+        Fase 5G (G3): o dado para acusar buraco na cadência já estava aqui; o
+        que faltava era a consulta. Volta em hora local porque a pergunta que o
+        aviso faz — "o run anterior foi HOJE?" — só existe no dia local (a
+        fronteira UTC cai às 21:00 BRT e transformaria toda noite em virada de
+        dia). Linha com `finished_at` ilegível vale como ausência: um aviso de
+        observabilidade não pode derrubar o run que ele observa."""
+        row = self.conn.execute(
+            "SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return None
+        try:
+            quando = datetime.fromisoformat(str(row[0]))
+        except (TypeError, ValueError):
+            return None
+        if quando.tzinfo is None:
+            quando = quando.replace(tzinfo=timezone.utc)
+        return quando.astimezone(self.tz)
+
     def day_stats(self, day: date) -> DayStats:
         """Contagem de um dia local: ofertas distintas em `posted` (uma
         oferta em 3 canais conta 1), descartes e número de runs em `runs`.

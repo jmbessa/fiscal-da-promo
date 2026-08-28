@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from afiliado import state
 from afiliado.models import NO_CLAIM, CopyParts, Post, Verdict
@@ -43,6 +43,24 @@ def test_record_run(tmp_path):
     db = StateDB(tmp_path / "state.db")
     db.record_run(published=3, discarded=1, notes="ok")
     db.close()  # sem exceção = schema e insert funcionam
+
+
+def test_last_run_finished_at_no_fuso_local(tmp_path, monkeypatch):
+    """Fase 5G (G3): quando terminou o run ANTERIOR — a matéria-prima do aviso
+    de buraco na cadência. `finished_at` é ISO UTC no banco e volta no fuso
+    LOCAL, que é onde a pergunta "foi hoje?" tem resposta."""
+    db = StateDB(tmp_path / "state.db")
+    assert db.last_run_finished_at() is None          # tabela vazia: sem run anterior
+
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 7, tzinfo=BRT))
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, datetime(2026, 8, 26, 9, 7, tzinfo=BRT))
+    db.record_run(published=0, discarded=0)
+
+    ultimo = db.last_run_finished_at()
+    assert ultimo.utcoffset() == timedelta(hours=-3)
+    assert (ultimo.date(), ultimo.hour, ultimo.minute) == (date(2026, 8, 26), 9, 7)
+    db.close()
 
 
 def test_record_price_mantem_o_menor_do_dia(tmp_path):

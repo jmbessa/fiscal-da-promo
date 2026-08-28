@@ -27,6 +27,18 @@ schedule:
   timezone: America/Sao_Paulo
   window_start: "08:00"
   window_end: "23:15"
+  # Fase 5G (G3): a partir de quantos minutos SEM RUN o resumo que já vai ao
+  # chat de operações acusa buraco na cadência (em horas, e com quantos
+  # disparos se perderam). Medido em 2026-08-28: o workflow `publish` tinha
+  # UM run em ~25 h e ~16 disparos esperados — o agendador do Actions
+  # descartava o resto — e o pior não foi ele falhar, foi ninguém ter como
+  # perceber. 150 porque a cadência é de 60 min: tolera um disparo perdido
+  # (120 min) mais o atraso normal do Actions e acusa a partir do segundo.
+  # Só vale entre runs do MESMO dia local (das 23:07 às 08:07 há 9 h por
+  # desenho) e nunca no primeiro run da vida. 0 desliga o aviso. Ao mudar o
+  # cron do workflow, mude este número junto — tests/test_workflow_yaml.py
+  # trava os dois.
+  max_gap_minutes: 150
 
 llm:
   model: haiku

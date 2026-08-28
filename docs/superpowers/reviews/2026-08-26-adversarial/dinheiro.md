@@ -186,9 +186,17 @@ Caminhos abaixo são relativos à raiz do worktree.
   post diz "Por R$ 32,00" e a landing pode mostrar outro preço.
 - `meli.la`: expiração/revogação de link curto e o que o encurtador responde
   para link inválido (se for 200 com página de erro ou 403, o portão aceita).
-- `sales` do ML vem do JoomPulse (30 dias, `watchlist-refresh/SKILL.md:55-65`
+- ~~`sales` do ML vem do JoomPulse (30 dias, `watchlist-refresh/SKILL.md:55-65`
   usa `sold30Days`) e `sales` da Shopee é o acumulado da API — mesmo `log10`
-  para populações diferentes; não verificável sem a API.
+  para populações diferentes; não verificável sem a API.~~
+  **RESPONDIDO em 2026-08-28, e era o contrário:** o `sales` do ML virou
+  `catalogSales` (contador VITALÍCIO) no PR #4, e o da Shopee é que sempre foi a
+  janela de ~30 dias — medido contra `ShbMartItem.sold1y`/`sold30Days`, 13× a
+  43× abaixo do contador do anúncio (tabela em
+  `.claude/skills/meli-pool-refresh/SKILL.md`). A suspeita de "mesmo `log10`
+  para populações diferentes" estava certa: a fase 5H mediu o efeito (9% a favor
+  do ML no `ev_score`, absorvidos pela `source_quota`) e consertou onde ele
+  decidia de fato — a fatia por vendas do slate, que era 100% ML por construção.
 - Padrão de cliques de datacenter (VPS/Actions) sem conversão → sinalização de
   tráfego inválido e possível bloqueio de conta nos dois programas.
 - Rotação real do "mais vendidos" da Shopee por categoria: se a API devolver o

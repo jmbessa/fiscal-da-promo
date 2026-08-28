@@ -53,6 +53,39 @@ O que **não** fazer: publicar um preço com cupom que não conseguimos verifica
 ou omitir o preço. Prometer menos do que a realidade e o seguidor achar mais
 barato é o erro seguro; o contrário destrói a única coisa que a conta vende.
 
+### Feito (fase 5K, 2026-08-28)
+
+A regra mora em `pricing.sem_cupom` — **só Shopee**, porque o preço que
+publicamos do ML é o do anúncio que vence o buy box, exatamente o que a página
+mostra. Dali ela viaja para tudo que publica preço, sem ninguém reimplementá-la:
+
+| superfície | onde aparece |
+|---|---|
+| arte de story, de feed e slide do carrossel | `creative._pill_nota`: dentro da pill, à direita do preço |
+| texto do Telegram | `pricing.price_line_html` |
+| legenda do feed e do despacho de story | `pricing.price_line` |
+| legenda do carrossel | `pricing.preco_publicado` |
+
+**Por que dentro da pill.** A colocação foi decidida gerando previews e olhando
+as imagens (story e feed, modo A e B, com e sem selo, título longo, story com
+figurinha de link). As três alternativas caíram na imagem:
+
+- **na linha de meta**: ela não tem guarda horizontal (fase 5H). Com o rótulo,
+  o caso típico da Shopee vai de 840 px para 1056 px no story — margem de 12 px
+  contra 72 de padding —, e a 1,5 milhão de vendas sai a 1146 px, cortada pela
+  borda. Além disso, no feed em modo A com selo a meta é derrubada pelo guarda
+  de overflow, e o rótulo sumia junto;
+- **em segunda linha dentro da pill**: engorda a pill ~50 px e o guarda passa a
+  derrubar o **selo** no feed com título longo;
+- **em linha própria sob a pill**: come o respiro `STORY_META_GAP = 88`, que o
+  dono pediu.
+
+Alinhado pela linha de base do preço, o rótulo custa **zero altura** e cabe no
+guarda horizontal que a pill já tinha. Pior caso publicável (`price_max_brl` =
+1000, ou seja R$ 999,99, com referência riscada de R$ 1.999,99): pill de 906 px
+no story — 30 px dentro da largura útil, 15 px de margem sobrando; 803 px no
+feed. Onde não couber, quem cede é a referência riscada, nunca o rótulo.
+
 ## Achado colateral, e ele é grande
 
 `listItemFeeds` / `getItemFeedData` expõem **feeds de catálogo inteiros**:

@@ -902,6 +902,20 @@ def test_o_limiar_do_buraco_e_configuravel(tmp_path, monkeypatch):
     db.close()
 
 
+def test_quem_nao_e_o_run_de_producao_nao_cobra_cadencia(tmp_path, monkeypatch):
+    """`afiliado stories` reaproveita este mesmo `run` na máquina do dono, com
+    banco próprio e timer de 2 h — lá o intervalo grande é o normal, e a conta
+    de "disparos perdidos" usaria a cadência errada."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    _congela(monkeypatch, 8, 7)
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, 12, 7)
+    summary = _roda(db, checa_cadencia=False)
+    assert not any("cadência" in w for w in summary.warnings)
+    db.close()
+
+
 def test_o_aviso_de_buraco_sai_em_todo_run_que_o_encontra(tmp_path, monkeypatch):
     """NÃO passa pelo `warn_once`: a chave dele ignora dígitos, e dois buracos
     diferentes no mesmo dia colapsariam num aviso só — o segundo sumiria em

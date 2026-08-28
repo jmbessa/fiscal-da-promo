@@ -1305,8 +1305,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         wl = None
     try:
+        # `checa_cadencia` (5G, G3): o aviso de buraco na cadência é sobre o
+        # agendador do Actions, de hora em hora. O `stories` roda de 2 em 2
+        # horas na máquina do dono e só enquanto ela está acordada — lá o
+        # intervalo grande é o normal, e a conta de disparos perdidos sairia
+        # com a cadência errada.
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
-                               warnings_iniciais=avisos)
+                               warnings_iniciais=avisos,
+                               checa_cadencia=not somente_story)
     except pipeline.RunAborted as exc:
         # Todas as fontes falharam: a causa está no próprio motivo (os avisos
         # por fonte podem já ter sido deduplicados hoje) e vai ao journal e

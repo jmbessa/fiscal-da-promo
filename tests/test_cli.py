@@ -22,7 +22,7 @@ def test_run_dry_invokes_pipeline(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado.update(dry_run=dry_run, n_sources=len(sources), n_channels=len(channels),
                        watchlist=watchlist)
         return pipeline.RunSummary()
@@ -47,7 +47,7 @@ def test_run_loads_watchlist_from_config_path(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["watchlist"] = watchlist
         return pipeline.RunSummary()
 
@@ -80,7 +80,7 @@ def test_run_builds_channels_from_config(monkeypatch, tmp_path, capsys):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -122,7 +122,7 @@ def test_run_builds_channels_from_dict_config(monkeypatch, tmp_path, capsys):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -155,7 +155,7 @@ def test_run_survives_load_watchlist_raising(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["watchlist"] = watchlist
         return pipeline.RunSummary()
 
@@ -182,7 +182,7 @@ def test_run_passes_brand_handle_to_channels(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -213,7 +213,7 @@ def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -271,7 +271,7 @@ def test_ops_summary_skipped_on_empty_run(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         return pipeline.RunSummary()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -295,7 +295,7 @@ def test_ops_summary_sent_when_something_happened(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         return pipeline.RunSummary(published=["x"])
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -322,7 +322,7 @@ def test_ops_summary_sent_when_only_despachos(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append(a))
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         return pipeline.RunSummary(dispatched=["Kit de arte"])
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -347,7 +347,7 @@ def test_ops_summary_forced_by_config(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: enviados.append((a, k)))
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         return pipeline.RunSummary()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -373,7 +373,7 @@ def test_run_abortado_manda_o_resumo_com_os_avisos_e_sai_com_erro(monkeypatch, t
     monkeypatch.setattr(cli, "send_text", lambda token, chat, text, *a, **k: enviados.append(text))
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         raise pipeline.RunAborted(
             pipeline.RunSummary(warnings=["⚠️ fonte shopee falhou: HTTP 503"]),
             "todas as fontes falharam")
@@ -400,7 +400,7 @@ def test_run_abortado_imprime_a_causa_no_journal(monkeypatch, tmp_path, capsys):
         encoding="utf-8")
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         raise pipeline.RunAborted(pipeline.RunSummary(),
                                   "todas as fontes falharam — shopee: HTTP 503")
 
@@ -502,7 +502,7 @@ def test_heartbeat_e_enviado_mesmo_com_notify_empty_runs_false(monkeypatch, tmp_
     monkeypatch.setattr(cli, "send_text", lambda token, chat, text, *a, **k: enviados.append(text))
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         return pipeline.RunSummary(
             warnings=["☀️ Bom dia — ontem: 12 publicados, 3 descartados em 190 runs"])
 
@@ -549,7 +549,7 @@ def test_main_instala_handlers_de_sigterm_e_sigint(monkeypatch, tmp_path):
         encoding="utf-8")
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         return pipeline.RunSummary()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
@@ -613,7 +613,7 @@ def test_run_canal_ligado_sem_env_vira_aviso_no_resumo(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["avisos"] = list(warnings_iniciais or [])
         return pipeline.RunSummary()
 
@@ -639,7 +639,7 @@ def test_run_builds_meli_source_when_enabled_and_env_present(monkeypatch, tmp_pa
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["sources"] = sources
         return pipeline.RunSummary()
 
@@ -665,7 +665,7 @@ def test_run_warns_and_skips_meli_without_env(monkeypatch, tmp_path, capsys):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["sources"] = sources
         return pipeline.RunSummary()
 
@@ -692,7 +692,7 @@ def test_instagram_api_variant_from_config(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -957,7 +957,7 @@ def test_run_monta_o_story_a_partir_do_config_yaml(monkeypatch, tmp_path):
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado["channels"] = channels
         return pipeline.RunSummary()
 
@@ -1032,14 +1032,36 @@ def _captura_run(monkeypatch) -> dict:
     chamado = {}
 
     def fake_run(cfg, sources, channels, db, dry_run=False, validator=None, watchlist=None,
-                 warnings_iniciais=None):
+                 warnings_iniciais=None, **kw):
         chamado.update(channels=channels, dry_run=dry_run, cfg=cfg, db=db,
                        banco=_arquivo_do_banco(db),
-                       avisos=list(warnings_iniciais or []))
+                       avisos=list(warnings_iniciais or []), **kw)
         return pipeline.RunSummary()
 
     monkeypatch.setattr(pipeline, "run", fake_run)
     return chamado
+
+
+def test_so_o_run_de_producao_cobra_a_cadencia(monkeypatch, tmp_path):
+    """Fase 5G (G3): o aviso de buraco na cadência é sobre o agendador do
+    Actions, que dispara de hora em hora. O `afiliado stories` roda na máquina
+    do dono, de 2 em 2 horas e só enquanto ela está acordada — lá, um intervalo
+    grande é o normal, e "~3 disparos perdidos" seria contado com a cadência
+    errada. Um falso positivo por semana ensina o dono a ignorar o aviso."""
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    _env_do_story_link(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "@canal")
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: None)
+    cfg_file = _config_com_story_link(tmp_path)
+
+    chamado = _captura_run(monkeypatch)
+    assert cli.main(["stories", "--config", cfg_file]) == 0
+    assert chamado["checa_cadencia"] is False
+
+    chamado = _captura_run(monkeypatch)
+    assert cli.main(["run", "--config", cfg_file]) == 0
+    assert chamado["checa_cadencia"] is True
 
 
 def test_stories_roda_so_os_canais_de_story(monkeypatch, tmp_path):

@@ -303,7 +303,8 @@ def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict,
 
 def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         dry_run: bool = False, validator=None, watchlist: Watchlist | None = None,
-        warnings_iniciais: list[str] | None = None) -> RunSummary:
+        warnings_iniciais: list[str] | None = None,
+        checa_cadencia: bool = True) -> RunSummary:
     if validator is None:
         # Dry-run (A10): nada de rede além de fetch_offers/refresh_price —
         # a imagem não é baixada (o link já é checado offline, C6).
@@ -335,8 +336,11 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         # contado uma vez, pelo run que veio depois dele.
         # Fora do dry-run pelo mesmo motivo do heartbeat: o `state.db` que uma
         # simulação na máquina do dono lê pode ter dias de atraso em relação ao
-        # que o Actions commitou, e o "buraco" seria só isso.
-        buraco = aviso_de_cadencia(db, max_gap_minutes(cfg))
+        # que o Actions commitou, e o "buraco" seria só isso. E só quando quem
+        # chamou tem cadência de agendador: o `afiliado stories` reaproveita
+        # este run na máquina do dono, com timer de 2 h e só enquanto ela está
+        # acordada — lá o intervalo grande é o normal (`checa_cadencia=False`).
+        buraco = aviso_de_cadencia(db, max_gap_minutes(cfg)) if checa_cadencia else None
         if buraco:
             summary.warnings.append(buraco)
 

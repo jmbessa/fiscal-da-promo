@@ -2,7 +2,7 @@
 # VPS que a Oracle Always Free recolhe quando fica ociosa. A VPS vira opcional,
 # para quem quiser a cadência de 5 min (ver docs/runbooks/vps-setup.md).
 #
-# Cadência: DE HORA EM HORA entre 08:00 e 23:00 BRT = 16 jobs/dia. Com o ritmo
+# Cadência: DE HORA EM HORA entre 08:07 e 23:07 BRT = 16 jobs/dia. Com o ritmo
 # da fase 5A (`pacing_budget`), cada run publica só o orçamento acumulado desde
 # o anterior: com 60/dia e esta janela o maior salto entre dois runs é 4, e
 # `--posts-per-run 5` o cobre com uma vaga de folga para recuperar um disparo

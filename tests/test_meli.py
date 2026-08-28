@@ -29,11 +29,15 @@ def _authed_handler(request: httpx.Request) -> httpx.Response:
 
 def write_pool(path, offers, generated_at=None, valid_days=30):
     """Formato novo do pool (fase 5B). Cada entrada precisa de
-    `buy_box_item_id` e dos cinco campos de preço inteiros > 0; para não
+    `buy_box_item_id` e dos cinco campos de preço inteiros >= 0; para não
     repetir tudo nos testes que não se importam, o padrão aqui preenche o
     que falta a partir de `price_ref_cents` (p25 = mínima = ref, janelas 91 e
     365, buy box "BB-<id>"). Passe a chave explicitamente (inclusive
-    ausente/inválida) para exercitar a rejeição."""
+    ausente/inválida) para exercitar a rejeição.
+
+    `price_ref_cents: 0` é a entrada SEM HISTÓRICO da fase 5J, e aí as janelas
+    default também são 0 — os cinco campos vêm do mesmo degrau, e um default de
+    91 dias produziria justamente a régua PARCIAL que o leitor rejeita."""
     generated_at = generated_at or date.today()
     entradas = []
     for offer in offers:
@@ -42,10 +46,11 @@ def write_pool(path, offers, generated_at=None, valid_days=30):
             continue
         item = dict(offer)
         if "price_ref_cents" in item:
+            sem_historico = item["price_ref_cents"] == 0
             item.setdefault("price_p25_cents", item["price_ref_cents"])
             item.setdefault("price_historic_min_cents", item["price_ref_cents"])
-            item.setdefault("price_window_days", 91)
-            item.setdefault("price_min_window_days", 365)
+            item.setdefault("price_window_days", 0 if sem_historico else 91)
+            item.setdefault("price_min_window_days", 0 if sem_historico else 365)
             item.setdefault("buy_box_item_id", f"BB-{item.get('product_id')}")
         entradas.append(item)
     path.write_text(json.dumps({
@@ -297,6 +302,9 @@ def _pool_com(tmp_path, entradas):
 
 
 def test_pool_pula_cada_campo_de_preco_ausente_ou_invalido(tmp_path):
+    # Fase 5J: o ZERO deixou de ser "campo ausente" e passou a ter motivo
+    # próprio quando é PARCIAL (P2, M2, J1 abaixo) — o resto (nulo, texto,
+    # bool, negativo) continua caindo pelo motivo do campo.
     ok = {"product_id": "OK", "title": "ok", "price_ref_cents": 5000}
     ids, aviso = _pool_com(tmp_path, [
         ok,
@@ -304,6 +312,7 @@ def test_pool_pula_cada_campo_de_preco_ausente_ou_invalido(tmp_path):
         {**ok, "product_id": "P2", "price_p25_cents": 0},
         {**ok, "product_id": "P3", "price_p25_cents": "R$ 45"},
         {**ok, "product_id": "P5", "price_p25_cents": True},
+        {**ok, "product_id": "P6", "price_p25_cents": -1},
         {**ok, "product_id": "M1", "price_historic_min_cents": None},
         {**ok, "product_id": "M2", "price_historic_min_cents": 0},
         {**ok, "product_id": "J1", "price_window_days": 0},
@@ -311,8 +320,9 @@ def test_pool_pula_cada_campo_de_preco_ausente_ou_invalido(tmp_path):
         {**ok, "product_id": "R1", "price_ref_cents": "R$ 50"},
     ])
     assert ids == ["OK"]
-    assert aviso == ("9 entrada(s) do pool ignorada(s) (4 sem p25, 2 sem mínima histórica, "
-                     "1 sem janela da mínima, 1 sem janela da referência, 1 sem referência)")
+    assert aviso == ("10 entrada(s) do pool ignorada(s) "
+                     "(4 sem p25, 3 régua parcial (uns campos de régua zerados, outros não), "
+                     "1 sem janela da mínima, 1 sem mínima histórica, 1 sem referência)")
 
 
 def test_pool_aceita_centavos_em_float_integral(tmp_path):
@@ -478,6 +488,114 @@ def test_pool_buy_box_checked_at_invalido_ou_no_futuro_e_ignorado(tmp_path):
 def test_pool_validade_do_buy_box_e_de_7_dias():
     from afiliado.sources.meli import BUY_BOX_MAX_AGE_DAYS
     assert BUY_BOX_MAX_AGE_DAYS == 7
+
+
+# -- fase 5J: a entrada SEM HISTÓRICO (os cinco campos de régua zerados) -----
+# O histórico de preço custa 4 consultas do JoomPulse a cada 28 produtos contra
+# 1 a cada 50 do resto: é 15x todo o resto junto, e é ele que impedia o pool de
+# crescer. Ele não é necessário para PUBLICAR — `pricing.enrich_offers` já
+# prevê referência 0 ("a oferta continua publicável, sem alegar desconto") e
+# `pricing.verdict` só dá modo A com janela >= 14 dias. Quem barrava era só o
+# leitor.
+
+SEM_HISTORICO = {"price_ref_cents": 0, "price_p25_cents": 0, "price_window_days": 0,
+                 "price_historic_min_cents": 0, "price_min_window_days": 0}
+
+
+def test_pool_aceita_a_entrada_com_a_regua_toda_zerada(tmp_path):
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "NOVO", "title": "Creatina", **SEM_HISTORICO,
+                            "image_url": "https://x/i.jpg", "category": "MLB264586",
+                            "sales": 13337, "rating": 4.8}])
+    src = source_with(_no_network_handler, tmp_path)
+    (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    # A régua fica zerada — é o que `enrich_offers` chama de "desconhecida".
+    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (0, 0, 0)
+    assert (o.price_floor_cents, o.price_floor_window_days) == (0, 0)
+    # ...e tudo que NÃO é régua continua chegando: é isso que o Passo 2 do
+    # skill compra por 1 consulta a cada 50 produtos.
+    assert (o.title, o.category, o.sales, o.rating) == ("Creatina", "MLB264586", 13337, 4.8)
+    assert src._buy_box_ids == {"NOVO": "BB-NOVO"}
+
+
+def test_pool_campo_de_regua_AUSENTE_continua_sendo_erro(tmp_path):
+    """O que se aceita é o zero EXPLÍCITO. Chave faltando é typo de curadoria:
+    foi assim que as cinco variantes de zero silencioso foram pegas, e um pool
+    com typo não pode passar a valer só porque o resto veio zerado."""
+    from afiliado.sources.meli import CAMPOS_DE_PRECO
+    pool_path = tmp_path / "meli_offers.json"
+    cfg = {"meli": {"offers_path": str(pool_path)}, "selection": SEL}
+    for campo, motivo in CAMPOS_DE_PRECO:
+        entrada = {"product_id": "P", "title": "t", **SEM_HISTORICO,
+                   "buy_box_item_id": "BB"}
+        del entrada[campo]
+        # JSON cru, sem os defaults de `write_pool`: o que se testa aqui é a
+        # chave FALTANDO, e o helper a preencheria de volta.
+        pool_path.write_text(json.dumps({"generated_at": date.today().isoformat(),
+                                         "valid_days": 30, "offers": [entrada]}),
+                             encoding="utf-8")
+        src = source_with(_no_network_handler, tmp_path)
+        assert src.fetch_offers(cfg) == [], f"{campo} ausente passou"
+        assert src.pool_warning == f"1 entrada(s) do pool ignorada(s) (1 {motivo})"
+
+
+def test_pool_regua_PARCIALMENTE_zerada_e_erro_com_motivo_proprio(tmp_path):
+    """`ref > 0` com `p25 = 0` é curadoria quebrada, não "sem histórico": o
+    trio ref/p25/janela sai sempre do mesmo degrau. Motivo próprio para não
+    confundir com o caso novo — e para a curadoria saber o que consertar."""
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "P25", "title": "t", **SEM_HISTORICO, "price_ref_cents": 5000},
+        {"product_id": "JANELA", "title": "t", "price_ref_cents": 5000,
+         "price_p25_cents": 4500, "price_historic_min_cents": 4000,
+         "price_window_days": 0, "price_min_window_days": 365},
+        {"product_id": "PISO", "title": "t", "price_ref_cents": 5000,
+         "price_p25_cents": 4500, "price_historic_min_cents": 0,
+         "price_window_days": 91, "price_min_window_days": 0},
+        {"product_id": "ZERADA", "title": "t", **SEM_HISTORICO},
+    ])
+    assert ids == ["ZERADA"]
+    assert aviso.startswith("3 entrada(s) do pool ignorada(s) (3 régua parcial")
+    assert "régua parcial" in aviso
+
+
+def test_pool_sem_historico_nao_e_barrado_pela_faixa_de_preco(tmp_path):
+    """A faixa é `price_ref_cents / 100` e não tem como rodar sem referência.
+    Verificado: quem barra por preço VIVO é `validate.check_price`, DEPOIS do
+    `refresh_price` — a mesma faixa, sobre o preço que vai ao post. Então aqui
+    a checagem é pulada, e o aviso diz isso."""
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "SEM", "title": "t", **SEM_HISTORICO},
+        {"product_id": "CARO", "title": "t", "price_ref_cents": 100001},
+    ])
+    assert ids == ["SEM"]                      # a de R$ 3.000 COM régua cai
+    assert "1 entrada(s) do pool ignorada(s) (1 fora da faixa de preço)" in aviso
+    assert "1 entrada(s) sem histórico" in aviso
+    assert "preço VIVO" in aviso
+
+
+def test_pool_so_com_entradas_sem_historico_avisa_sem_ignorar_nada(tmp_path):
+    ids, aviso = _pool_com(tmp_path, [
+        {"product_id": "A", "title": "t", **SEM_HISTORICO},
+        {"product_id": "B", "title": "t", **SEM_HISTORICO},
+    ])
+    assert ids == ["A", "B"]
+    assert aviso.startswith("2 entrada(s) sem histórico")
+    assert "modo B" in aviso
+
+
+def test_ruler_coverage_conta_quantas_entradas_tem_regua_curada(tmp_path):
+    """J4: sem este número, "o ML só publica modo B" vira descoberta de semanas
+    depois — e o ponto da fase é que a proporção mude sozinha com o tempo."""
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [
+        {"product_id": "A", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "B", "title": "t", **SEM_HISTORICO},
+        {"product_id": "C", "title": "t", **SEM_HISTORICO},
+    ])
+    src = source_with(_no_network_handler, tmp_path)
+    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    assert src.ruler_coverage(offers) == (1, 3)
+    assert src.ruler_coverage([]) == (0, 0)
 
 
 # -- refresh_price: preço vivo = buy box (C7b) ------------------------------

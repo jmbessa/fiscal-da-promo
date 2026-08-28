@@ -54,8 +54,105 @@ def test_is_stale_past_window():
     assert wl.is_stale(date(2026, 8, 16)) is True
 
 
-def test_load_watchlist_price_refs():
-    pass
+def test_section_dates_datam_cada_secao(tmp_path):
+    # 5O: semear a régua da Shopee NÃO revisa os `hot_items`. Com uma data só,
+    # gravar `generated_at = hoje` afirmaria que os boosts foram revistos hoje.
+    path = write_watchlist(tmp_path / "watchlist.json", {
+        "generated_at": "2026-08-23",
+        "valid_days": 14,
+        "section_dates": {"price_refs": "2026-08-28", "price_floors": "2026-08-28"},
+        "hot_items": {"11503789697": {"boost": 1.5, "reason": "escrita em 23/08"}},
+        "price_refs": {"11503789697": {"ref_cents": 15291, "p25_cents": 12997,
+                                       "window_days": 68}},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.section_date("price_refs") == date(2026, 8, 28)
+    assert wl.section_date("hot_items") == date(2026, 8, 23)
+    assert wl.generated_at == date(2026, 8, 23)
+    # A régua nova não rejuvenesce a opinião: a validade continua a do dia 23.
+    assert wl.days_old(date(2026, 8, 30)) == 7
+
+
+def test_arquivo_antigo_sem_section_dates_herda_generated_at(tmp_path):
+    # O arquivo em produção (23 pisos e 23 hot_items de 2026-08-23) não tem
+    # `section_dates` — toda seção herda a data do arquivo, como antes.
+    path = write_watchlist(tmp_path / "watchlist.json", {
+        "generated_at": "2026-08-23",
+        "valid_days": 14,
+        "category_boosts": {"100630": 1.3},
+        "hot_items": {"22991771385": {"boost": 1.5, "reason": "trend +3686%"}},
+        "price_floors": {"22991771385": {"min_price_cents": 3500, "window_days": 191}},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.section_dates == {}
+    for secao in ("category_boosts", "hot_items", "price_floors", "price_refs"):
+        assert wl.section_date(secao) == date(2026, 8, 23)
+    assert wl.price_floors == {"22991771385": PriceFloor(3500, 191)}
+    assert wl.days_old(date(2026, 8, 30)) == 7
+    assert wl.is_stale(date(2026, 9, 7)) is True
+
+
+def test_is_stale_mede_a_opiniao_mais_velha():
+    # `is_stale` fecha os BOOSTS (opinião da semana); refs e pisos são fatos
+    # datados que `facts_only` mantém. Quem manda é a opinião mais velha.
+    wl = Watchlist(generated_at=date(2026, 8, 1), valid_days=14,
+                   section_dates={"category_boosts": date(2026, 8, 20),
+                                  "hot_items": date(2026, 8, 20),
+                                  "price_refs": date(2026, 8, 28)})
+    assert wl.days_old(date(2026, 8, 26)) == 6
+    assert wl.is_stale(date(2026, 8, 26)) is False
+
+    meio_velha = Watchlist(generated_at=date(2026, 8, 1), valid_days=14,
+                           section_dates={"category_boosts": date(2026, 8, 20),
+                                          "hot_items": date(2026, 8, 1)})
+    assert meio_velha.days_old(date(2026, 8, 26)) == 25
+    assert meio_velha.is_stale(date(2026, 8, 26)) is True
+
+
+def test_measured_at_por_entrada(tmp_path):
+    # Onda a onda, a seção inteira não tem uma data só: a entrada que traz a
+    # sua manda, e quem não traz herda a da seção.
+    path = write_watchlist(tmp_path / "watchlist.json", {
+        "generated_at": "2026-08-23",
+        "section_dates": {"price_refs": "2026-08-29", "price_floors": "2026-08-29"},
+        "price_refs": {
+            "a": {"ref_cents": 15291, "p25_cents": 12997, "window_days": 68,
+                  "measured_at": "2026-08-28"},
+            "b": {"ref_cents": 19990, "p25_cents": 15991, "window_days": 42}},
+        "price_floors": {"a": {"min_price_cents": 12997, "window_days": 68,
+                               "measured_at": "2026-08-28"}},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.price_ref("a").measured_at == date(2026, 8, 28)
+    assert wl.price_ref("b").measured_at is None           # herda a seção
+    assert wl.price_floor("a").measured_at == date(2026, 8, 28)
+    assert wl.section_date("price_refs") == date(2026, 8, 29)
+
+
+def test_datas_invalidas_degradam_sem_derrubar_o_arquivo(tmp_path):
+    path = write_watchlist(tmp_path / "secao.json", {
+        "generated_at": "2026-08-23",
+        "section_dates": {"price_refs": "ontem", "hot_items": "2026-08-25"},
+        "price_refs": {"a": {"ref_cents": 15291, "p25_cents": 12997,
+                             "window_days": 68, "measured_at": "amanhã"}},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.section_date("price_refs") == date(2026, 8, 23)   # volta ao arquivo
+    assert wl.section_date("hot_items") == date(2026, 8, 25)
+    assert wl.price_ref("a") == PriceRef(15291, 68, 12997)      # sem measured_at
+
+    path = write_watchlist(tmp_path / "lista.json", {
+        "generated_at": "2026-08-23", "section_dates": [1, 2, 3],
+        "category_boosts": {"100630": 1.3},
+    })
+    wl = load_watchlist(path)
+    assert wl is not None
+    assert wl.section_dates == {}
+    assert wl.category_boosts == {"100630": 1.3}
 
 
 def test_load_watchlist_price_refs_com_p25(tmp_path):

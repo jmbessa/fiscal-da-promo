@@ -150,6 +150,31 @@ def test_o_veredito_do_tamanho_do_state_db_e_o_medido():
     assert _config()["shopee"]["candidate_max_age_days"] == 3
 
 
+def test_a_medicao_do_agendador_fica_escrita(tmp_path):
+    """G4: 1 de ~16 disparos em ~25 h, e o único com 51 min de atraso, medido
+    em 2026-08-28. É o tipo de número que, sem estar escrito, vira chute de
+    novo daqui a duas semanas — e faz a tabela de minutos voltar a ser lida
+    como previsão, quando ela sempre foi um TETO."""
+    with open("docs/runbooks/vps-setup.md", encoding="utf-8") as f:
+        runbook = f.read()
+    with open(WORKFLOW, encoding="utf-8") as f:
+        workflow = f.read()
+    for texto in (runbook, workflow):
+        assert "2026-08-28" in texto and "51 min" in texto
+        assert "teto, não uma previsão" in texto
+    assert "minuto 7" in runbook.lower()
+
+
+def test_o_docs_do_feed_diz_quando_a_peca_sai_de_verdade():
+    """A seção "Cadência entregue" prometia 08:00 pelo Actions — hora que, com
+    ~15 de 16 disparos descartados, muitas vezes não acontecia."""
+    with open("docs/feed.md", encoding="utf-8") as f:
+        secao = f.read().split("### Cadência entregue")[1].split("###")[0]
+    secao = " ".join(secao.split())      # a quebra de linha do markdown não conta
+    assert "08:00" not in secao
+    assert "primeiro disparo do dia em que a cota ainda não foi gasta" in secao
+
+
 def test_publish_nao_roda_dois_ao_mesmo_tempo():
     concurrency = _workflow()["concurrency"]
     assert concurrency["group"] == "publish"

@@ -219,24 +219,36 @@ prompt promete 30 candidatas e precisa entregar 30.
 ## Agendamento
 
 - **GitHub Actions (produção)** — `.github/workflows/publish.yml` roda **de
-  hora em hora entre 08:00 e 23:00 BRT** (16 jobs/dia, `--posts-per-run 5`) e
+  hora em hora entre 08:07 e 23:07 BRT** (16 jobs/dia, `--posts-per-run 5`) e
   commita `data/state.db` de volta com `git pull --rebase` antes do push. Em
   conflito no binário o run atual vence e o log registra um `::warning::` —
   nunca se perde um run. O GitHub cobra **cada job arredondado para o minuto
   seguinte**: 16 jobs × 31 dias × 3 min = 1.488 dos 2.000 min/mês do plano
-  grátis para repositório privado, com folga até 4 min/job. A duração real
-  ainda não foi medida — o job a imprime no *Summary*; a conta inteira está em
-  `docs/runbooks/vps-setup.md`. Disparo manual: aba Actions → publish → Run
-  workflow (com opção dry-run).
-- **Conteúdo de feed, 1×/dia (fase 5D)** — o mesmo workflow tem um passo
-  "Conteúdo do feed" preso ao disparo das **08:00 BRT**: um `afiliado feed
-  --tipo termometro` (publica o carrossel) e um `afiliado feed --tipo
-  flagrante` (despacha ao chat de ops para o dono aprovar). É `continue-on-
-  error`: uma peça que falha não impede o commit do `state.db`. O teto de
-  `channels.instagram_carrossel` (1/dia) é a rede contra cron duplicado, e o
-  disparo manual do workflow **não** roda esse passo. A pesquisa pede 2–3
-  carrosséis por semana; a cadência entregue é 7 — o teto e o ritmo da 5A
-  mandam, e baixar é editar `max_per_day`.
+  grátis para repositório privado, com folga até 4 min/job — **teto, não
+  previsão** (ver abaixo). A duração real ainda não foi medida — o job a
+  imprime no *Summary*; a conta inteira está em `docs/runbooks/vps-setup.md`.
+  Disparo manual: aba Actions → publish → Run workflow (com opção dry-run).
+- **O minuto 7 e o buraco na cadência (fase 5G)** — medido em 2026-08-28: o
+  agendador do Actions entregou **1 de ~16 disparos em ~25 h**, e o único saiu
+  51 min atrasado. O cron saiu do minuto 0 (o pico de carga do GitHub, onde
+  disparo atrasado é descartado) e o resumo do chat de operações passa a
+  **acusar buracos na cadência** — em horas e em disparos perdidos — acima de
+  `schedule.max_gap_minutes` (150). A eficácia do minuto 7 só se comprova
+  observando os próximos disparos: se a taxa continuar baixa, a causa não era
+  congestionamento (hipóteses em `docs/runbooks/vps-setup.md`).
+- **Conteúdo de feed, 1×/dia (fase 5D, revisto na 5G)** — o mesmo workflow tem
+  um passo "Conteúdo do feed" que roda em **todos** os disparos: um `afiliado
+  feed --tipo termometro` (publica o carrossel) e um `afiliado feed --tipo
+  flagrante` (despacha ao chat de ops para o dono aprovar). Quem garante o
+  "uma vez por dia" é o código — o teto de `channels.instagram_carrossel`
+  (1/dia, com o ritmo da 5A) e uma marca em `day_flags` para o flagrante,
+  gravada só depois do despacho bem-sucedido —, e não o cron: com a maioria
+  dos disparos sendo descartada, prender a peça a um deles era feed que quase
+  nunca saía. Um disparo que falha é repetido pelo seguinte, e a peça ainda
+  sai no mesmo dia. É `continue-on-error`: uma peça que falha não impede o
+  commit do `state.db`, e o disparo manual do workflow agora **também** roda
+  esse passo. A pesquisa pede 2–3 carrosséis por semana; a cadência entregue é
+  7 — o teto e o ritmo da 5A mandam, e baixar é editar `max_per_day`.
 - **VPS a cada 5 min (opcional)** — o timer systemd chama `afiliado run` a
   cada 5 minutos das 08:00 às 23:55 (192 execuções/dia, 1 oferta por run),
   para quem quiser cadência mais fina e um estoque de candidatas mais fresco;

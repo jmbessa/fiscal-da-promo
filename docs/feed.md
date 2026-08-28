@@ -167,13 +167,26 @@ escreve no banco nem chama a Graph API.
 
 ### Cadência entregue
 
-**Um carrossel publicado e um flagrante despachado por dia**, às 08:00 BRT, pelo
-GitHub Actions — o passo é `continue-on-error`, então uma peça que falha não
-derruba o commit de estado do `run`. A pesquisa acima pede 2–3 carrosséis por
-semana e a cadência entregue é 7; a mesma pesquisa mede crescimento monotônico
-com a frequência e nenhuma penalidade por volume, então o teto que manda é o
+**Um carrossel publicado e um flagrante despachado por dia**, no **primeiro
+disparo do dia em que a cota ainda não foi gasta** — não numa hora fixa.
+
+O passo do Actions prometia uma hora fixa, a primeira do dia, porque se prendia
+ao cron dela. A fase 5G mediu o agendador: **1 de ~16 disparos em ~25 h**, e o
+único com 51 min de atraso. Prender a peça a um disparo específico, num
+agendador que descarta a maioria deles, é feed que quase nunca sai — e em
+silêncio, porque o passo é `continue-on-error`. Agora o comando roda em todos
+os disparos e são os tetos do CÓDIGO que o seguram:
+`channels.instagram_carrossel.max_per_day` (via ritmo da 5A) para o carrossel e
+uma marca em `day_flags` para o flagrante, gravada só depois do despacho
+bem-sucedido. O efeito colateral bom: **um disparo que falha é repetido pelo
+seguinte, e a peça ainda sai no mesmo dia** — antes, uma falha logo cedo
+significava nenhum feed até o dia seguinte.
+
+A pesquisa acima pede 2–3 carrosséis por semana e a cadência entregue é 7; a
+mesma pesquisa mede crescimento monotônico com a frequência e nenhuma
+penalidade por volume, então o teto que manda é o
 `channels.instagram_carrossel.max_per_day` do `config.yaml` — baixar é editar
-esse número ou o cron. Fora do Actions, `afiliado feed` na mão do dono.
+esse número. Fora do Actions, `afiliado feed` na mão do dono.
 
 ### O que ainda falta
 

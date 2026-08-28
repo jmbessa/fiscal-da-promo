@@ -24,6 +24,13 @@
 #     18     │ 1.116 (56%) │ 1.674 (84%) │ 2.232 (112%)
 #     16     │   992 (50%) │ 1.488 (74%) │ 1.984 (99%)    ← esta
 #
+# A tabela parte de "todos os disparos acontecem". Isso é um
+# teto, não uma previsão: medido em 2026-08-28, o agendador entregou 1 de ~16
+# disparos em ~25 h, e o único saiu 51 min atrasado. Enquanto a taxa real não
+# for reconstruída em regime, o consumo tende a ficar MUITO abaixo destas
+# linhas — use a célula como limite de segurança, nunca como estimativa de
+# fatura.
+#
 # A duração do job NUNCA foi medida (o "1,5 min" da 5C era chute), então a
 # cadência tem de caber no pior caso plausível: 16 jobs/dia é a única que
 # sobrevive até a 4 min/job e ainda deixa ~500 min/mês para o `tests.yml`.

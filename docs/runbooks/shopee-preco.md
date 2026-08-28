@@ -17,9 +17,9 @@ O problema não é de exatidão, é de leitura: a Shopee põe os R$ 611,80 em
 vermelho grande e os R$ 689,99 em cinza pequeno. Quem clica bate o olho no
 número menor e conclui que o nosso está velho.
 
-## O preço com cupom NÃO é obtível pela API de afiliados
+## O preço com cupom NÃO é obtível — seis caminhos fechados
 
-Cinco caminhos fechados, todos medidos nesta data:
+Cinco pela API de afiliados, todos medidos nesta data:
 
 1. **`productOfferV2`, todos os 26 campos** (introspecção do schema): os únicos
    de preço são `price`, `priceMin`, `priceMax` e `priceDiscountRate`. Para o
@@ -38,22 +38,59 @@ Cinco caminhos fechados, todos medidos nesta data:
 5. **A própria página** só entrega o número renderizando JavaScript, atrás de
    proteção anti-bot.
 
+E a sexta, medida em **2026-08-28** antes de aceitar a decisão da fase 5N:
+
+6. **O link de afiliado resolvido até o destino.** No Mercado Livre esse
+   caminho REVELOU o preço — foi assim que a fase do ML descobriu que
+   publicávamos o preço de um vendedor que não vence o buy box. Na Shopee não:
+   `s.shopee.com.br/...` cai numa variante mobile
+   (`/opaanlp/{loja}/{item}?__mobile__=1`) de **277 KB** cujo JSON embutido não
+   tem **nenhum** campo de preço. Os "611" e "689" que aparecem no HTML são
+   hashes de build e flags, não preços.
+
 **Conclusão: é estrutural.** Desconto de meio de pagamento e cupom acontece no
 checkout e não existe no catálogo de afiliados. Nenhuma engenharia nossa
-resolve isso; só a Shopee, expondo o campo.
+resolve isso; só a Shopee, expondo o campo. **Não tente de novo** — são seis
+rotas fechadas, e o rótulo não pode ser substituído por um número melhor.
 
 ## O que fazer, então
-
-O caminho honesto é rotular: a pill do preço leva **"sem cupom"**. A frase é
-verdadeira mesmo quando não há cupom disponível (o preço sem cupom é aquele), e
-transforma a aparente contradição em serviço — explicar a letra miúda é
-exatamente a voz da conta.
 
 O que **não** fazer: publicar um preço com cupom que não conseguimos verificar,
 ou omitir o preço. Prometer menos do que a realidade e o seguidor achar mais
 barato é o erro seguro; o contrário destrói a única coisa que a conta vende.
 
-### Feito (fase 5K, 2026-08-28)
+Sobram duas saídas, e a fase 5K tomou uma e a 5N tomou a outra: **rotular** o
+preço com "sem cupom", ou **publicar o número sem ressalva**. As duas são
+honestas — R$ 689,99 é o preço que qualquer um paga sem cupom, e a peça nunca
+afirmou ser o menor jeito de pagar. É diferente do caso do ML, onde o número
+publicado não era o de ninguém.
+
+### O rótulo EXISTE e está DESLIGADO (fase 5N, 2026-08-28)
+
+O interruptor é `pricing.MOSTRAR_SEM_CUPOM`, hoje `False`. **Razão do dono**,
+textual:
+
+> "o que importa para o usuário é se o produto está com o desconto, e ver isso
+> atrai automaticamente; produto classificado como 'sem cupom' não atrai em
+> nada"
+
+O que se ganha e o que se perde, para quem for reavaliar:
+
+- **compra**: o seguidor que abre o anúncio e vê um preço MENOR entende por
+  quê, em vez de concluir que o nosso número está velho (foi o que aconteceu no
+  caso que abre este runbook);
+- **custa**: é uma ressalva colada ao preço, e pesa mais justamente na peça
+  mais fraca — a de modo B, que não tem desconto para mostrar.
+
+**Risco que fica ligado:** o seguidor pode achar o produto mais barato do que o
+post diz. Erro para o lado que não frustra.
+
+**Como religar:** `MOSTRAR_SEM_CUPOM = True` em `src/afiliado/pricing.py`, e só
+isso — a colocação, os tamanhos e as folgas medidas na 5K continuam no código e
+seguem valendo. A suíte cobre os DOIS estados (fixture `rotulo` em
+`tests/conftest.py`), então religar não deixa nenhum teste vermelho.
+
+### Como o rótulo é feito, quando está ligado (fase 5K, 2026-08-28)
 
 A regra mora em `pricing.sem_cupom` — **só Shopee**, porque o preço que
 publicamos do ML é o do anúncio que vence o buy box, exatamente o que a página
@@ -85,6 +122,13 @@ guarda horizontal que a pill já tinha. Pior caso publicável (`price_max_brl` =
 1000, ou seja R$ 999,99, com referência riscada de R$ 1.999,99): pill de 906 px
 no story — 30 px dentro da largura útil, 15 px de margem sobrando; 803 px no
 feed. Onde não couber, quem cede é a referência riscada, nunca o rótulo.
+
+**E desligado, a pill não fica com buraco.** É o mesmo mecanismo: rótulo vazio
+faz `nota_bloco = 0` e a pill volta a medir preço + padding, a geometria de
+antes da 5K. Medido nas 21 peças da 5N (story e feed, modo A e B, com e sem
+selo, título longo, teto de preço, ML, story com figurinha) — as mesmas 906/803
+px do pior caso caem para 720/637. Nenhuma pill descentrada, nenhum respiro
+sobrando à direita do preço.
 
 ## Achado colateral, e ele é grande
 

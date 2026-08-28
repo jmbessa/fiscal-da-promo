@@ -58,6 +58,7 @@ módulo a carrega — `_sem_senha` raspa até o texto de exceção de terceiro.
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
 from typing import Callable, NamedTuple
 
 import httpx
@@ -235,18 +236,65 @@ def sem_segredos(texto: str, *segredos: str) -> str:
     return texto
 
 
+# Onde a figurinha fica, em fração da tela (1080x1920). O PADRÃO do instagrapi
+# é o centro (y=0.517, altura 0.259 = de y=744 a y=1241), que no primeiro story
+# real cobriu a foto do produto e o título — e mesmo assim o dono não
+# identificou o link de primeira. Aqui ela desce para a faixa livre entre a
+# linha de avaliações (~y=1490) e o rodapé (~y=1700), e o rodapé vira uma seta
+# dourada apontando para ela (ver `creative.CTA_FIGURINHA`).
+FIGURINHA_X = 0.5
+FIGURINHA_Y = 0.836      # centro em ~1605 de 1920
+FIGURINHA_LARGURA = 0.62
+FIGURINHA_ALTURA = 0.085  # ~163px: cabe entre a meta e o rodapé
+
+
 def story_link(web_uri: str):
     """`StoryLink(webUri=...)` — a figurinha, do jeito que o instagrapi a
     nomeia. Fica numa função para o import continuar preguiçoso e para o teste
-    poder injetar um duplo."""
-    return _instagrapi()[1](webUri=web_uri)
+    poder injetar um duplo.
+
+    A geometria é EXPLÍCITA de propósito: o padrão da biblioteca joga a
+    figurinha no meio da arte."""
+    return _instagrapi()[1](webUri=web_uri, x=FIGURINHA_X, y=FIGURINHA_Y,
+                            width=FIGURINHA_LARGURA, height=FIGURINHA_ALTURA)
+
+
+# O Instagram REESCREVE o endereço da figurinha para o redirecionador dele.
+# Medido no primeiro story real (2026-08-27): pedimos
+# `https://s.shopee.com.br/2qU72EHcWn` e o `story_info` devolveu
+# `https://l.instagram.com/?u=https%3A%2F%2Fs.shopee.com.br%2F2qU72EHcWn%3Ffbclid%3D...&e=...`
+# — o link de afiliado inteiro, url-encodado dentro do parâmetro `u`, com um
+# `fbclid` de rastreio pendurado. Comparar texto com texto dava "story sem
+# figurinha" para um story PERFEITO, e duas leituras dessas desarmariam o canal.
+REDIRECIONADORES = ("l.instagram.com", "l.facebook.com", "lm.facebook.com")
+
+
+def url_efetiva(bruto) -> str:
+    """O endereço que a figurinha realmente abre, desembrulhado do
+    redirecionador do Instagram quando for o caso."""
+    texto = str(bruto or "").strip()
+    partes = urlsplit(texto)
+    if partes.netloc in REDIRECIONADORES:
+        alvo = parse_qs(partes.query).get("u", [""])[0]
+        if alvo:
+            return unquote(alvo)
+    return texto
 
 
 def mesma_url(a, b) -> bool:
-    """O `webUri` volta de um modelo pydantic (`HttpUrl`), que normaliza a URL
-    — uma barra final a mais não pode virar "story sem link". Nada de baixar
+    """Mesmo destino? Desembrulha o redirecionador e ignora o que o Instagram
+    pendura na query (`fbclid`), comparando esquema, host e caminho.
+
+    O `webUri` volta de um modelo pydantic (`HttpUrl`), que normaliza a URL —
+    uma barra final a mais não pode virar "story sem link". Nada de baixar
     caixa: `shope.ee/AbC` e `shope.ee/abc` são links diferentes."""
-    return str(a or "").strip().rstrip("/") == str(b or "").strip().rstrip("/")
+    pa, pb = urlsplit(url_efetiva(a)), urlsplit(url_efetiva(b))
+    if not (pa.netloc and pb.netloc):
+        # Sem host de um dos lados não há o que comparar por partes: cai no
+        # texto, que é o comportamento de antes.
+        return str(a or "").strip().rstrip("/") == str(b or "").strip().rstrip("/")
+    return ((pa.scheme, pa.netloc, pa.path.rstrip("/"))
+            == (pb.scheme, pb.netloc, pb.path.rstrip("/")))
 
 
 def _web_uri(link) -> str:
@@ -350,7 +398,7 @@ class InstagramStoryLinkChannel:
         try:
             art = creative.render_story(post.offer, post.copy, post.verdict,
                                         client=self.http_client, handle=self.brand_handle,
-                                        brand_name=self.brand_name)
+                                        brand_name=self.brand_name, cta_figurinha=True)
             caminho = _grava_temporario(to_jpeg(art))
         except SourceError as exc:
             return PublishResult(False, error=self._sem_senha(

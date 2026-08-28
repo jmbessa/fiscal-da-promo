@@ -649,12 +649,23 @@ def _draw_feed_body(draw, canvas_width, offer, title, price, meta, selo) -> None
 
 # --- Rodapés --------------------------------------------------------------------
 
+# Fase 5F: quando o story leva figurinha de link (instagrapi), o rodapé deixa
+# de fingir um botão e passa a APONTAR para a figurinha de verdade, que o
+# Instagram desenha por cima da arte. O primeiro story real saiu com a
+# figurinha no CENTRO (padrão do instagrapi: y=0.517, altura 0.259 — de y=744
+# a y=1241 em 1920), cobrindo a foto do produto e o título; e o dono não
+# identificou o link de primeira. A figurinha passa a ficar na faixa livre
+# abaixo da meta, e o rodapé vira uma seta subindo até ela.
+CTA_FIGURINHA = "TOQUE NO LINK  ↑"
+
+
 def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,
-                            handle: str | None, offer: Offer) -> dict:
+                            handle: str | None, offer: Offer,
+                            cta_figurinha: bool = False) -> dict:
     pad_y, pad_x = 26, 40
     font = _font("sans", 42, 700)
     label = "MERCADO LIVRE" if offer.source == "meli" else "SHOPEE"
-    text = f"→  LINK NA {label}"
+    text = CTA_FIGURINHA if cta_figurinha else f"→  LINK NA {label}"
     bbox = draw.textbbox((0, 0), text, font=font)
     w = (bbox[2] - bbox[0]) + 2 * pad_x
     h = (bbox[3] - bbox[1]) + 2 * pad_y
@@ -678,15 +689,26 @@ def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,
         "cta_text": text, "cta_font": font, "cta_bbox": bbox,
         "cta_pad_x": pad_x, "cta_pad_y": pad_y,
         "handle_font": handle_font, "handle_top": handle_top,
+        "cta_figurinha": cta_figurinha,
     }
 
 
 def _draw_story_footer(draw: ImageDraw.ImageDraw, width: int, handle: str | None, geo: dict) -> None:
     x0, y0, x1, y1 = geo["cta_box"]
-    draw.rounded_rectangle([x0, y0, x1, y1], radius=999, outline=PILL_BORDER, width=2, fill=SURFACE)
+    # No modo figurinha a pill é DOURADA e preenchida: ela não é decoração, é a
+    # única instrução do story — e o teste real mostrou que a versão discreta
+    # (contorno sobre navy) some ao lado da figurinha azul do Instagram.
+    figurinha = geo.get("cta_figurinha", False)
+    if figurinha:
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=999, fill=GOLD)
+        cor_texto = INK
+    else:
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=999, outline=PILL_BORDER,
+                               width=2, fill=SURFACE)
+        cor_texto = TEXT
     bbox = geo["cta_bbox"]
     draw.text((x0 + geo["cta_pad_x"] - bbox[0], y0 + geo["cta_pad_y"] - bbox[1]),
-               geo["cta_text"], font=geo["cta_font"], fill=TEXT)
+               geo["cta_text"], font=geo["cta_font"], fill=cor_texto)
     if handle and geo["handle_top"] is not None:
         htext = handle.upper()
         hfont = geo["handle_font"]
@@ -732,9 +754,9 @@ def _draw_feed_footer(draw: ImageDraw.ImageDraw, width: int, pad: int, offer: Of
 # --- Plano do corpo: o que a arte vai desenhar (hook testável) ---------------
 
 def _story_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
-                handle: str | None) -> dict:
+                handle: str | None, cta_figurinha: bool = False) -> dict:
     width, height = STORY_SIZE
-    footer = _story_footer_geometry(draw, width, height, handle, offer)
+    footer = _story_footer_geometry(draw, width, height, handle, offer, cta_figurinha)
     pill_left = _pill_left(offer, verdict)
     title, price, meta, selo = _story_body_options(
         draw, offer, verdict, footer["cta_box"][1] - 36, pill_left)
@@ -782,13 +804,14 @@ def feed_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict
 # --- Render principal -----------------------------------------------------------
 
 def _render_story(offer: Offer, verdict: Verdict, client: httpx.Client | None,
-                   handle: str | None, brand_name: str) -> bytes:
+                   handle: str | None, brand_name: str,
+                   cta_figurinha: bool = False) -> bytes:
     width, height = STORY_SIZE
     product = _open_product_image(_get_image_bytes(offer, client))
 
     canvas = _glow_background(width, height, 540, 154, 594, 528)
     draw = ImageDraw.Draw(canvas)
-    plan = _story_plan(draw, offer, verdict, handle)
+    plan = _story_plan(draw, offer, verdict, handle, cta_figurinha)
 
     _draw_header_story(draw, canvas, 72, 120, 68, brand_name)
     _draw_card(canvas, draw, product, 72, 224, 936, 790, 28, 24,
@@ -828,9 +851,13 @@ def render_story(
     client: httpx.Client | None = None,
     handle: str | None = None,
     brand_name: str = DEFAULT_BRAND_NAME,
+    cta_figurinha: bool = False,
 ) -> bytes:
+    """`cta_figurinha`: o story vai levar a figurinha de link do Instagram
+    (canal `instagram_story_link`). O rodapé deixa de fingir um botão e vira
+    uma seta DOURADA apontando para ela."""
     del copy  # reservado para fases futuras; não usado no template atual
-    return _render_story(offer, verdict, client, handle, brand_name)
+    return _render_story(offer, verdict, client, handle, brand_name, cta_figurinha)
 
 
 def render_feed(

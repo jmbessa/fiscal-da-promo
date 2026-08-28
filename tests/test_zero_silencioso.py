@@ -228,6 +228,99 @@ def test_a_entrada_sem_historico_nao_entra_por_uma_porta_que_a_de_30_reais_nao_u
             validate.check_price(make_offer(**sem_regua, price_current_cents=centavos), cfg)
 
 
+# -- fase 5L: o lote do data feed da Shopee ----------------------------------
+
+def _lote_de_feed(n: int = 500) -> list[dict]:
+    """Um lote INTEIRO do feed, na proporção medida ao vivo em 2026-08-28
+    (`getItemFeedData`, 3 janelas de 500 do "Shopee Oficial BR"):
+
+    - 32% das linhas caem nas cinco raízes que a conta varre; o resto é
+      autopeças (102187, a maior categoria do feed), pets, papelaria...;
+    - 86% dos preços caem na faixa de R$ 20 a R$ 1.000;
+    - `like` vai de 0 a dezenas de milhares (mediana 70);
+    - e NENHUMA traz `commission` ou `sales` — é isso que esta rede protege.
+    """
+    nossas = ["100630", "100636", "100001", "100637", "100632"]
+    outras = ["102187", "100643", "100638", "100629", "100010"]
+    linhas = []
+    for i in range(n):
+        nossa = i % 100 < 32
+        cat = nossas[i % 5] if nossa else outras[i % 5]
+        # 14% fora da faixa: metade barata demais, metade cara demais
+        preco = {0: "9.90", 1: "1499.00"}.get(i % 14, f"{20 + (i % 900)}.90")
+        linhas.append({"columns": json.dumps({
+            "itemid": str(9_000_000 + i), "title": f"Produto do feed {i}",
+            "price": f"{40 + (i % 900)}.90", "sale_price": preco,
+            "discount_percentage": str(i % 60), "item_rating": "4.9",
+            "image_link": f"https://cf.shopee.com.br/file/{i}",
+            "product_link": f"https://shopee.com.br/product/7/{9_000_000 + i}",
+            "product_short link": f"https://shopee.com.br/universal-link/product/7/{i}"
+                                  "?utm_medium=affiliates&utm_source=an_18313221156",
+            "global_catid1": cat, "global_category1": "x", "like": str(i * 7)},
+            ensure_ascii=False), "updateType": None})
+    return linhas
+
+
+def _shopee_so_com_feed(db, linhas: list[dict]):
+    """`ShopeeSource` real cuja BUSCA não devolve nada: o que sobrar no fim do
+    filtro veio do feed, e só dele."""
+    from afiliado.sources.shopee import ShopeeSource
+
+    def handler(request):
+        corpo = json.loads(request.content.decode())
+        if "listItemFeeds" in corpo["query"]:
+            return httpx.Response(200, json={"data": {"listItemFeeds": {"feeds": [
+                {"datafeedId": "1_FULL_2026-08-27", "datafeedName": "Shopee Oficial BR",
+                 "totalCount": 100_000, "date": "2026-08-27", "feedMode": "FULL"}]}}})
+        if "getItemFeedData" in corpo["query"]:
+            return httpx.Response(200, json={"data": {"getItemFeedData": {
+                "rows": linhas,
+                "pageInfo": {"offset": 0, "limit": len(linhas),
+                             "totalCount": 100_000, "hasMore": True}}}})
+        return httpx.Response(200, json={"data": {"productOfferV2": {
+            "nodes": [], "pageInfo": {"hasNextPage": False}}}})
+
+    return ShopeeSource("APPID", "SECRET",
+                        client=httpx.Client(transport=httpx.MockTransport(handler)),
+                        db=db)
+
+
+def test_um_lote_inteiro_do_feed_produz_candidatas_com_o_config_real(tmp_path):
+    """Fase 5L, e é o zero silencioso pela SEXTA vez: a linha do data feed
+    chega sem `commission` e sem `sales` (o feed não tem os campos), e com o
+    `min_ev_brl: 0.50` do config real o piso de EV as leria como "valem zero" e
+    mataria 100% delas — a fase inteira seria um no-op, sem nada falhar."""
+    cfg = load_config(CONFIG_REAL)
+    db = StateDB(tmp_path / "s.db")
+    src = _shopee_so_com_feed(db, _lote_de_feed())
+
+    offers = src.fetch_offers(cfg)
+    assert not src.discovery_stats.feed_warning, src.discovery_stats.feed_warning
+    assert len(offers) == cfg["shopee"]["feed_keep_per_run"] == 10, src.discovery_stats.feed
+    assert all(o.commission_pct == 0.0 and o.sales == 0 for o in offers)
+
+    offers = pricing.enrich_offers(offers, db, None, cfg)
+    candidatas, cortes = selection.filter_offers_with_stats(offers, db, cfg)
+    assert len(candidatas) > 0, (
+        f"{len(offers)} linhas do feed entraram e ZERO sobraram — {cortes.resumo()}")
+    assert cortes.ev == 0, "o piso de EV matou candidata de comissão desconhecida"
+    assert cortes.categoria == 0, "o feed entregou categoria fora do allowlist"
+    db.close()
+
+
+def test_o_feed_sem_a_isencao_do_piso_de_ev_morreria_inteiro(tmp_path):
+    """A prova de que a rede acima é a que segura o zero: com o piso julgando a
+    comissão desconhecida (o comportamento anterior à 5L), sobra ZERO."""
+    cfg = load_config(CONFIG_REAL)
+    db = StateDB(tmp_path / "s.db")
+    offers = _shopee_so_com_feed(db, _lote_de_feed()).fetch_offers(cfg)
+    offers = pricing.enrich_offers(offers, db, None, cfg)
+    piso = float(cfg["selection"]["min_ev_brl"])
+    assert piso > 0
+    assert [o for o in offers if selection.ev_score(o, cfg) >= piso] == []
+    db.close()
+
+
 def test_config_real_nao_tem_mais_portao_de_desconto():
     cfg = load_config(CONFIG_REAL)
     assert "min_discount_pct" not in cfg["selection"]

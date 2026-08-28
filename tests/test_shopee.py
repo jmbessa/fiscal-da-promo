@@ -337,11 +337,18 @@ def _no(item_id: int, cat: int = 100630) -> dict:
 def _api_falsa(chamadas: list, por_pagina: int = 3, ultima_pagina: int = 40):
     """API de mentira com uma janela de `ultima_pagina` páginas por listagem:
     cada (categoria|keyword, página) devolve itens distintos e `hasNextPage`
-    fica falso na última página — como a API real (calls 75/126)."""
+    fica falso na última página — como a API real (calls 75/126).
+
+    Só a BUSCA: as chamadas de data feed (fase 5L) recebem uma resposta vazia
+    e não entram em `chamadas`, para os testes da varredura rotativa medirem o
+    que sempre mediram. Quem exercita o feed é `_api_com_feed`."""
     listagens: dict[str, int] = {}
 
     def handler(request):
-        v = json.loads(request.content.decode())["variables"]
+        corpo = json.loads(request.content.decode())
+        if "ItemFeed" in corpo["query"]:
+            return httpx.Response(200, json={"data": {"listItemFeeds": {"feeds": []}}})
+        v = corpo["variables"]
         chamadas.append(v)
         page = int(v.get("page") or 1)
         chave = f"{v.get('keyword') or ''}|{v.get('productCatId') or ''}"
@@ -865,6 +872,26 @@ def test_o_limite_do_feed_e_500(tmp_path):
     cfg = {"shopee": {**CFG_FEED["shopee"], "feed_page_size": 1000}}
     src.fetch_offers(cfg)
     assert [c["limit"] for c in chamadas if c["query"] == "getItemFeedData"] == [500]
+    db.close()
+
+
+def test_o_config_real_gasta_duas_chamadas_de_feed_e_guarda_dez(tmp_path):
+    """Com o `config.yaml` DE VERDADE: o feed custa 2 chamadas por run (o
+    `listItemFeeds`, que é relistado todo run porque o `datafeedId` carrega a
+    data, mais UMA janela de 500) e guarda as 10 mais curtidas. A busca segue
+    gastando 8 — o feed entra AO LADO dela, não no lugar."""
+    from afiliado.config import load_config
+    cfg = load_config("config.yaml")
+    chamadas = []
+    linhas = [_linha(i, cat="100630", like=i) for i in range(1, 61)]
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
+    ofertas = src.fetch_offers(cfg)
+    assert len([c for c in chamadas if c["query"] == "productOfferV2"]) == 8
+    assert len([c for c in chamadas if c["query"] != "productOfferV2"]) == 2
+    assert [c["limit"] for c in chamadas if c["query"] == "getItemFeedData"] == [500]
+    do_feed = [o for o in ofertas if int(o.item_id) <= 60]
+    assert [o.item_id for o in do_feed] == [str(i) for i in range(60, 50, -1)]
+    assert "10 mantidas" in src.discovery_stats.feed
     db.close()
 
 

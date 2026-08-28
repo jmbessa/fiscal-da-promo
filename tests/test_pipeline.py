@@ -1891,8 +1891,17 @@ def _shopee_contada(handler_extra=None):
 
     from afiliado.sources.shopee import ShopeeSource
 
-    contagem = {"descoberta": 0, "refresh": 0, "link": 0}
+    contagem = {"descoberta": 0, "refresh": 0, "link": 0, "feed": 0}
     proximo = [1000]
+
+    def linha_do_feed(item_id: int) -> dict:
+        return {"columns": json.dumps({
+            "itemid": str(item_id), "title": f"Feed {item_id} bom e barato",
+            "price": "99.90", "sale_price": "59.90", "item_rating": "4.9",
+            "image_link": "https://cf.shopee.com.br/file/feed.jpg",
+            "product_link": f"https://shopee.com.br/product/1/{item_id}",
+            "product_short link": "https://shopee.com.br/universal-link/product/1/x",
+            "global_catid1": "100636", "like": str(item_id)}), "updateType": None}
 
     def no(item_id: int) -> dict:
         return {"itemId": item_id, "productName": f"Produto {item_id} bom e barato",
@@ -1915,6 +1924,19 @@ def _shopee_contada(handler_extra=None):
             contagem["refresh"] += 1
             return httpx.Response(200, json={"data": {"productOfferV2": {
                 "nodes": [no(int(variables["itemId"]))]}}})
+        if "listItemFeeds" in query:
+            contagem["feed"] += 1
+            return httpx.Response(200, json={"data": {"listItemFeeds": {"feeds": [
+                {"datafeedId": "1_FULL_2026-08-27", "datafeedName": "Shopee Oficial BR",
+                 "totalCount": 100_000, "date": "2026-08-27", "feedMode": "FULL"}]}}})
+        if "getItemFeedData" in query:
+            contagem["feed"] += 1
+            offset = int(variables.get("offset") or 0)
+            rows = [linha_do_feed(500_000 + offset + i)
+                    for i in range(int(variables.get("limit") or 500))]
+            return httpx.Response(200, json={"data": {"getItemFeedData": {
+                "rows": rows, "pageInfo": {"offset": offset, "limit": len(rows),
+                                           "totalCount": 100_000, "hasMore": True}}}})
         contagem["descoberta"] += 1
         nodes = []
         for _ in range(50):
@@ -1937,14 +1959,16 @@ def _config_de_producao(posts_per_run: int) -> dict:
             "validation": {"allowed_domains": ["shope.ee"]}}
 
 
-def test_um_run_gasta_8_chamadas_de_descoberta_mais_2_por_oferta(tmp_path, monkeypatch):
-    """A conta que escolheu a cadência: 8 (descoberta) + 2 por oferta publicada
-    (`refresh_price` + `generateShortLink`).
+def test_um_run_gasta_8_chamadas_de_busca_mais_2_de_feed_mais_2_por_oferta(
+        tmp_path, monkeypatch):
+    """A conta que escolheu a cadência, agora com as DUAS superfícies de
+    descoberta: 8 (busca) + 2 (data feed: `listItemFeeds` + uma janela de 500)
+    + 2 por oferta publicada (`refresh_price` + `generateShortLink`).
 
-    A 15 min são 61 disparos/dia: 61×8 + 60×2 = **608 chamadas/dia** por
-    tarefa, ~1.216 com a de `stories` junto — contra os ~1.920/dia que o
-    cliente da VPS (5 min) já fazia, e sem nenhum 429 nas 147 chamadas medidas
-    em 2026-08-26."""
+    A 15 min são 61 disparos/dia: 61×10 + 60×2 = **730 chamadas/dia** por
+    tarefa (eram 608 antes da 5L), ~1.460 com a de `stories` junto — contra os
+    ~1.920/dia que o cliente da VPS (5 min) já fazia, e sem nenhum 429 nas 147
+    chamadas medidas em 2026-08-26."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     _congela(monkeypatch, 20, 0)
     db = StateDB(tmp_path / "s.db")
@@ -1955,15 +1979,16 @@ def test_um_run_gasta_8_chamadas_de_descoberta_mais_2_por_oferta(tmp_path, monke
                            validator=no_network_validator, checa_cadencia=False)
     assert len(summary.published) == 4
     assert contagem["descoberta"] == cfg["shopee"]["calls_per_run"] == 8
+    assert contagem["feed"] == 1 + cfg["shopee"]["feed_calls_per_run"] == 2
     assert contagem["refresh"] == contagem["link"] == len(summary.published)
     db.close()
 
 
 def test_a_descoberta_acontece_mesmo_no_run_que_nao_publica_nada(tmp_path, monkeypatch):
-    """O detalhe que a conta precisava confirmar: as 8 chamadas NÃO dependem do
-    estoque de candidatas nem de haver canal aberto. `fetch_offers` roda antes
-    do teste de canal aberto, então todo disparo custa 8 — inclusive os do fim
-    do dia, com o teto já gasto."""
+    """O detalhe que a conta precisava confirmar: as 10 chamadas NÃO dependem
+    do estoque de candidatas nem de haver canal aberto. `fetch_offers` roda
+    antes do teste de canal aberto, então todo disparo custa 10 — inclusive os
+    do fim do dia, com o teto já gasto."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     _congela(monkeypatch, 23, 3)
     db = StateDB(tmp_path / "s.db")
@@ -1973,7 +1998,7 @@ def test_a_descoberta_acontece_mesmo_no_run_que_nao_publica_nada(tmp_path, monke
     summary = pipeline.run(_config_de_producao(posts_per_run=4), [src], [CanalComTeto()], db,
                            validator=no_network_validator, checa_cadencia=False)
     assert summary.published == []
-    assert contagem["descoberta"] == 8
+    assert contagem["descoberta"] == 8 and contagem["feed"] == 2
     assert contagem["refresh"] == contagem["link"] == 0
     db.close()
 

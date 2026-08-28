@@ -172,6 +172,45 @@ shopee:
                             # este número para <= 5 desliga subcategorias e keywords
                             # em silêncio — o run avisa quando isso acontece.
   candidate_max_age_days: 3 # por quantos dias a candidata descoberta segue na fila
+  # Fase 5L — O DATA FEED, a segunda superfície de descoberta. Tudo medido ao
+  # vivo em 2026-08-28 (ver docs/runbooks/shopee-preco.md).
+  #
+  # `listItemFeeds`/`getItemFeedData` entregam CATÁLOGOS INTEIROS: 100.000
+  # itens no "Shopee Oficial BR" (10.000 no "Shopee Brasil"), contra as janelas
+  # de 2.000 itens por (categoria, ordenação) que a busca alcança. O teto por
+  # chamada é 500 (`limit: 1000` devolve `error [11001]`), então o catálogo
+  # inteiro sai em 200 chamadas.
+  #
+  # FULL e não DELTA, e é o contrário do que parecia: o DELTA oficial tem
+  # 170.217 linhas (341 chamadas) e, numa janela de 500, 229 são DELETE contra
+  # 264 NEW e 7 UPDATE — mais chamadas para menos linha aproveitável.
+  #
+  # O que o feed NÃO traz: `commission` e `sales`. As duas são medidas pelo
+  # `refresh_price` imediatamente antes de publicar; até lá a candidata é
+  # "comissão desconhecida" e o piso de `min_ev_brl` NÃO a julga (ver
+  # selection.comissao_desconhecida — sem isso a fase seria um zero silencioso).
+  # Consequência de projeto: sem comissão e sem vendas, a candidata do feed
+  # entra no fim da fila e só publica quando o topo das categorias se esgota —
+  # que é exatamente o papel dela. O feed é RESERVA e alcance, não substituto:
+  # os itens dele têm mediana de 1 venda/30 dias (feed oficial) contra os
+  # milhares do topo de categoria que a busca traz.
+  #
+  # Custo: 1 janela + 1 `listItemFeeds` = 2 chamadas/run, contra as 8 da busca.
+  feed_calls_per_run: 1
+  feed_page_size: 500       # teto medido da API
+  # Quantas linhas de cada janela entram no estoque, e por CURTIDAS: a nota é
+  # 5,0 na mediana (165 de 172 acima de 4,5 — não separa nada), enquanto as 12
+  # linhas mais curtidas de uma janela somam 2.152 vendas de 30 dias contra 2
+  # das 12 menos curtidas. O teto existe porque o gargalo não é a API, é o
+  # `state.db` (arquivo binário versionado): 32% das linhas passam nos portões,
+  # e guardar tudo seriam ~9.800 candidatas/dia — com candidate_max_age_days: 3,
+  # ~29 mil linhas de ~600 bytes contra 60 posts/dia. Com 10, são ~610/dia e
+  # ~1.800 vivas, +60% sobre o estoque de hoje. 0 = sem teto (não faça isso).
+  feed_keep_per_run: 10
+  # feed_name: "Oficial"    # vazio/ausente = o MAIOR feed FULL da conta. Só o
+                            # oficial tem a coluna `like` preenchida (no
+                            # "Shopee Brasil" ela é 0 nas 178 linhas medidas),
+                            # e sem ela o teto acima escolheria ao acaso.
   # Buscar POR categoria muda tudo: sem isso a API devolve majoritariamente a
   # categoria 100644 (fora da nossa lista). Medido em 2026-08-25: desconto médio
   # sobe de 19% para ~47% e a mediana de vendas de 282 para milhares.

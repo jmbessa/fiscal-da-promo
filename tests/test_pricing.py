@@ -1,3 +1,4 @@
+import dataclasses
 import itertools
 from datetime import date, timedelta
 
@@ -603,3 +604,78 @@ def test_prova_social_diz_a_janela_da_oferta():
         "⭐ 4,9 · 45 mil vendidos no último mês")
     vitalicio = make_offer(sales=250000, rating=4.9, sales_e_faixa=True)
     assert pricing.price_line(vitalicio, NO_CLAIM)[1] == "⭐ 4,9 · +250 mil vendidos"
+
+
+# -- fase 5J (J2): a entrada SEM HISTÓRICO nunca alega desconto nem sela -----
+#
+# Estruturalmente isto já vale — `verdict` só dá modo A com janela >=
+# MIN_WINDOW_DAYS e preço estritamente abaixo do p25, e com janela 0 é
+# impossível. A trava existe assim mesmo porque é a ÚNICA coisa que separa esta
+# fase de uma regressão na honestidade da conta: se uma entrada sem histórico
+# conseguisse alegar desconto ou carimbar selo, o ativo do projeto ia junto.
+# Por isso o teste sai do ARQUIVO do pool e vai até o veredito, como o pipeline
+# faz — não parte de um `Offer` montado à mão com os campos convenientes.
+
+def _oferta_sem_historico(tmp_path):
+    from tests.test_meli import (SEM_HISTORICO, _no_network_handler, source_with,
+                                 write_pool)
+    pool = write_pool(tmp_path / "pool.json", [
+        {"product_id": "MLB-NOVO", "title": "Creatina 500g", **SEM_HISTORICO,
+         "image_url": "https://http2.mlstatic.com/x.jpg", "category": "MLB264586",
+         "sales": 13337, "rating": 4.9}])
+    src = source_with(_no_network_handler, tmp_path)
+    (offer,) = src.fetch_offers({"meli": {"offers_path": str(pool)},
+                                 "selection": {"price_min_brl": 20, "price_max_brl": 1000}})
+    assert (offer.price_ref_cents, offer.price_p25_cents, offer.price_window_days) == (0, 0, 0)
+    assert (offer.price_floor_cents, offer.price_floor_window_days) == (0, 0)
+    return offer
+
+
+def test_entrada_sem_historico_nunca_alega_desconto_nem_carimba_selo(tmp_path):
+    """Qualquer que seja o preço vivo, e mesmo com o mínimo de desconto em 0
+    (a régua mais permissiva que o config aceita): modo B, 0% e sem selo."""
+    db = StateDB(tmp_path / "s.db")
+    offer = _oferta_sem_historico(tmp_path)
+    for minimo in (0, 10):
+        for centavos in (1, 100, 2000, 3390, 50_000, 1_000_000):
+            vivo = dataclasses.replace(offer, price_current_cents=centavos)
+            (enriquecida,) = pricing.enrich_offers([vivo], db, None, CFG)
+            veredito = pricing.verdict(enriquecida, minimo)
+            assert veredito == Verdict("B", 0, "", 0), (minimo, centavos, veredito)
+            # E o texto que sai dele não tem "De:" nem percentual nenhum.
+            linha, _ = pricing.price_line(enriquecida, veredito)
+            assert "De:" not in linha and "OFF" not in linha
+    db.close()
+
+
+def test_entrada_sem_historico_com_historico_curto_continua_em_modo_b(tmp_path):
+    """Um dia antes da graduação ainda é modo B: `ref_min_observations` é
+    exigência, não sugestão — com 13 dias a régua não existe."""
+    db = StateDB(tmp_path / "s.db")
+    offer = _oferta_sem_historico(tmp_path)
+    _seed_history(db, [10000] * 7 + [9000] * 6, source="meli", item_id=offer.item_id)
+    vivo = dataclasses.replace(offer, price_current_cents=8000)
+    (enriquecida,) = pricing.enrich_offers([vivo], db, None, CFG)
+    assert enriquecida.price_ref_cents == 0 and enriquecida.price_floor_cents == 0
+    assert pricing.verdict(enriquecida, 10) == Verdict("B", 0, "", 0)
+    db.close()
+
+
+def test_depois_de_ref_min_observations_dias_a_mesma_entrada_ganha_regua(tmp_path):
+    """A graduação que justifica a fase: a oferta que entrou sem régua ganha
+    uma — das NOSSAS medições (degrau 3), não de uma consulta paga — e só então
+    pode virar modo A. O selo vem junto e diz a janela que MEDIMOS."""
+    db = StateDB(tmp_path / "s.db")
+    offer = _oferta_sem_historico(tmp_path)
+    _seed_history(db, [10000] * 7 + [9000] * 7, source="meli", item_id=offer.item_id)
+    vivo = dataclasses.replace(offer, price_current_cents=8000)
+    (enriquecida,) = pricing.enrich_offers([vivo], db, None, CFG)
+    assert (enriquecida.price_ref_cents, enriquecida.price_p25_cents,
+            enriquecida.price_window_days) == (9000, 9000, 14)
+    veredito = pricing.verdict(enriquecida, 10)
+    assert veredito.mode == "A"
+    assert veredito.discount_pct == 11          # (9000-8000)/9000, para baixo
+    assert veredito.seal == "🏷️ Menor preço dos últimos 14 dias (verificado)"
+    assert pricing.price_line(enriquecida, veredito)[0] == (
+        "De: R$ 90,00 | Por: R$ 80,00 (11% OFF)")
+    db.close()

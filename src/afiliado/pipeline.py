@@ -458,6 +458,19 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             if com_link * 2 < total:
                 warn(f"⚠️ {src.name}: só {com_link} de {total} produtos têm link — "
                      "rode /meli-links-refresh")
+        # Fase 5J (J4): quanto do pool traz RÉGUA CURADA e quanto está em modo
+        # B esperando o nosso price_log. Número do run, não aviso (não passa
+        # pelo warn_once e não faz o run notificar sozinho) — mas sem ele "o ML
+        # só publica modo B" vira descoberta de semanas depois, e o ponto da
+        # fase é que essa proporção mude sozinha com o tempo. Lido ANTES do
+        # `enrich_offers`, então é o que o POOL tem, não o que a régua própria
+        # já cobriu.
+        regua = getattr(src, "ruler_coverage", None)
+        if regua is not None and src_offers:
+            com_regua, total = regua(src_offers)
+            summary.discovery.append(
+                f"🏷️ {src.name}: {com_regua} de {total} com régua curada; "
+                f"{total - com_regua} em modo B esperando histórico")
 
     if sources and len(erros_de_fonte) == len(sources):
         # Só aqui o run aborta — e mesmo assim o resumo vai ao ops, via cli,

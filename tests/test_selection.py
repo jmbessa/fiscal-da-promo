@@ -683,3 +683,45 @@ def test_rank_offers_so_escolhe_do_slate_apresentado(monkeypatch):
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: {"chosen": ["cre0"]})
     cfg = {**CFG, "selection": {**CFG["selection"], "posts_per_run": 1}}
     assert [o.item_id for o in selection.rank_offers(candidatas, [], cfg)] == ["cre0"]
+
+
+# -- fase 5J: "preço ainda desconhecido" não pode morrer nos portões ---------
+# A entrada do ML sem histórico chega com `price_current_cents == 0` — o pool
+# não traz mais a mediana da janela, e o preço só existe depois do
+# `refresh_price`, que roda DEPOIS destes portões. Barrá-la aqui mataria a fase
+# inteira em silêncio, que é a assinatura do zero silencioso.
+
+def _sem_preco(item_id="novo", **kw):
+    return make_offer(source="meli", item_id=item_id, price_original_cents=0,
+                      price_current_cents=0, commission_pct=4.0, sales=13337, **kw)
+
+
+def test_faixa_de_preco_nao_mata_a_oferta_de_preco_desconhecido(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    result, stats = selection.filter_offers_with_stats([_sem_preco()], db, CFG)
+    assert [o.item_id for o in result] == ["novo"]
+    assert stats.faixa_preco == 0
+    db.close()
+
+
+def test_piso_de_ev_nao_mata_a_oferta_de_preco_desconhecido(tmp_path):
+    # O EV é comissão (preço × taxa) ponderada por popularidade: sem preço não
+    # há comissão a medir, e o piso não tem como julgar. Com o `min_ev_brl` do
+    # config real (0,50), TODA entrada sem histórico caía aqui.
+    db = StateDB(tmp_path / "s.db")
+    cfg = {**CFG, "selection": {**CFG["selection"], "min_ev_brl": 0.50}}
+    assert selection.ev_score(_sem_preco(), cfg) == 0.0
+    result, stats = selection.filter_offers_with_stats([_sem_preco()], db, cfg)
+    assert [o.item_id for o in result] == ["novo"]
+    assert stats.ev == 0
+    db.close()
+
+
+def test_a_faixa_continua_valendo_para_quem_tem_preco(tmp_path):
+    # O portão não foi afrouxado: quem TEM preço continua sendo medido por ele.
+    db = StateDB(tmp_path / "s.db")
+    com_preco = [make_offer(item_id="cara", price_current_cents=300_000),
+                 make_offer(item_id="barata", price_current_cents=1999)]
+    result, stats = selection.filter_offers_with_stats(com_preco, db, CFG)
+    assert result == [] and stats.faixa_preco == 2
+    db.close()

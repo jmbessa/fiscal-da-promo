@@ -1,6 +1,6 @@
 ---
 name: meli-pool-refresh
-description: Regenera data/meli_offers.json (pool curado do Mercado Livre, formato da fase 5B) com o JoomPulse — top produtos por categoria, título/imagem, histórico semanal do anúncio que vence o buy box, mediana/p25/janela e mínima histórica. Rodar a cada 30 dias (validade do pool) ou quando o doctor avisar pool vencido/entradas ignoradas. Requer o conector JoomPulse (claude.ai) autenticado na sessão e respeita a cota diária de consultas.
+description: Regenera data/meli_offers.json (pool curado do Mercado Livre, formato da fase 5B) com o JoomPulse — top produtos por categoria, título/imagem e, na onda CARA, o histórico semanal do anúncio que vence o buy box (mediana/p25/janela e mínima histórica); a onda BARATA pula o histórico e grava a régua zerada, enchendo o pool muito mais rápido. Rodar a cada 30 dias (validade do pool) ou quando o doctor avisar pool vencido/entradas ignoradas. Requer o conector JoomPulse (claude.ai) autenticado na sessão e respeita a cota diária de consultas.
 ---
 
 # Regeneração do pool curado do Mercado Livre
@@ -9,9 +9,14 @@ Gera um novo `data/meli_offers.json` lido por `MeliSource.fetch_offers`. Desde a
 fase 5B o pool carrega a **régua** do ML: `price_ref_cents` (mediana da janela),
 `price_p25_cents` (topo do quartil mais barato), `price_window_days`, a mínima
 histórica com a própria janela e o `buy_box_item_id` — o anúncio cujo preço vivo
-o pipeline lê antes de publicar. Entrada sem qualquer um desses campos é
+o pipeline lê antes de publicar. Entrada a que FALTE qualquer um desses campos é
 **pulada na carga** (ver "Validação" no fim); um pool que era foto de um dia não
 passa mais.
+
+Desde a fase 5J há **duas modalidades de onda**: a cara, que compra o histórico
+e permite alegar desconto verificado, e a barata, que grava os cinco campos de
+régua como 0 e publica em modo B. Leia "Duas modalidades de onda" antes de
+escolher — é a diferença entre encher o pool em dias e em semanas.
 
 ## Pré-requisitos
 
@@ -41,6 +46,56 @@ execução: ele pode mudar de plano.
   "todos os títulos, depois todos os preços".
 - Um pool pequeno e válido é melhor que um grande pela metade: 40 ofertas
   bastam para dias de publicação com dedupe de 30 dias.
+
+## Duas modalidades de onda: a BARATA e a CARA (leia antes de escolher)
+
+O histórico de preço (Passo 3) custa **4 consultas a cada 28 produtos**;
+título e imagem (Passo 2) custam **1 a cada 50**, e o Passo 1 já foi pago.
+O histórico é ~15× mais caro que todo o resto junto, e é ele — sozinho — que
+mantinha o pool em 35 produtos.
+
+### Onda SEM HISTÓRICO (barata) — Passo 1 + Passo 2, pulando o Passo 3
+
+Grave os **cinco campos de régua como 0**: `price_ref_cents`,
+`price_p25_cents`, `price_window_days`, `price_historic_min_cents`,
+`price_min_window_days`. Os cinco, presentes e zerados — o leitor rejeita
+campo ausente (typo de curadoria) e rejeita zero PARCIAL ("régua parcial"),
+porque `ref > 0` com `p25 = 0` é curadoria quebrada e não histórico faltando.
+
+- **Rende ~50 produtos por consulta, contra 28 a cada 5.** É a diferença
+  entre encher o pool em DIAS e em SEMANAS. Com a cota de 9 consultas/dia e o
+  Passo 1 já pago: a onda cara entrega ~50 produtos/dia (5,6 por consulta),
+  a barata cobre os **~260 candidatos que o Passo 1 sabe produzir em ~6
+  consultas — um único dia**. Os mesmos 260 na onda cara custam ~47
+  consultas, cinco a seis dias de cota inteira.
+- **A oferta sai em modo B** — preço + prova social, sem alegar desconto e
+  sem selo de menor preço — até o NOSSO `price_log` sustentar a régua
+  (`selection.ref_min_observations` dias distintos; hoje 14). A partir daí
+  ela ganha régua sozinha, das nossas medições, pelo degrau 3 de
+  `pricing.enrich_offers`. Isso é uma promessa do código, não deste texto:
+  `tests/test_pricing.py` trava as duas pontas (nunca alega desconto sem
+  histórico; alega depois de 14 dias de price_log).
+- **Ressalva medida (fase 5J):** essa graduação é LENTA na prática. O preço
+  do ML só entra no `price_log` quando a oferta passa pelo `refresh_price`,
+  isto é, quando ela é escolhida para publicar — e o dedupe de 30 dias a tira
+  da fila logo em seguida. São ~1 observação por item a cada 30 dias, ou seja
+  ~14 MESES para os 14 dias distintos, não 14 dias. Enquanto isso não mudar,
+  trate o modo B como o estado permanente da onda barata.
+
+### Onda COM HISTÓRICO (cara) — a de sempre, com o Passo 3
+
+Continua existindo e é **preferível para os produtos de maior venda**, onde
+alegar desconto verificado e carimbar o selo de menor preço vale as
+consultas. Regra prática: gaste o Passo 3 no topo de `catalogOrderCount1m`
+de cada categoria e deixe a cauda para a onda barata.
+
+### Teto medido (2026-08-26) — de onde vêm os candidatos
+
+`MercadoProductsWeekly` devolve **até 100 produtos por categoria por
+consulta** (`limit: 100`), e as **4 categorias L1 atuais dão ~260
+candidatos** depois do pré-filtro. Esse é o teto do Passo 1 como está: para
+passar disso, **acrescente categorias L1** à tabela abaixo — não adianta
+gastar mais consultas nas mesmas quatro.
 
 ## Produtos que o programa recusa (leia antes do Passo 1)
 
@@ -169,6 +224,9 @@ de mais linhas); página cheia de 100 → pagine com `offset`.
 
 ## Passo 3 — Histórico semanal do anúncio do buy box (≈1 consulta por 7 anúncios)
 
+**Só na onda CARA.** Na onda sem histórico, pule este passo e o 3b e grave os
+cinco campos de régua como 0 (ver "Duas modalidades de onda").
+
 Cubo `MlbProductPricesDaily`: o histórico é por **ANÚNCIO** (`id` =
 `buyBoxId`), uma linha por dia, `measures: price` (preço real do buy box).
 Para caber no `limit 100`, agregue por semana — 13 linhas por anúncio, ~7
@@ -255,6 +313,17 @@ e a janela pode ser curta.
    `buy_box_checked_at` é a data em que o `buyBoxId` foi lido (hoje, na
    geração). O leitor só aceita a entrada por **7 dias** a partir dela — ver
    "Passo semanal" abaixo.
+
+   Entrada da onda SEM HISTÓRICO: tudo igual, com os cinco campos de régua
+   zerados (os cinco presentes — ausente é erro, e zerar só alguns também):
+```json
+{"product_id": "MLB18725310", "title": "...", "image_url": "...",
+ "category": "MLB264586", "buy_box_item_id": "MLB3928374651",
+ "buy_box_checked_at": "<hoje AAAA-MM-DD>",
+ "price_ref_cents": 0, "price_p25_cents": 0, "price_window_days": 0,
+ "price_historic_min_cents": 0, "price_min_window_days": 0,
+ "sales": 13337, "rating": 4.8}
+```
 2. Validar com o MESMO leitor do pipeline (é o que o `doctor` roda):
 ```
 PYTHONPATH=src python -c "import httpx; from afiliado.config import load_config; from afiliado.sources.meli import MeliSource; s=MeliSource('x','y',client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))); o=s.fetch_offers(load_config('config.yaml')); print(len(o),'ofertas validas;', s.pool_warning or 'nenhuma ignorada')"
@@ -308,9 +377,10 @@ Este passo NÃO regenera título/imagem/histórico — 4 consultas, não 40.
 ## Validação na carga (o que o leitor rejeita)
 
 `MeliSource.fetch_offers` pula, contando no aviso por motivo: campo de preço
-ausente/textual/≤ 0 (`price_ref_cents`, `price_p25_cents`,
+ausente/nulo/textual/negativo (`price_ref_cents`, `price_p25_cents`,
 `price_window_days`, `price_historic_min_cents`, `price_min_window_days`);
 campo com fração de centavo (`4500.5` → `não inteiro`; `2590.0` vale 2590);
+**régua parcial** (uns campos de régua zerados e outros não);
 `price_ref_cents/100` fora de
 `selection.price_min_brl..price_max_brl`; `price_p25_cents >
 price_ref_cents`; `price_historic_min_cents > price_p25_cents`; sem
@@ -318,6 +388,21 @@ price_ref_cents`; `price_historic_min_cents > price_p25_cents`; sem
 com mais de 7 dias ("buy box não verificado há N dias") ou inválida/no
 futuro; `product_id` repetido. O aviso vai ao `doctor` e ao resumo de ops:
 "3 entrada(s) do pool ignorada(s) (2 fora da faixa de preço, 1 sem p25)".
+
+Desde a fase 5J o leitor **aceita** a entrada com os cinco campos de régua
+presentes e iguais a 0 (a onda barata). Duas consequências que aparecem no
+aviso e no `doctor`:
+
+- a faixa `price_min_brl..price_max_brl` é checada sobre a REFERÊNCIA e não
+  tem como rodar sem ela, então para essas entradas ela é **adiada**, não
+  removida: quem barra é `validate.check_price`, com os mesmos números, sobre
+  o preço VIVO lido pelo `refresh_price` antes de publicar. Uma oferta de
+  R$ 3.000 continua caindo — só cai depois. Ainda assim, mantenha o
+  pré-filtro de preço do Passo 1: cada entrada fora da faixa custa uma
+  chamada de API e um descarte em todo run;
+- o `doctor` imprime a proporção — "🏷️ Mercado Livre: 12 de 35 entrada(s)
+  com régua curada; 23 em modo B esperando histórico" —, e a mesma linha vai
+  ao resumo de ops a cada run.
 
 ## Notas
 

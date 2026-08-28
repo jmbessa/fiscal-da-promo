@@ -35,8 +35,18 @@ MAX_ITEMS_PAGES = 5
 # falta, `generated_at`) com mais de 7 dias → entrada ignorada com motivo.
 BUY_BOX_MAX_AGE_DAYS = 7
 
-# Campos inteiros > 0 obrigatórios em cada entrada do pool (fase 5B, C7d) e
-# o motivo, por grupo, que vai ao aviso quando faltam.
+# Campos inteiros obrigatórios em cada entrada do pool (fase 5B, C7d) e o
+# motivo, por grupo, que vai ao aviso quando faltam.
+#
+# Fase 5J: os cinco podem vir TODOS ZERADOS — a entrada "sem histórico", que a
+# onda barata do skill produz (Passo 1 + Passo 2, pulando o Passo 3, que custa
+# 4 consultas do JoomPulse a cada 28 produtos contra 1 a cada 50 do resto). Ela
+# é publicável em modo B e ganha régua sozinha das NOSSAS medições
+# (`pricing.enrich_offers`, degrau 3). Duas coisas NÃO afrouxaram:
+#   - campo AUSENTE continua erro: o que se aceita é o zero EXPLÍCITO, e um
+#     pool com typo não pode passar a valer;
+#   - zero PARCIAL continua erro ("régua parcial"): `ref > 0` com `p25 = 0` é
+#     curadoria quebrada, não "sem histórico" — o trio vem do mesmo degrau.
 CAMPOS_DE_PRECO = (
     ("price_ref_cents", "sem referência"),
     ("price_p25_cents", "sem p25"),
@@ -238,11 +248,20 @@ class MeliSource:
             seen_ids.add(offer.item_id)
             self._buy_box_ids[offer.item_id] = str(item["buy_box_item_id"])
             offers.append(offer)
+        avisos: list[str] = []
         if motivos:
             detalhe = ", ".join(f"{n} {motivo}" for motivo, n in
                                 sorted(motivos.items(), key=lambda kv: (-kv[1], kv[0])))
-            self.pool_warning = (
+            avisos.append(
                 f"{sum(motivos.values())} entrada(s) do pool ignorada(s) ({detalhe})")
+        sem_regua = len(offers) - self.ruler_coverage(offers)[0]
+        if sem_regua:
+            avisos.append(
+                f"{sem_regua} entrada(s) sem histórico: régua zerada, publicam em "
+                "modo B (sem alegar desconto e sem selo) até o nosso price_log "
+                "sustentar a régua — a faixa de preço delas é checada no preço "
+                "VIVO, depois do refresh, e não na carga")
+        self.pool_warning = "; ".join(avisos) or None
         return offers
 
     # -- preço ao vivo (imediatamente antes de publicar) -------------------
@@ -330,6 +349,19 @@ class MeliSource:
         pool = self._load_links_pool()
         return sum(1 for o in offers if pool.get(o.item_id)), len(offers)
 
+    def ruler_coverage(self, offers: list[Offer]) -> tuple[int, int]:
+        """(quantas ofertas trazem RÉGUA CURADA do pool, total) — fase 5J, J4.
+
+        As demais são as entradas "sem histórico": publicáveis, mas em modo B
+        até `ref_min_observations` dias do nosso price_log sustentarem uma
+        régua própria. Sem este número no doctor e no resumo de ops, "o ML só
+        publica modo B" vira descoberta de semanas depois — e o ponto da fase é
+        justamente que essa proporção mude sozinha com o tempo.
+
+        Chamada ANTES do `enrich_offers`, é o que o POOL tem; depois dele, o
+        que a oferta tem (o degrau 3 já pode ter carimbado régua própria)."""
+        return sum(1 for o in offers if o.price_ref_cents > 0), len(offers)
+
     @property
     def links_file_exists(self) -> bool:
         return self.links_path.is_file()
@@ -349,24 +381,28 @@ class MeliSource:
 
 
 def _centavos(valor) -> tuple[int | None, str]:
-    """(centavos, "") quando o valor é um inteiro > 0 — inclusive o float
+    """(centavos, "") quando o valor é um inteiro >= 0 — inclusive o float
     INTEGRAL que o JSON produz (`2590.0` É 2590: planilha, dump de pandas ou
     uma divisão em Python geram o ponto, e a entrada não pode morrer por
     causa dele).
+
+    O ZERO passa a valer na fase 5J e quer dizer "ainda não medimos". Quem
+    decide se ele é legítimo é `_parse_pool_offer`, olhando os CINCO campos
+    juntos: zerado sozinho continua sendo régua quebrada.
 
     (None, "não inteiro") quando é float com fração (`4500.5` centavos não
     existe): o motivo tem de dizer isso, e não "sem referência" — mandar a
     curadoria caçar um campo que está lá é pior do que não avisar.
 
-    (None, "") para o resto (ausente, nulo, texto, bool, <= 0): vale o motivo
-    do CAMPO."""
+    (None, "") para o resto (ausente, nulo, texto, bool, negativo): vale o
+    motivo do CAMPO."""
     if isinstance(valor, bool):
         return None, ""
     if isinstance(valor, float):
         if not valor.is_integer():          # NaN e inf também caem aqui
             return None, "não inteiro"
         valor = int(valor)
-    if not isinstance(valor, int) or valor <= 0:
+    if not isinstance(valor, int) or valor < 0:
         return None, ""
     return valor, ""
 
@@ -384,6 +420,12 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         if valor is None:
             return None, problema or motivo
         valores[campo] = valor
+    zerados = sum(1 for campo, _ in CAMPOS_DE_PRECO if valores[campo] == 0)
+    sem_historico = zerados == len(CAMPOS_DE_PRECO)
+    if zerados and not sem_historico:
+        # Motivo PRÓPRIO: "sem p25" mandaria a curadoria procurar um campo que
+        # está lá, e "sem histórico" absolveria uma régua que está quebrada.
+        return None, "régua parcial (uns campos de régua zerados, outros não)"
     if not str(item.get("buy_box_item_id") or "").strip():
         return None, "sem buy box"
     idade_buy_box = _dias_desde_a_checagem(item.get("buy_box_checked_at"), generated_at, hoje)
@@ -395,7 +437,14 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
     minima = valores["price_historic_min_cents"]
     preco_min = sel.get("price_min_brl")
     preco_max = sel.get("price_max_brl")
-    if ((preco_min is not None and ref / 100 < float(preco_min))
+    # A faixa é checada sobre a REFERÊNCIA, e sem histórico não há referência.
+    # Verificado (fase 5J) antes de pular: quem barra por preço VIVO é
+    # `validate.check_price`, que roda DEPOIS do `refresh_price`, com esta
+    # mesma faixa e sobre o preço que vai ao post — a oferta de R$ 3.000 cai
+    # lá, e não entra por uma porta que a de R$ 30 não usa. O aviso do pool
+    # diz que a checagem foi adiada, para ninguém ler o silêncio como aprovação.
+    if not sem_historico and (
+            (preco_min is not None and ref / 100 < float(preco_min))
             or (preco_max is not None and ref / 100 > float(preco_max))):
         return None, "fora da faixa de preço"
     if p25 > ref:
@@ -406,6 +455,11 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         source="meli",
         item_id=product_id,
         title=title,
+        # O preço com que a oferta sai do pool é a MEDIANA da janela — e 0 na
+        # entrada sem histórico, que quer dizer "preço ainda desconhecido". Nos
+        # dois casos ele é substituído pelo preço VIVO em `refresh_price`, antes
+        # de qualquer decisão de publicação; o 0 nunca chega a um post (sem
+        # preço vivo a oferta é descartada, "sem buy box").
         price_original_cents=ref,
         price_current_cents=ref,
         commission_pct=commission_pct,

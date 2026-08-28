@@ -1376,6 +1376,40 @@ def test_pool_de_links_completo_nao_avisa(tmp_path, monkeypatch):
     db.close()
 
 
+def test_resumo_conta_quanto_do_pool_do_meli_tem_regua(tmp_path, monkeypatch):
+    """Fase 5J (J4): sem esta linha, "o ML só publica modo B" vira descoberta
+    de semanas depois — e o ponto da fase é justamente que essa proporção mude
+    sozinha com o tempo, à medida que o nosso price_log sustenta a régua."""
+    from afiliado.sources.meli import MeliSource
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+
+    class MeliDoPool(FakeSource):
+        name = "meli"
+        # A conta é a de PRODUÇÃO, não uma reimplementação do teste.
+        ruler_coverage = MeliSource.ruler_coverage
+
+    ofertas = [make_offer(item_id="com", source="meli", price_ref_cents=5000),
+               make_offer(item_id="sem1", source="meli"),
+               make_offer(item_id="sem2", source="meli")]
+    summary = pipeline.run(CFG, [MeliDoPool(ofertas)], [FakeChannel()], db,
+                           validator=no_network_validator)
+    linha = "🏷️ meli: 1 de 3 com régua curada; 2 em modo B esperando histórico"
+    assert linha in summary.discovery
+    assert linha in summary.text()          # chega ao chat de operações
+    db.close()
+
+
+def test_resumo_nao_inventa_a_linha_da_regua_para_a_shopee(tmp_path, monkeypatch):
+    # A régua curada é do pool do ML; a Shopee não tem `ruler_coverage`.
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    summary = pipeline.run(CFG, [FakeSource([make_offer(item_id="x")])],
+                           [FakeChannel()], db, validator=no_network_validator)
+    assert not any("régua curada" in linha for linha in summary.discovery)
+    db.close()
+
+
 class CanalManual(NamedFakeChannel):
     manual = True
 

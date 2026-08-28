@@ -840,6 +840,24 @@ def test_doctor_com_pool_de_ofertas_vazio_diz_a_causa(monkeypatch, tmp_path, cap
     assert "/meli-pool-refresh" in out
 
 
+def test_doctor_conta_quanto_do_pool_tem_regua_curada(monkeypatch, tmp_path, capsys):
+    """Fase 5J (J4): quantas entradas do pool têm régua curada e quantas estão
+    em modo B esperando o nosso price_log. Sem este número, "o ML só publica
+    modo B" vira descoberta de semanas depois."""
+    from tests.test_meli import SEM_HISTORICO, write_pool
+    cfg = _doctor_com_meli(monkeypatch, tmp_path,
+                           links={"A": "https://meli.la/a", "B": "https://meli.la/b",
+                                  "C": "https://meli.la/c"}, ligado=True)
+    cfg["meli"]["offers_path"] = str(write_pool(tmp_path / "misto.json", [
+        {"product_id": "A", "title": "t", "price_ref_cents": 5000},
+        {"product_id": "B", "title": "t", **SEM_HISTORICO},
+        {"product_id": "C", "title": "t", **SEM_HISTORICO},
+    ]))
+    assert cli.doctor(cfg) == 0
+    assert ("🏷️ Mercado Livre: 1 de 3 entrada(s) com régua curada; "
+            "2 em modo B esperando histórico") in capsys.readouterr().out
+
+
 def test_doctor_com_ml_desligado_nao_falha_por_falta_de_link(monkeypatch, tmp_path, capsys):
     cfg = _doctor_com_meli(monkeypatch, tmp_path, links=None, ligado=False)
     assert cli.doctor(cfg) == 0

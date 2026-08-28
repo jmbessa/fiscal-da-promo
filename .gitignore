@@ -18,3 +18,7 @@ data/state_stories.db-*
 # resultados brutos das consultas ao JoomPulse (skills /meli-pool-refresh e
 # /watchlist-refresh): cache local para retomar sem repetir consulta
 data/joompulse_raw/
+# perfil do navegador da fase 5P (preco_real.profile_dir). São dezenas de MB de
+# cache do Chrome, e ele fica FORA de `data/` de propósito: aquela pasta é
+# versionada e a produção escreve nela a cada 15 min.
+.cache/

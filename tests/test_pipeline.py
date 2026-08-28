@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -2009,3 +2010,102 @@ def test_a_fracao_do_dia_e_zero_antes_e_um_depois_da_janela():
     assert pipeline.fracao_do_dia(datetime(2026, 8, 26, 23, 59), "08:00", "23:15") == 1.0
     meio = pipeline.fracao_do_dia(datetime(2026, 8, 26, 15, 37), "08:00", "23:15")
     assert 0.49 < meio < 0.51
+
+
+# --- Fase 5P: a leitura do preço de checkout, quando ela está ligada -----------
+#
+# O leitor é OPCIONAL (`preco_real=None`, o padrão) e todos os testes acima
+# rodam sem ele — que é o pipeline de hoje, e é o estado para o qual toda falha
+# da leitura cai. Estes cinco cobrem o que muda quando o dono liga o interruptor.
+
+
+class LeitorFalso:
+    """O leitor de checkout com um roteiro fixo. Conta as chamadas porque "só
+    leia para a oferta que VAI publicar" é requisito de custo: uma página de
+    navegador por leitura, contra milhares de candidatas no estoque."""
+
+    def __init__(self, cents=52348, condicao="com cupom"):
+        self.cents, self.condicao = cents, condicao
+        self.vistos = []
+        self.warnings = []
+
+    def aplica(self, offer):
+        from afiliado.preco_real import Leitura
+        self.vistos.append(offer.item_id)
+        if not self.cents:
+            return offer, Leitura(motivo="nada")
+        return (dataclasses.replace(offer, price_checkout_cents=self.cents,
+                                    price_checkout_label=self.condicao),
+                Leitura(price_cents=self.cents, condicao=self.condicao))
+
+
+def _cfg_um_post():
+    return {**CFG, "selection": {**CFG["selection"], "posts_per_run": 1}}
+
+
+def test_o_post_publica_o_preco_lido_com_a_condicao(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_um_post(),
+                 [FakeSource([make_offer(price_current_cents=59900)])], [ch], db,
+                 validator=no_network_validator, preco_real=LeitorFalso())
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 52348
+    assert "R$ 523,48" in post.message_text and "com cupom" in post.message_text
+    db.close()
+
+
+def test_a_leitura_so_acontece_para_quem_vai_publicar(tmp_path, monkeypatch):
+    """≈60 leituras por dia, não uma por candidata do estoque."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    leitor = LeitorFalso()
+    offers = [make_offer(item_id=str(i)) for i in range(20)]
+    pipeline.run({**CFG, "selection": {**CFG["selection"], "posts_per_run": 2}},
+                 [FakeSource(offers)], [FakeChannel()], db,
+                 validator=no_network_validator, preco_real=leitor)
+    assert len(leitor.vistos) == 2
+    db.close()
+
+
+def test_o_price_log_guarda_o_preco_de_catalogo_e_nao_o_de_cupom(tmp_path, monkeypatch):
+    """A série que produz a mediana, o p25 e o piso do selo tem de continuar
+    homogênea. Um preço de cupom dentro dela faria a régua da 5B alegar
+    desconto todo dia em que houvesse cupom — o padrão "promoção recorrente"
+    que ela existe para não certificar."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    pipeline.run(_cfg_um_post(),
+                 [FakeSource([make_offer(price_current_cents=59900)])],
+                 [FakeChannel()], db, validator=no_network_validator,
+                 preco_real=LeitorFalso())
+    assert db.price_history("shopee", "123456", 1) == [59900]
+    db.close()
+
+
+def test_os_avisos_do_leitor_chegam_ao_chat_de_operacoes(tmp_path, monkeypatch):
+    """Mesmo dreno dos canais (`drena_avisos`): um desarme que ninguém vê é um
+    dia inteiro de leitura desligada em silêncio."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    leitor = LeitorFalso(cents=0)
+    leitor.warnings.append("⚠️ preco_real: leitura DESARMADA")
+    summary = pipeline.run(_cfg_um_post(), [FakeSource([make_offer()])],
+                           [FakeChannel()], db, validator=no_network_validator,
+                           preco_real=leitor)
+    assert any("DESARMADA" in a for a in summary.warnings)
+    db.close()
+
+
+def test_sem_leitor_o_pipeline_e_o_de_hoje(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_um_post(),
+                 [FakeSource([make_offer(price_current_cents=59900)])], [ch], db,
+                 validator=no_network_validator)
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 0
+    assert "R$ 599,00" in post.message_text
+    db.close()

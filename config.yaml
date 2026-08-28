@@ -286,6 +286,52 @@ meli:
   # por anúncio nascem sob `ofiscaldapromo`.
   tag: "ofiscaldapromo"
 
+# Fase 5P — O PREÇO QUE O SEGUIDOR VÊ, lido do navegador. NASCE DESLIGADA.
+#
+# A Shopee cobra dois preços: o de catálogo (o que a API expõe e o que
+# publicamos) e o de CHECKOUT, ~12% menor, que exige cupom. O dono reclamou
+# duas vezes de abrir o anúncio e ver um número menor que o do post. As seis
+# rotas de servidor estão fechadas (docs/runbooks/shopee-preco.md); a sétima é
+# o navegador, que executa o JavaScript e renderiza o bloco.
+#
+# LIGAR É DECISÃO DO DONO, e a ordem é esta:
+#   1. pip install -e .[preco]
+#   2. afiliado preco-real <itemId>   (a leitura à mão, com isto ainda em false)
+#   3. comparar com a tela do celular; só então `enabled: true`.
+#
+# MEDIDO EM 2026-08-28, e é o motivo de ela nascer desligada: num Chrome de
+# PERFIL PRÓPRIO E DESLOGADO (headless e com janela, com aquecimento pela home,
+# nas duas formas de URL, com user agent de desktop e de celular) a rota do
+# produto NÃO entrega preço — ela responde o interstício "Login Necessário" e,
+# depois de algumas requisições, até a home cai em `/verify/traffic/error`. A
+# leitura que o runbook registrou foi feita no Chrome LOGADO do dono, que é
+# exatamente o que esta fase proíbe usar. Hoje, ligada, toda leitura falha
+# FECHADA: o interstício desarma na primeira ocorrência e o dia inteiro publica
+# o preço da API, como sempre. Ver o relatório da fase.
+preco_real:
+  enabled: false
+  # O perfil do navegador. NUNCA aponte para o Chrome da máquina — ele é o que
+  # está logado na Shopee como o dono, e 60 páginas automatizadas por dia a
+  # partir dele é o padrão que a Shopee caça. `preco_real.perfil_proibido`
+  # recusa em código qualquer caminho dentro do User Data do Chrome/Edge, e o
+  # run avisa o chat de operações em vez de subir. Também não fica em `data/`:
+  # aquela pasta é versionada.
+  profile_dir: .cache/chrome-preco-real
+  # "chrome" usa o BINÁRIO instalado na máquina (menos detectável) com um perfil
+  # VAZIO nosso; vazio ("") usa o Chromium empacotado do Playwright, que exige
+  # `playwright install chromium`.
+  browser_channel: chrome
+  headless: true
+  # O bloco de preço chega VAZIO e leva de 10 a 30 s para preencher (medido):
+  # o leitor relê a página a cada `passo_s` até o teto, e desiste em silêncio.
+  timeout_s: 30
+  passo_s: 1.0
+  # Leituras seguidas sem preço antes de a leitura se DESARMAR pelo resto do dia
+  # local (marca persistente em `day_flags`, como o instagram_story_link). O
+  # interstício/bloqueio desarma na PRIMEIRA ocorrência, sem contar: insistir 60
+  # vezes por dia contra um bloqueio é o que custa a conta.
+  max_falhas: 3
+
 validation:
   # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio
   # link de afiliado (igual a um destes domínios ou subdomínio dele) + ausência

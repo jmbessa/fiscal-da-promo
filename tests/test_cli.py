@@ -4,8 +4,10 @@ import json
 import pytest
 import os
 
-from afiliado import cli, pipeline
+from afiliado import cli, pipeline, preco_real
+from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
+from tests.test_models import make_offer
 
 
 def test_run_dry_invokes_pipeline(monkeypatch, tmp_path):
@@ -1816,3 +1818,140 @@ def test_o_doctor_reprova_quando_o_agendador_esta_vazio(monkeypatch, capsys):
     monkeypatch.setattr(cli, "estado_da_tarefa", lambda nome: "")
     assert cli.doctor(cfg) == 1
     assert "❌ Agendador" in capsys.readouterr().out
+
+
+# --- Fase 5P: o interruptor e o comando de exercitar à mão --------------------
+
+def _cfg_com(tmp_path, extra: str = "") -> str:
+    cfg_file = tmp_path / "config.yaml"
+    texto = (open("config.yaml", encoding="utf-8").read()
+             .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+             .replace("data/watchlist.json",
+                      str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_file.write_text(texto + extra, encoding="utf-8")
+    return str(cfg_file)
+
+
+def _run_capturando_o_leitor(monkeypatch, cfg_file: str) -> dict:
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, **kw):
+        chamado["preco_real"] = kw.get("preco_real")
+        chamado["avisos"] = list(kw.get("warnings_iniciais") or [])
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--dry-run", "--config", cfg_file]) == 0
+    return chamado
+
+
+def test_o_config_de_producao_nasce_com_a_leitura_desligada(monkeypatch, tmp_path):
+    """O interruptor do `config.yaml` real, que é o que a produção lê. Esta
+    fase mexe na superfície de maior risco do projeto: ligar é decisão do dono,
+    depois de ver a leitura bater com a tela dele."""
+    assert _run_capturando_o_leitor(monkeypatch, _cfg_com(tmp_path))["preco_real"] is None
+
+
+def test_ligada_no_config_o_leitor_chega_ao_pipeline(monkeypatch, tmp_path):
+    perfil = str(tmp_path / "perfil").replace("\\", "/")
+    chamado = _run_capturando_o_leitor(
+        monkeypatch, _cfg_com(tmp_path, f"\npreco_real:\n  enabled: true\n"
+                                        f"  profile_dir: {perfil}\n"))
+    assert isinstance(chamado["preco_real"], preco_real.LeitorDePreco)
+
+
+def test_ligada_com_o_perfil_do_dono_nao_monta_e_avisa_o_ops(monkeypatch, tmp_path):
+    """A recusa chega ao chat de operações no PRIMEIRO run, junto dos outros
+    avisos de montagem — ligar apontando para o Chrome do dono não pode
+    simplesmente funcionar, e também não pode falhar em silêncio."""
+    monkeypatch.setattr(preco_real.Path, "home", staticmethod(lambda: tmp_path))
+    chrome = tmp_path / "AppData/Local/Google/Chrome/User Data"
+    chrome.mkdir(parents=True)
+    chamado = _run_capturando_o_leitor(
+        monkeypatch, _cfg_com(tmp_path, "\npreco_real:\n  enabled: true\n"
+                                        f"  profile_dir: {str(chrome).replace(chr(92), '/')}\n"))
+    assert chamado["preco_real"] is None
+    assert any("navegador real" in a for a in chamado["avisos"])
+
+
+def test_preco_real_a_mao_imprime_a_leitura(monkeypatch, tmp_path, capsys):
+    """O comando que o dono roda ANTES de ligar o interruptor: ele diz o que
+    leria, e roda mesmo com a leitura desligada no config."""
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: (
+                            "R$523,48\nou R$599,00 sem cupom em outros métodos "
+                            "de pagamento", 11.4)))
+    codigo = cli.main(["preco-real", "https://shopee.com.br/product/1/9",
+                       "--preco", "599,00", "--config", _cfg_com(tmp_path)])
+    saida = capsys.readouterr().out
+    assert codigo == 0
+    assert "R$ 523,48 com cupom" in saida
+    assert "11,4 s" in saida
+
+
+def test_preco_real_a_mao_diz_o_motivo_quando_nao_le(monkeypatch, tmp_path, capsys):
+    """E diz o que o post publicaria mesmo assim — que é o preço da API, como
+    hoje. Sai com código 1 para um script saber a diferença."""
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: ("Login Necessário", 0.9)))
+    codigo = cli.main(["preco-real", "https://shopee.com.br/product/1/9",
+                       "--preco", "599,00", "--config", _cfg_com(tmp_path)])
+    saida = capsys.readouterr().out
+    assert codigo == 1
+    assert preco_real.INTERSTICIO in saida
+    assert "R$ 599,00" in saida
+
+
+def test_preco_real_a_mao_aceita_uma_pagina_salva(monkeypatch, tmp_path, capsys):
+    """`file://…` é URL, não itemId — é como se exercita o parser contra uma
+    página salva sem tocar a Shopee. Tratá-lo como itemId mandava o comando
+    procurar no estoque de candidatas e falhar com a mensagem errada."""
+    vistos = []
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: (
+                            vistos.append(url) or
+                            "R$523,48\nou R$599,00 sem cupom em outros métodos", 2.0)))
+    codigo = cli.main(["preco-real", "file:///c:/tmp/anuncio.html", "--preco", "599,00",
+                       "--config", _cfg_com(tmp_path)])
+    assert codigo == 0
+    assert vistos == ["file:///c:/tmp/anuncio.html"]
+    assert "R$ 523,48 com cupom" in capsys.readouterr().out
+
+
+def test_preco_real_a_mao_procura_o_item_no_estoque(monkeypatch, tmp_path, capsys):
+    """Sem "://" o alvo é itemId, e a URL e a âncora saem do estoque de
+    candidatas do `state.db` — sem chamar API nenhuma."""
+    cfg_file = _cfg_com(tmp_path)
+    db = StateDB(tmp_path / "s.db")
+    db.upsert_candidates([make_offer(item_id="777", price_current_cents=59900,
+                                     product_url="https://shopee.com.br/product/1/777")])
+    db.close()
+    vistos = []
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: (
+                            vistos.append(url) or
+                            "R$523,48\nou R$599,00 sem cupom em outros métodos", 5.0)))
+    assert cli.main(["preco-real", "777", "--config", cfg_file]) == 0
+    assert vistos == ["https://shopee.com.br/product/1/777"]
+    assert "R$ 523,48 com cupom" in capsys.readouterr().out
+
+
+def test_preco_real_a_mao_diz_o_que_fazer_quando_o_item_nao_esta_no_estoque(
+        monkeypatch, tmp_path, capsys):
+    assert cli.main(["preco-real", "999", "--config", _cfg_com(tmp_path)]) == 1
+    assert "não está no estoque" in capsys.readouterr().out
+
+
+def test_preco_real_a_mao_nao_grava_o_desarme(monkeypatch, tmp_path):
+    """Ele é uma sonda: três execuções à mão não podem desarmar a leitura do
+    dia seguinte da produção."""
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: ("Login Necessário", 0.5)))
+    cfg_file = _cfg_com(tmp_path)
+    cli.main(["preco-real", "https://shopee.com.br/product/1/9", "--preco", "10,00",
+              "--config", cfg_file])
+    db = StateDB(tmp_path / "s.db")
+    assert db.day_flag(preco_real.CHAVE_DESARMADO) == ""
+    db.close()

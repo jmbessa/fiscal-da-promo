@@ -392,7 +392,7 @@ def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict,
 def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         dry_run: bool = False, validator=None, watchlist: Watchlist | None = None,
         warnings_iniciais: list[str] | None = None,
-        checa_cadencia: bool = True) -> RunSummary:
+        checa_cadencia: bool = True, preco_real=None) -> RunSummary:
     if validator is None:
         # Dry-run (A10): nada de rede além de fetch_offers/refresh_price —
         # a imagem não é baixada (o link já é checado offline, C6).
@@ -623,6 +623,18 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                     # C7c: o preço VIVO é a observação do dia (o ML gravava
                     # o do pool todo dia — o histórico dele era uma constante).
                     db.record_price(offer.source, offer.item_id, offer.price_current_cents)
+            # Fase 5P: o preço de CHECKOUT, lido no navegador. Aqui e não antes,
+            # por dois motivos:
+            #   - o `price_log` acabou de gravar o preço de CATÁLOGO, e é ele
+            #     que a série precisa (a leitura não entra no histórico);
+            #   - só a oferta que VAI publicar paga uma página de navegador
+            #     (≈60/dia), nunca o estoque de candidatas.
+            # `aplica` nunca levanta e nunca inventa: sem leitura boa a oferta
+            # sai daqui idêntica à que entrou, e o post publica o preço da API.
+            if preco_real is not None:
+                offer, _leitura = preco_real.aplica(offer)
+                for aviso in drena_avisos(preco_real):
+                    warn(aviso)
             # Uma decisão, tomada uma vez: texto, copy, arte e legendas
             # recebem este veredito e não recalculam nada (C9/C10).
             veredito = pricing.verdict(offer, minimo_pct)

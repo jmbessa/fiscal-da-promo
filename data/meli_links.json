@@ -1,57 +1,227 @@
 {
-  "MLB68104527": "https://meli.la/24R8Lvp",
-  "MLB24529498": "https://meli.la/2w8PAqo",
-  "MLB21361292": "https://meli.la/2ziEdUE",
-  "MLB61856977": "https://meli.la/2H87hnL",
-  "MLB36931922": "https://meli.la/2Tr6wE2",
-  "MLB19675471": "https://meli.la/23RtGEZ",
-  "MLB19620491": "https://meli.la/2EJW9cC",
-  "MLB19755099": "https://meli.la/1YXTafk",
-  "MLB44895020": "https://meli.la/1KjttxL",
-  "MLB41939018": "https://meli.la/1hq2m33",
-  "MLB19543444": "https://meli.la/2ohWPAn",
-  "MLB18391034": "https://meli.la/1gGCHsy",
-  "MLB73600153": "https://meli.la/2xvhMYp",
-  "MLB53222689": "https://meli.la/2zwzmdD",
-  "MLB63904966": "https://meli.la/2TnD2ci",
-  "MLB66060206": "https://meli.la/2A9xZyC",
-  "MLB53761906": "https://meli.la/2fTV9Ec",
-  "MLB65629738": "https://meli.la/1eCG3DC",
-  "MLB53222545": "https://meli.la/2GuYgtL",
-  "MLB28574077": "https://meli.la/2APiPX4",
-  "MLB50850550": "https://meli.la/1cBrrMF",
-  "MLB50368081": "https://meli.la/1UKdTAY",
-  "MLB65479537": "https://meli.la/2U46Vd6",
-  "MLB22983247": "https://meli.la/2PVJ7i4",
-  "MLB63281934": "https://meli.la/2C8zEL1",
-  "MLB61994454": "https://meli.la/2BgdiC2",
-  "MLB74332255": "https://meli.la/2YCGDDs",
-  "MLB65530475": "https://meli.la/21idX2P",
-  "MLB73043518": "https://meli.la/2ksjjBD",
-  "MLB75374377": "https://meli.la/1k8ZA5W",
-  "MLB70041714": "https://meli.la/1gA7cmz",
-  "MLB69957465": "https://meli.la/2YhYnrb",
-  "MLB26796581": "https://meli.la/19JLMU4",
-  "MLB19506691": "https://meli.la/1G9ye45",
-  "MLB19603205": "https://meli.la/1ow4p68",
-  "MLB25929487": "https://meli.la/1rUTYkv",
-  "MLB18725310": "https://meli.la/1ULuAEY",
-  "MLB45617876": "https://meli.la/1hkD2hh",
-  "MLB75825805": "https://meli.la/1fY7Lzy",
-  "MLB19694427": "https://meli.la/2Qay7Zv",
-  "MLB73085986": "https://meli.la/1rSo8RK",
-  "MLB53618239": "https://meli.la/2Bwie7d",
-  "MLB52363091": "https://meli.la/2Ng16z5",
-  "MLB72873686": "https://meli.la/23ffp1Q",
-  "MLB72785105": "https://meli.la/1Qs4HYU",
-  "MLB72722968": "https://meli.la/1shRsb9",
-  "MLB51986596": "https://meli.la/21QjLuJ",
-  "MLB19309318": "https://meli.la/2DDkdG9",
-  "MLB18390579": "https://meli.la/1hn6r2W",
-  "MLB63615370": "https://meli.la/1QKd1ZT",
-  "MLB26080271": "https://meli.la/27MY6Br",
-  "MLB70398104": "https://meli.la/1GSatcn",
-  "MLB37946694": "https://meli.la/2LEtH2k",
-  "MLB36014524": "https://meli.la/316jAuo",
-  "MLB48196257": "https://meli.la/1PQQoGb"
+  "version": 2,
+  "generated_at": "2026-08-28",
+  "tag": "jmbessa",
+  "products": {
+    "MLB18390579": {
+      "items": {},
+      "product_link": "https://meli.la/1hn6r2W"
+    },
+    "MLB18391034": {
+      "items": {},
+      "product_link": "https://meli.la/1gGCHsy"
+    },
+    "MLB18725310": {
+      "items": {},
+      "product_link": "https://meli.la/1ULuAEY"
+    },
+    "MLB19309318": {
+      "items": {},
+      "product_link": "https://meli.la/2DDkdG9"
+    },
+    "MLB19506691": {
+      "items": {},
+      "product_link": "https://meli.la/1G9ye45"
+    },
+    "MLB19543444": {
+      "items": {},
+      "product_link": "https://meli.la/2ohWPAn"
+    },
+    "MLB19603205": {
+      "items": {},
+      "product_link": "https://meli.la/1ow4p68"
+    },
+    "MLB19620491": {
+      "items": {},
+      "product_link": "https://meli.la/2EJW9cC"
+    },
+    "MLB19675471": {
+      "items": {},
+      "product_link": "https://meli.la/23RtGEZ"
+    },
+    "MLB19694427": {
+      "items": {},
+      "product_link": "https://meli.la/2Qay7Zv"
+    },
+    "MLB19755099": {
+      "items": {},
+      "product_link": "https://meli.la/1YXTafk"
+    },
+    "MLB21361292": {
+      "items": {},
+      "product_link": "https://meli.la/2ziEdUE"
+    },
+    "MLB22983247": {
+      "items": {},
+      "product_link": "https://meli.la/2PVJ7i4"
+    },
+    "MLB24529498": {
+      "items": {},
+      "product_link": "https://meli.la/2w8PAqo"
+    },
+    "MLB25929487": {
+      "items": {},
+      "product_link": "https://meli.la/1rUTYkv"
+    },
+    "MLB26080271": {
+      "items": {},
+      "product_link": "https://meli.la/27MY6Br"
+    },
+    "MLB26796581": {
+      "items": {},
+      "product_link": "https://meli.la/19JLMU4"
+    },
+    "MLB28574077": {
+      "items": {},
+      "product_link": "https://meli.la/2APiPX4"
+    },
+    "MLB36014524": {
+      "items": {},
+      "product_link": "https://meli.la/316jAuo"
+    },
+    "MLB36931922": {
+      "items": {},
+      "product_link": "https://meli.la/2Tr6wE2"
+    },
+    "MLB37946694": {
+      "items": {},
+      "product_link": "https://meli.la/2LEtH2k"
+    },
+    "MLB41939018": {
+      "items": {},
+      "product_link": "https://meli.la/1hq2m33"
+    },
+    "MLB44895020": {
+      "items": {},
+      "product_link": "https://meli.la/1KjttxL"
+    },
+    "MLB45617876": {
+      "items": {},
+      "product_link": "https://meli.la/1hkD2hh"
+    },
+    "MLB48196257": {
+      "items": {},
+      "product_link": "https://meli.la/1PQQoGb"
+    },
+    "MLB50368081": {
+      "items": {},
+      "product_link": "https://meli.la/1UKdTAY"
+    },
+    "MLB50850550": {
+      "items": {},
+      "product_link": "https://meli.la/1cBrrMF"
+    },
+    "MLB51986596": {
+      "items": {},
+      "product_link": "https://meli.la/21QjLuJ"
+    },
+    "MLB52363091": {
+      "items": {},
+      "product_link": "https://meli.la/2Ng16z5"
+    },
+    "MLB53222545": {
+      "items": {},
+      "product_link": "https://meli.la/2GuYgtL"
+    },
+    "MLB53222689": {
+      "items": {},
+      "product_link": "https://meli.la/2zwzmdD"
+    },
+    "MLB53618239": {
+      "items": {},
+      "product_link": "https://meli.la/2Bwie7d"
+    },
+    "MLB53761906": {
+      "items": {},
+      "product_link": "https://meli.la/2fTV9Ec"
+    },
+    "MLB61856977": {
+      "items": {},
+      "product_link": "https://meli.la/2H87hnL"
+    },
+    "MLB61994454": {
+      "items": {},
+      "product_link": "https://meli.la/2BgdiC2"
+    },
+    "MLB63281934": {
+      "items": {},
+      "product_link": "https://meli.la/2C8zEL1"
+    },
+    "MLB63615370": {
+      "items": {},
+      "product_link": "https://meli.la/1QKd1ZT"
+    },
+    "MLB63904966": {
+      "items": {},
+      "product_link": "https://meli.la/2TnD2ci"
+    },
+    "MLB65479537": {
+      "items": {},
+      "product_link": "https://meli.la/2U46Vd6"
+    },
+    "MLB65530475": {
+      "items": {},
+      "product_link": "https://meli.la/21idX2P"
+    },
+    "MLB65629738": {
+      "items": {},
+      "product_link": "https://meli.la/1eCG3DC"
+    },
+    "MLB66060206": {
+      "items": {},
+      "product_link": "https://meli.la/2A9xZyC"
+    },
+    "MLB68104527": {
+      "items": {},
+      "product_link": "https://meli.la/24R8Lvp"
+    },
+    "MLB69957465": {
+      "items": {},
+      "product_link": "https://meli.la/2YhYnrb"
+    },
+    "MLB70041714": {
+      "items": {},
+      "product_link": "https://meli.la/1gA7cmz"
+    },
+    "MLB70398104": {
+      "items": {},
+      "product_link": "https://meli.la/1GSatcn"
+    },
+    "MLB72722968": {
+      "items": {},
+      "product_link": "https://meli.la/1shRsb9"
+    },
+    "MLB72785105": {
+      "items": {},
+      "product_link": "https://meli.la/1Qs4HYU"
+    },
+    "MLB72873686": {
+      "items": {},
+      "product_link": "https://meli.la/23ffp1Q"
+    },
+    "MLB73043518": {
+      "items": {},
+      "product_link": "https://meli.la/2ksjjBD"
+    },
+    "MLB73085986": {
+      "items": {},
+      "product_link": "https://meli.la/1rSo8RK"
+    },
+    "MLB73600153": {
+      "items": {},
+      "product_link": "https://meli.la/2xvhMYp"
+    },
+    "MLB74332255": {
+      "items": {},
+      "product_link": "https://meli.la/2YCGDDs"
+    },
+    "MLB75374377": {
+      "items": {},
+      "product_link": "https://meli.la/1k8ZA5W"
+    },
+    "MLB75825805": {
+      "items": {},
+      "product_link": "https://meli.la/1fY7Lzy"
+    }
+  }
 }

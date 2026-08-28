@@ -1652,3 +1652,81 @@ def test_doctor_diz_quando_o_story_link_esta_armado(monkeypatch, tmp_path, capsy
     cfg = load_config(_config_com_story_link(tmp_path))
     assert cli._doctor_story_link(cfg) is True
     assert "armado hoje" in capsys.readouterr().out
+
+
+# --- Fase 5I (T4): o doctor passa a enxergar o agendador ----------------------
+#
+# Foi exatamente esta a falha que ficou invisível na 5G: nada no projeto sabia
+# dizer "ninguém está me chamando". O `doctor` agora confere se as duas tarefas
+# do Agendador de Tarefas do Windows existem e estão habilitadas.
+#
+# Nenhum teste consulta o Agendador de verdade: a consulta é INJETADA, como o
+# projeto já faz com o transporte HTTP. (O `conftest.py` neutraliza a consulta
+# real em toda a suíte, para nenhum teste esquecido tocar a máquina.)
+
+
+def test_doctor_acusa_a_tarefa_agendada_que_nao_existe(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_no_windows", lambda: True)
+    assert cli._doctor_agendador(consulta=lambda nome: "") is False
+    out = capsys.readouterr().out
+    for nome in cli.TAREFAS_DA_PRODUCAO:
+        assert f"❌ Agendador: a tarefa {nome} não existe" in out
+    assert cli.SCRIPT_DO_AGENDADOR in out
+    assert "docs/runbooks/producao-windows.md" in out
+
+
+def test_doctor_acusa_a_tarefa_agendada_desabilitada(monkeypatch, capsys):
+    """Tarefa desabilitada é pior do que ausente: ela aparece na lista do
+    Agendador e não roda. O veredito é o mesmo (❌) e a causa é nomeada."""
+    monkeypatch.setattr(cli, "_no_windows", lambda: True)
+    assert cli._doctor_agendador(consulta=lambda nome: "Disabled") is False
+    assert "DESABILITADA" in capsys.readouterr().out
+
+
+def test_doctor_aprova_as_duas_tarefas_prontas(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_no_windows", lambda: True)
+    assert cli._doctor_agendador(consulta=lambda nome: "Ready") is True
+    out = capsys.readouterr().out
+    for nome in cli.TAREFAS_DA_PRODUCAO:
+        assert f"✅ Agendador: {nome}" in out
+
+
+def test_doctor_aceita_a_tarefa_em_execucao(monkeypatch):
+    """`Running` é uma tarefa saudável no meio de um run — não pode virar ❌."""
+    monkeypatch.setattr(cli, "_no_windows", lambda: True)
+    assert cli._doctor_agendador(consulta=lambda nome: "Running") is True
+
+
+def test_doctor_fora_do_windows_pula_o_item_sem_falhar(monkeypatch, capsys):
+    """A produção é o Agendador do Windows, mas a suíte roda no Linux do CI e
+    o projeto ainda pode rodar na VPS. Fora do Windows o item é PULADO — não
+    invente dependência de plataforma."""
+    monkeypatch.setattr(cli, "_no_windows", lambda: False)
+
+    def nao_deveria(nome):
+        raise AssertionError("consultou o agendador fora do Windows")
+
+    assert cli._doctor_agendador(consulta=nao_deveria) is True
+    assert "ℹ️ Agendador" in capsys.readouterr().out
+
+
+def test_doctor_nao_derruba_o_diagnostico_quando_a_consulta_falha(monkeypatch, capsys):
+    """Consulta que estourou não é prova de tarefa ausente — e mandar o dono
+    recriar as tarefas por causa de um erro do PowerShell é pior que calar."""
+    monkeypatch.setattr(cli, "_no_windows", lambda: True)
+
+    def explode(nome):
+        raise OSError("powershell sumiu")
+
+    assert cli._doctor_agendador(consulta=explode) is True
+    assert "⚠️ Agendador" in capsys.readouterr().out
+
+
+def test_o_doctor_reprova_quando_o_agendador_esta_vazio(monkeypatch, capsys):
+    """E o item está LIGADO no `doctor` de verdade, não só solto no módulo."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_no_windows", lambda: True)
+    monkeypatch.setattr(cli, "estado_da_tarefa", lambda nome: "")
+    assert cli.doctor(cfg) == 1
+    assert "❌ Agendador" in capsys.readouterr().out

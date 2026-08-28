@@ -835,39 +835,40 @@ def _roda(db, cfg=None, **kw):
 
 def test_buraco_na_cadencia_vira_aviso_no_resumo(tmp_path, monkeypatch):
     """Nomeia o buraco em horas e diz quantos disparos foram perdidos: com a
-    cadência de 60 min, 4 h entre dois runs são ~3 disparos que não vieram."""
+    cadência de 15 min (fase 5I, a máquina do dono), 4 h entre dois runs são
+    ~15 disparos que não vieram."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")
-    _congela(monkeypatch, 8, 7)
+    _congela(monkeypatch, 8, 3)
     db.record_run(published=1, discarded=0)
-    _congela(monkeypatch, 12, 7)
+    _congela(monkeypatch, 12, 3)
     summary = _roda(db)
-    assert any("4,0 h" in w and "3 disparo" in w for w in summary.warnings), summary.warnings
+    assert any("4,0 h" in w and "15 disparo" in w for w in summary.warnings), summary.warnings
     db.close()
 
 
 def test_a_cadencia_normal_nao_alarma(tmp_path, monkeypatch):
-    """150 min tolera UM disparo perdido (120 min) mais o atraso normal do
-    Actions — o alarme começa no segundo. Um aviso que toca todo dia é um
+    """40 min tolera UM disparo perdido (30 min) mais o atraso de uma máquina
+    ocupada — o alarme começa no segundo. Um aviso que toca todo dia é um
     aviso que o dono aprende a ignorar."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")
-    _congela(monkeypatch, 8, 7)
+    _congela(monkeypatch, 8, 3)
     db.record_run(published=1, discarded=0)
-    _congela(monkeypatch, 10, 7)                      # 2 h: um disparo perdido
+    _congela(monkeypatch, 8, 33)                      # 30 min: um disparo perdido
     assert not any("cadência" in w for w in _roda(db).warnings)
     db.close()
 
 
 def test_a_virada_do_dia_nao_e_buraco(tmp_path, monkeypatch):
-    """O último disparo é 23:07 BRT e o primeiro é 08:07: 9 h de intervalo POR
+    """O último disparo é 23:03 BRT e o primeiro é 08:03: 9 h de intervalo POR
     DESENHO. Só o run anterior do MESMO dia local pode acusar — senão o dono
     recebe um falso positivo toda manhã."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")
-    _congela(monkeypatch, 23, 7, dia=25)
+    _congela(monkeypatch, 23, 3, dia=25)
     db.record_run(published=1, discarded=0)
-    _congela(monkeypatch, 8, 7, dia=26)
+    _congela(monkeypatch, 8, 3, dia=26)
     assert not any("cadência" in w for w in _roda(db).warnings)
     db.close()
 
@@ -882,35 +883,37 @@ def test_o_primeiro_run_da_vida_nao_alarma(tmp_path, monkeypatch):
 
 
 def test_o_limiar_do_buraco_e_configuravel(tmp_path, monkeypatch):
-    """`schedule.max_gap_minutes`, padrão 150. Quem mudar a cadência do
-    workflow muda este número junto — não há como o código ler o cron."""
+    """`schedule.max_gap_minutes`, padrão 40. Quem mudar a cadência do
+    agendador muda este número junto — não há como o código ler o Agendador de
+    Tarefas do Windows (tests/test_agendador_windows.py trava os dois)."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
-    assert pipeline.DEFAULT_MAX_GAP_MINUTES == 150
-    assert pipeline.max_gap_minutes({}) == 150
+    assert pipeline.DEFAULT_MAX_GAP_MINUTES == 40
+    assert pipeline.max_gap_minutes({}) == 40
     assert pipeline.max_gap_minutes(_com_gap(60)) == 60
     assert pipeline.max_gap_minutes(_com_gap(0)) == 0            # 0 desliga
-    assert pipeline.max_gap_minutes({"schedule": {"max_gap_minutes": "x"}}) == 150
+    assert pipeline.max_gap_minutes({"schedule": {"max_gap_minutes": "x"}}) == 40
 
     db = StateDB(tmp_path / "s.db")
-    _congela(monkeypatch, 8, 7)
+    _congela(monkeypatch, 8, 3)
     db.record_run(published=1, discarded=0)
-    _congela(monkeypatch, 10, 7)                                 # 2 h
+    _congela(monkeypatch, 8, 33)                                 # 30 min
     assert pipeline.aviso_de_cadencia(db, pipeline.DEFAULT_MAX_GAP_MINUTES) is None
     assert pipeline.aviso_de_cadencia(db, 0) is None
     # E o número chega ao run pelo config, não por um default escondido.
-    assert any("cadência" in w for w in _roda(db, _com_gap(60)).warnings)
+    assert any("cadência" in w for w in _roda(db, _com_gap(20)).warnings)
     db.close()
 
 
 def test_quem_nao_e_o_run_de_producao_nao_cobra_cadencia(tmp_path, monkeypatch):
-    """`afiliado stories` reaproveita este mesmo `run` na máquina do dono, com
-    banco próprio e timer de 2 h — lá o intervalo grande é o normal, e a conta
-    de "disparos perdidos" usaria a cadência errada."""
+    """`afiliado stories` reaproveita este mesmo `run`, com banco próprio, e
+    só publica enquanto a máquina está acordada — lá um intervalo grande é o
+    normal, e a conta de "disparos perdidos" sairia em dobro com o run que já
+    vigia a mesma máquina."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     db = StateDB(tmp_path / "s.db")
-    _congela(monkeypatch, 8, 7)
+    _congela(monkeypatch, 8, 3)
     db.record_run(published=1, discarded=0)
-    _congela(monkeypatch, 12, 7)
+    _congela(monkeypatch, 12, 3)
     summary = _roda(db, checa_cadencia=False)
     assert not any("cadência" in w for w in summary.warnings)
     db.close()

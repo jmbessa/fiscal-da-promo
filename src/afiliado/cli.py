@@ -2,6 +2,7 @@ import argparse
 import io
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -73,6 +74,16 @@ FLAGRANTE_FLAG_PREFIXO = "flagrante"
 # um envio que falhou não gastou o dia, e o disparo seguinte repete.
 FLAGRANTE_DIA_FLAG = "feed_flagrante_do_dia"
 
+# Fase 5I: a produção saiu do GitHub Actions e passou para o Agendador de
+# Tarefas do Windows, na máquina do dono. Estes são os nomes das duas tarefas
+# que `deploy/agendar-windows.ps1` cria — e que o `doctor` procura. O nome é o
+# CONTRATO entre os dois lados: tests/test_agendador_windows.py trava os dois.
+TAREFA_RUN = "FiscalDaPromo-Run"
+TAREFA_STORIES = "FiscalDaPromo-Stories"
+TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_STORIES)
+SCRIPT_DO_AGENDADOR = "deploy/agendar-windows.ps1"
+RUNBOOK_DA_PRODUCAO = "docs/runbooks/producao-windows.md"
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="afiliado")
@@ -82,8 +93,9 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="APIs reais, mas imprime em vez de publicar")
     prun.add_argument("--config", default="config.yaml")
     prun.add_argument("--posts-per-run", type=int, default=None,
-                      help="sobrepõe selection.posts_per_run (o Actions roda a cada "
-                           "30 min e precisa de mais que a VPS, que roda a cada 5)")
+                      help="sobrepõe selection.posts_per_run (a máquina do dono roda a "
+                           "cada 15 min e precisa de folga para disparos perdidos; a "
+                           "VPS, que roda a cada 5, não precisa)")
     pdoc = sub.add_parser("doctor", help="verifica credenciais e dependências")
     pdoc.add_argument("--config", default="config.yaml")
     # Fase 5F: os canais de story ganham comando próprio porque o
@@ -520,6 +532,69 @@ def _cota_de_publicacao(data) -> tuple[int | None, int | None, int]:
             segundos // 3600 if segundos else 24)
 
 
+def _no_windows() -> bool:
+    """Função (e não `sys.platform` solto) para o teste do item do agendador
+    valer em qualquer plataforma: a suíte roda no Linux do CI e na máquina do
+    dono, e o veredito não pode depender de onde o pytest foi chamado."""
+    return sys.platform.startswith("win")
+
+
+def estado_da_tarefa(nome: str) -> str:
+    """O `State` da tarefa agendada do Windows — `Ready`, `Disabled`,
+    `Running`, `Queued` — ou string vazia quando ela não existe.
+
+    `Get-ScheduledTask` e não `schtasks /query`: o `State` do módulo
+    ScheduledTasks é um enum em INGLÊS em qualquer idioma do Windows, enquanto
+    o "Status:" do schtasks é traduzido (nesta máquina ele imprime "Pronto" e
+    "Desabilitado") — a checagem quebraria calada num Windows em outro idioma.
+    """
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         f"(Get-ScheduledTask -TaskName '{nome}' -ErrorAction SilentlyContinue).State"],
+        capture_output=True, text=True, timeout=60)
+    return (r.stdout or "").strip()
+
+
+def _doctor_agendador(consulta=None) -> bool:
+    """Fase 5I (T4): as duas tarefas da produção existem e estão habilitadas?
+
+    Este é o item que faltava. Na 5G o agendador do GitHub descartou ~15 de 16
+    disparos por mais de um dia e NADA no projeto sabia dizer "ninguém está me
+    chamando" — a produção mudou de host, e a pergunta continua valendo.
+
+    Fora do Windows o item é PULADO sem falhar (a suíte roda no Linux do CI, e
+    a VPS continua sendo uma opção). Consulta que estoura vira ⚠️, nunca ❌:
+    um erro do PowerShell não é prova de tarefa ausente, e mandar o dono
+    recriar tarefas que existem é pior do que calar.
+    """
+    if not _no_windows():
+        print(f"ℹ️ Agendador: item pulado (não é Windows) — a produção roda no "
+              f"Agendador de Tarefas da máquina do dono (ver {RUNBOOK_DA_PRODUCAO})")
+        return True
+    consulta = consulta or estado_da_tarefa
+    ok = True
+    for nome in TAREFAS_DA_PRODUCAO:
+        try:
+            estado = (consulta(nome) or "").strip()
+        except Exception as exc:                  # noqa: BLE001 - vira aviso, não veredito
+            print(f"⚠️ Agendador: não consegui consultar {nome} ({exc})")
+            continue
+        if not estado:
+            ok = False
+            print(f"❌ Agendador: a tarefa {nome} não existe — NINGUÉM está chamando o "
+                  f"pipeline. Rode `powershell -ExecutionPolicy Bypass -File "
+                  f"{SCRIPT_DO_AGENDADOR}` (ver {RUNBOOK_DA_PRODUCAO})")
+        elif estado.lower() == "disabled":
+            ok = False
+            print(f"❌ Agendador: a tarefa {nome} existe mas está DESABILITADA — ela "
+                  f"aparece na lista e não roda. Habilite no Agendador de Tarefas ou "
+                  f"rode `powershell -ExecutionPolicy Bypass -File {SCRIPT_DO_AGENDADOR}` "
+                  f"(ver {RUNBOOK_DA_PRODUCAO})")
+        else:
+            print(f"✅ Agendador: {nome} ({estado})")
+    return ok
+
+
 def doctor(cfg: dict) -> int:
     ok = True
     try:
@@ -621,6 +696,11 @@ def doctor(cfg: dict) -> int:
         print("ℹ️ Instagram: não configurado (ver docs/runbooks/meta-setup.md)")
 
     if not _doctor_story_link(cfg):
+        ok = False
+
+    # Por último de propósito: é o item que responde "quem me chama?", e ele
+    # fala do MUNDO (o agendador), não das credenciais.
+    if not _doctor_agendador():
         ok = False
 
     return 0 if ok else 1
@@ -1305,11 +1385,12 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         wl = None
     try:
-        # `checa_cadencia` (5G, G3): o aviso de buraco na cadência é sobre o
-        # agendador do Actions, de hora em hora. O `stories` roda de 2 em 2
-        # horas na máquina do dono e só enquanto ela está acordada — lá o
-        # intervalo grande é o normal, e a conta de disparos perdidos sairia
-        # com a cadência errada.
+        # `checa_cadencia` (5G, G3): o aviso de buraco na cadência é do run de
+        # PRODUÇÃO. Desde a 5I as duas tarefas rodam na mesma máquina e na
+        # mesma cadência, então quem vigia o agendador é o `afiliado run`;
+        # ligar o aviso aqui também só duplicaria a mesma mensagem — e o
+        # `stories` tem banco próprio, com uma tabela `runs` que só ele
+        # alimenta.
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
                                warnings_iniciais=avisos,
                                checa_cadencia=not somente_story)

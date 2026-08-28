@@ -24,14 +24,18 @@ DEFAULT_SCHEDULE = {"timezone": state.DEFAULT_TIMEZONE,
 # workflow `publish` teve 1 run em ~25 h e ~16 disparos esperados — o agendador
 # do Actions descartava o resto — e o defeito mais caro não foi ele falhar, foi
 # ninguém ter como perceber.
-# 150 min porque a cadência é de 60: tolera UM disparo perdido (120 min) mais o
-# atraso normal do Actions, e acusa a partir do segundo. Configurável em
+# Fase 5I: a produção mudou de host e a cadência caiu de 60 para 15 min (o
+# Agendador do Windows na máquina do dono; ver deploy/agendar-windows.ps1). O
+# limiar acompanha: 40 min tolera UM disparo perdido (30 min) mais o atraso de
+# uma máquina ocupada, e acusa a partir do segundo. Configurável em
 # `schedule.max_gap_minutes`; 0 desliga o aviso.
-DEFAULT_MAX_GAP_MINUTES = 150
-# O intervalo NOMINAL entre disparos, que o código não tem como ler do cron do
-# workflow (ele mora no GitHub, não aqui). Serve só para traduzir o buraco em
-# "disparos perdidos"; quem mudar o cron muda os dois números juntos.
-CADENCIA_MINUTOS = 60
+DEFAULT_MAX_GAP_MINUTES = 40
+# O intervalo NOMINAL entre disparos, que o código não tem como ler do
+# agendador (ele mora no Agendador de Tarefas do Windows, não aqui). Serve só
+# para traduzir o buraco em "disparos perdidos"; quem mudar a cadência do
+# `deploy/agendar-windows.ps1` muda os dois números juntos —
+# tests/test_agendador_windows.py trava isso.
+CADENCIA_MINUTOS = 15
 
 
 # Valores que variam entre descartes com o MESMO motivo ("R$ 33,90", "MLB123").

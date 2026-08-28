@@ -26,3 +26,16 @@ def sem_dotenv_do_desenvolvedor(request, monkeypatch):
     if request.node.get_closest_marker("dotenv_real"):
         return
     monkeypatch.setattr(cli, "load_dotenv", lambda *args, **kwargs: 0)
+
+
+@pytest.fixture(autouse=True)
+def sem_agendador_de_verdade(monkeypatch):
+    """Nenhum teste consulta o Agendador de Tarefas da máquina (fase 5I).
+
+    `cli.estado_da_tarefa` abre um `powershell` por tarefa. Rodando na máquina
+    do dono — que é justamente onde a produção mora — a suíte inteira passaria
+    a depender do estado real das tarefas dele, e um `afiliado doctor` de teste
+    diria ❌ ou ✅ conforme o dia. O dublê responde "Ready"; quem testa o item
+    injeta o próprio (ver `_doctor_agendador(consulta=...)`).
+    """
+    monkeypatch.setattr(cli, "estado_da_tarefa", lambda nome: "Ready")

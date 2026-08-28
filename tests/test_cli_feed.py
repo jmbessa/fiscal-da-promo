@@ -158,7 +158,7 @@ def _oferta_inflada(**kw):
 
 
 def _grava_pico(caminho, item_id="inflado"):
-    db = StateDB(caminho)
+    db = StateDB(caminho, timezone="America/Sao_Paulo")
     hoje = db.local_today()
     precos = [2600] * 90
     precos[60] = 6890
@@ -256,6 +256,94 @@ def test_feed_flagrante_grafico_e_legenda_dizem_o_mesmo_preco(
                      "--config", _cfg(tmp_path)]) == 0
     assert visto["serie"][-1][1] == 2300
     assert "hoje: R$ 23,00" in capsys.readouterr().out
+
+
+# --- Rodada de fechamento (F5): o flagrante despachado não volta amanhã -------
+
+def _despacha_flagrante(monkeypatch, cfg_file, ofertas):
+    """Roda o comando de verdade capturando o que foi ao chat de ops."""
+    _fontes(monkeypatch, ofertas)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
+    despachos = []
+    monkeypatch.setattr(
+        cli, "send_photo_bytes",
+        lambda t, c, data, caption="", **kw: despachos.append(caption) or {"ok": True})
+    codigo = cli.main(["feed", "--tipo", "flagrante", "--config", cfg_file])
+    return codigo, despachos
+
+
+def test_flagrante_despachado_nao_se_repete_dentro_da_janela(
+        tmp_path, monkeypatch, rede, capsys):
+    """Ele não registrava nada: agendado todo dia, o mesmo produto voltaria
+    toda manhã ao chat de operações. A marca vai em `day_flags` e NÃO em
+    `posted` — gravar como publicação bloquearia o produto no Telegram por 30
+    dias, que é efeito colateral de outra decisão."""
+    _grava_pico(tmp_path / "s.db")
+    cfg_file = _cfg(tmp_path)
+
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()])
+    assert codigo == 0 and len(despachos) == 1
+
+    db = StateDB(tmp_path / "s.db")
+    assert db.conn.execute("SELECT COUNT(*) FROM posted").fetchone()[0] == 0
+    assert db.day_flag_recente(cli.chave_do_flagrante(_oferta_inflada()),
+                               cli.FLAGRANTE_DEDUPE_DAYS)
+    db.close()
+
+    # Amanhã (mesma janela): nada sai, e o comando não vira erro.
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()])
+    assert codigo == 0 and despachos == []
+    assert "despachado" in capsys.readouterr().out.lower()
+
+
+def test_passada_a_janela_o_flagrante_pode_voltar(tmp_path, monkeypatch, rede, capsys):
+    _grava_pico(tmp_path / "s.db")
+    cfg_file = _cfg(tmp_path)
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()])
+    assert codigo == 0 and len(despachos) == 1
+
+    depois = datetime(2026, 8, 27, 12, 0, tzinfo=BRT) + timedelta(
+        days=cli.FLAGRANTE_DEDUPE_DAYS)
+    monkeypatch.setattr(state, "_now", lambda: depois.astimezone(timezone.utc))
+    _grava_pico(tmp_path / "s.db")           # histórico fresco na nova janela
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()])
+    assert codigo == 0 and len(despachos) == 1
+
+
+def test_a_janela_nao_engole_o_segundo_pior_flagrante(
+        tmp_path, monkeypatch, rede, capsys):
+    """O dedupe é por PRODUTO, não "um flagrante por semana": bloqueado o de
+    maior gravidade, o comando desce para o próximo — senão uma semana inteira
+    de denúncias morreria por causa de um item."""
+    _grava_pico(tmp_path / "s.db", item_id="inflado")
+    _grava_pico(tmp_path / "s.db", item_id="outro")
+    cfg_file = _cfg(tmp_path)
+    ofertas = [_oferta_inflada(),
+               _oferta_inflada(item_id="outro", title="Whey Protein 900g",
+                               price_original_cents=5900)]
+
+    codigo, primeiro = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
+    assert codigo == 0 and len(primeiro) == 1
+    codigo, segundo = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
+    assert codigo == 0 and len(segundo) == 1
+    assert segundo[0] != primeiro[0]
+
+    codigo, terceiro = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
+    assert codigo == 0 and terceiro == []
+
+
+def test_flagrante_em_dry_run_nao_marca_nada(tmp_path, monkeypatch, rede, previews):
+    """A10: `--dry-run` não escreve — nem a marca do dedupe. Se escrevesse,
+    olhar o preview de manhã calaria a peça de verdade da tarde."""
+    _grava_pico(tmp_path / "s.db")
+    _fontes(monkeypatch, [_oferta_inflada()])
+    assert cli.main(["feed", "--tipo", "flagrante", "--dry-run",
+                     "--config", _cfg(tmp_path)]) == 0
+
+    db = StateDB(tmp_path / "s.db")
+    assert db.conn.execute("SELECT COUNT(*) FROM day_flags").fetchone()[0] == 0
+    db.close()
 
 
 def test_feed_flagrante_sem_flagrante_termina_em_silencio(

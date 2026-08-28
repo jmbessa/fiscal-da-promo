@@ -52,6 +52,17 @@ MAX_OFERTAS_NO_CARROSSEL = creative.CARROSSEL_MAX_SLIDES - 2
 
 SUBTITULO_TERMOMETRO = "O Fiscal olhou o histórico de preço de cada uma."
 
+# Por quantos dias um flagrante JÁ DESPACHADO ao chat de operações não volta.
+# Ele não registrava nada: agendado todo dia, o produto de maior gravidade
+# voltaria toda manhã, porque nada no mundo muda de um dia para o outro num
+# histórico de 90 dias. A marca vai em `day_flags` e NUNCA em `posted` —
+# registrar como publicação bloquearia o produto no Telegram por 30 dias
+# (`selection.dedupe_days`), que é efeito colateral de outra decisão. É por
+# PRODUTO, não "um flagrante por semana": bloqueado o pior, o comando desce
+# para o próximo, senão um item calaria uma semana inteira de denúncias.
+FLAGRANTE_DEDUPE_DAYS = 7
+FLAGRANTE_FLAG_PREFIXO = "flagrante"
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="afiliado")
@@ -1082,6 +1093,11 @@ def serie_ate_hoje(historico: list, offer, hoje) -> list:
     return [(d, c) for d, c in historico if d != hoje] + [(hoje, offer.price_current_cents)]
 
 
+def chave_do_flagrante(offer) -> str:
+    """A chave da marca de dedupe em `day_flags`, por PRODUTO."""
+    return f"{FLAGRANTE_FLAG_PREFIXO}:{offer.source}:{offer.item_id}"
+
+
 def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
     avisos: list[str] = []
     ofertas, _ = _ofertas_do_feed(cfg, db, avisos, args.dry_run)
@@ -1090,7 +1106,18 @@ def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
         print(f"ℹ️ nenhum flagrante entre {len(ofertas)} oferta(s) — "
               "nenhum 'de' inflado com histórico que o desminta")
         return 0
-    achado = achados[0]      # o de maior gravidade
+    # O dedupe vale também em `--dry-run`, e aqui ele NÃO esconde nada: o
+    # preview existe para mostrar a peça que sairia, e a peça que sairia é a do
+    # próximo produto ainda não despachado. Nada é gravado (`somente_leitura`),
+    # então olhar o preview de manhã não cala a peça da tarde.
+    ineditos = [a for a in achados
+                if not db.day_flag_recente(chave_do_flagrante(a.offer),
+                                           FLAGRANTE_DEDUPE_DAYS)]
+    if not ineditos:
+        print(f"ℹ️ {len(achados)} flagrante(s), todos já despachados nos últimos "
+              f"{FLAGRANTE_DEDUPE_DAYS} dias — nada a mandar")
+        return 0
+    achado = ineditos[0]     # o de maior gravidade entre os que ainda não saíram
     verdict = pricing.verdict(achado.offer, _minimo_de_desconto(cfg))
     handle, nome_marca = _marca(cfg)
     serie = serie_ate_hoje(achado.historico, achado.offer, db.local_today())
@@ -1104,7 +1131,7 @@ def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
 
     if args.dry_run:
         caminho = _grava_previews("feed-flagrante", [png])[0]
-        print(f"--- DRY-RUN: flagrante de {len(achados)} candidato(s) ---\n  {caminho}")
+        print(f"--- DRY-RUN: flagrante de {len(ineditos)} candidato(s) ---\n  {caminho}")
         print(f"\n{legenda}\n")
         return 0
 
@@ -1120,8 +1147,14 @@ def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
         print(f"❌ flagrante: envio ao chat de operações falhou — "
               f"{resposta.get('description') or resposta}")
         return 1
+    # F5: a marca do dedupe. Em `day_flags`, nunca em `posted` — e só DEPOIS de
+    # o despacho ter dado certo: um envio que falhou não foi despachado, e
+    # calar o produto por uma semana por causa disso seria perder a denúncia.
+    db.set_day_flag(chave_do_flagrante(achado.offer),
+                    f"despachado · gravidade {achado.gravidade:.2f}")
     print(f"✅ flagrante despachado ao chat de operações (gravidade "
-          f"{achado.gravidade:.2f}) — aguardando o ok do dono")
+          f"{achado.gravidade:.2f}) — aguardando o ok do dono, e este produto "
+          f"não volta por {FLAGRANTE_DEDUPE_DAYS} dias")
     return 0
 
 

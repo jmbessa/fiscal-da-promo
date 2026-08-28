@@ -258,16 +258,52 @@ def test_day_flag_nao_escreve_em_dry_run(tmp_path, monkeypatch):
     db.close()
 
 
-def test_record_run_poda_as_marcas_de_dias_anteriores(tmp_path, monkeypatch):
+def test_record_run_poda_as_marcas_fora_da_janela(tmp_path, monkeypatch):
+    """A poda guardava SÓ o dia de hoje. O dedupe do flagrante (fase 5D, F5)
+    precisa de memória de dias, e é a mesma tabela: a poda passa a guardar
+    `DAY_FLAGS_RETENTION_DAYS`. O que NÃO muda é `day_flag`, que continua
+    respondendo só sobre hoje — o `instagram_story_link` amanhece rearmado
+    mesmo com a marca de ontem ainda no banco."""
     db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
     _congela(monkeypatch, datetime(2026, 8, 25, 12, 0, tzinfo=BRT))
     db.set_day_flag("a", "ontem")
+    _congela(monkeypatch, datetime(2026, 7, 1, 12, 0, tzinfo=BRT))
+    db.set_day_flag("antiga", "muito velha")
     _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
     db.set_day_flag("b", "hoje")
     db.record_run(published=0, discarded=0)
+
     rows = db.conn.execute("SELECT key, day FROM day_flags ORDER BY day").fetchall()
-    assert rows == [("b", "2026-08-26")]
+    assert rows == [("a", "2026-08-25"), ("b", "2026-08-26")]
+    assert db.day_flag("a") == ""             # ontem não vale para HOJE
+    assert db.day_flag("b") == "hoje"
     db.close()
+
+
+def test_day_flag_recente_enxerga_a_janela_e_nao_o_que_saiu_dela(tmp_path, monkeypatch):
+    """`day_flag` responde "hoje"; `day_flag_recente` responde "nesta janela" —
+    o que o dedupe do flagrante precisa (um despacho não se repete por uma
+    semana) sem gastar uma tabela nova."""
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 20, 12, 0, tzinfo=BRT))
+    db.set_day_flag("flagrante:shopee:x", "despachado")
+
+    # Hoje conta como o primeiro dia da janela: 7 dias cobrem 20 a 26/08.
+    _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
+    assert db.day_flag("flagrante:shopee:x") == ""          # não é de hoje
+    assert db.day_flag_recente("flagrante:shopee:x", 7) == "despachado"
+
+    _congela(monkeypatch, datetime(2026, 8, 27, 12, 0, tzinfo=BRT))
+    assert db.day_flag_recente("flagrante:shopee:x", 7) == ""
+    assert db.day_flag_recente("nunca-vista", 7) == ""
+    db.close()
+
+
+def test_a_janela_do_flagrante_cabe_na_retencao_das_marcas(tmp_path):
+    """Se a poda apagasse antes do fim da janela, o dedupe seria silenciosamente
+    inútil — o flagrante voltaria e ninguém notaria."""
+    from afiliado import cli
+    assert cli.FLAGRANTE_DEDUPE_DAYS <= state.DAY_FLAGS_RETENTION_DAYS
 
 
 # --- Fase 5A: heartbeat (contagem de ontem) ----------------------------------

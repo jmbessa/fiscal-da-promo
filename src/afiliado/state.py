@@ -84,6 +84,15 @@ DEFAULT_REF_WINDOW_DAYS = 90
 # das 13:20 às 21:00 e furar o teto no dia 1. `posted_at`/`finished_at`
 # continuam ISO UTC; só a CONTAGEM por dia muda de fuso.
 DEFAULT_TIMEZONE = "America/Sao_Paulo"
+# Fase 5D (F5): `day_flags` guardava SÓ o dia de hoje — a poda apagava tudo que
+# fosse anterior. O dedupe do flagrante precisa de memória de DIAS (um flagrante
+# despachado ao chat de operações não se repete por uma semana), e é a mesma
+# tabela: uma marca do dia local, agora lida também por janela
+# (`day_flag_recente`). O que NÃO mudou é `day_flag`, que continua respondendo
+# só sobre hoje — o desarme do `instagram_story_link` amanhece rearmado como
+# sempre, mesmo com a marca de ontem ainda no banco. 30 dias cobrem a maior
+# janela em uso com folga, e a tabela continua com dezenas de linhas.
+DAY_FLAGS_RETENTION_DAYS = 30
 
 
 def _now() -> datetime:
@@ -408,11 +417,27 @@ class StateDB:
                 (key, dia, str(value)))
         self.conn.commit()
 
-    def prune_day_flags(self) -> None:
-        """Só o dia local de hoje interessa — os anteriores saem junto com a
-        poda de `warned`."""
-        self.conn.execute("DELETE FROM day_flags WHERE day<?",
-                          (self.local_today().isoformat(),))
+    def day_flag_recente(self, key: str, days: int) -> str:
+        """O valor mais recente gravado para `key` nos últimos `days` dias
+        locais — HOJE conta como o primeiro deles —, ou "" se não há nenhum.
+
+        `day_flag` responde "isto foi marcado hoje?"; isto responde "foi
+        marcado nesta janela?", que é o que um dedupe de dias precisa. Depende
+        de a poda guardar a janela inteira: ver `DAY_FLAGS_RETENTION_DAYS`."""
+        cutoff = (self.local_today() - timedelta(days=max(0, days - 1))).isoformat()
+        row = self.conn.execute(
+            "SELECT value FROM day_flags WHERE key=? AND day>=? ORDER BY day DESC LIMIT 1",
+            (key, cutoff)).fetchone()
+        return row[0] if row else ""
+
+    def prune_day_flags(self, keep_days: int = DAY_FLAGS_RETENTION_DAYS) -> None:
+        """Apaga as marcas anteriores à janela de retenção.
+
+        Guardava só o dia de hoje até a fase 5D: `day_flag` nunca leu outro
+        dia, mas `day_flag_recente` lê, e uma poda mais curta que a janela
+        deixaria o dedupe silenciosamente inútil."""
+        cutoff = (self.local_today() - timedelta(days=max(0, keep_days))).isoformat()
+        self.conn.execute("DELETE FROM day_flags WHERE day<?", (cutoff,))
         self.conn.commit()
 
     def prune_warned(self) -> None:

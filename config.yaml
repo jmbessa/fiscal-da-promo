@@ -243,8 +243,8 @@ channels:
   # e sem sticker de link — a API não tem um). A cota de publicação da Meta é
   # COMPARTILHADA com o feed: 100 por 24 h; 2 + 6 usam 8.
   instagram_story:
-    enabled: true
-    max_per_day: 6           # stories por dia, ~um a cada 2h40 (o teto que era do despacho manual)
+    enabled: false
+    max_per_day: 60           # DESLIGADO: quem publica story é o instagram_story_link abaixo
   # Fase 5F: story COM figurinha de link, pelo instagrapi (API PRIVADA). Existe
   # porque a Graph API NEGA figurinhas e o Meta Business Suite só põe link em
   # story do Facebook — ver docs/superpowers/reviews/2026-08-27-sticker-de-link.md.
@@ -259,8 +259,14 @@ channels:
   # máquina do dono (IP residencial, sessão e device estáveis). O `afiliado run`
   # ignora este canal com aviso, mesmo ligado.
   instagram_story_link:
-    enabled: false           # o dono liga depois de rodar `afiliado ig-login`
-    max_per_day: 6           # stories por dia, ~um a cada 2h40
+    enabled: true           # o dono liga depois de rodar `afiliado ig-login`
+    # 60/dia = um a cada ~15 min na janela de 08:00-23:15. Cabe na cota da
+    # Meta (100/24h, compartilhada com o feed), mas este canal é API PRIVADA:
+    # volume alto é justamente o que atrai verificação de segurança, e o ativo
+    # em risco é a conta. Escolha consciente do dono em 2026-08-27, ciente
+    # disso. Se aparecer `challenge_required`, o primeiro número a baixar é
+    # este.
+    max_per_day: 60
     max_sem_link: 2          # falhas de verificação SEGUIDAS antes de desarmar o canal
     # session_path: data/ig_session.json   # padrão; está no .gitignore
 

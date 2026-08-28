@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from afiliado import pricing
 from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
-from afiliado.models import CopyParts, Offer, Verdict, format_brl
+from afiliado.models import CopyParts, Offer, Post, Verdict, format_brl
 
 # --- Paleta -----------------------------------------------------------------
 
@@ -318,12 +318,17 @@ def _wrap_title(
     return [_hard_truncate(draw, line, font, max_width) for line in lines]
 
 
+def _texto_dims(draw: ImageDraw.ImageDraw, text: str, size: int, width: int,
+                max_lines: int, weight: int = 700, altura_linha: float = 1.04) -> dict:
+    font = _font("sans", size, weight)
+    lines = _wrap_title(draw, text, font, width, max_lines)
+    line_h = round(size * altura_linha)
+    return {"font": font, "lines": lines, "line_h": line_h, "height": line_h * len(lines)}
+
+
 def _title_dims(draw: ImageDraw.ImageDraw, offer: Offer, size: int, width: int, max_lines: int,
                  weight: int = 700) -> dict:
-    font = _font("sans", size, weight)
-    lines = _wrap_title(draw, offer.title, font, width, max_lines)
-    line_h = round(size * 1.04)
-    return {"font": font, "lines": lines, "line_h": line_h, "height": line_h * len(lines)}
+    return _texto_dims(draw, offer.title, size, width, max_lines, weight)
 
 
 def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: dict) -> float:
@@ -1344,3 +1349,246 @@ def render_grafico_preco(offer: Offer, historico: list[tuple[date, int]],
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
     return buffer.getvalue()
+
+
+# =============================================================================
+# Fase 5D — CARROSSEL
+#
+# O carrossel é o motor de RETENÇÃO: maior save rate do Instagram (0,05%, 9x a
+# imagem única) e o único formato que pode reaparecer no feed de quem não
+# engajou. A imagem única — foto do produto com preço por cima — perdeu 45,98%
+# de engajamento no ano e saiu da grade. Ver `docs/feed.md`.
+#
+# A capa vende o CONCEITO ("3 ofertas, 1 é real"), não um preço: é ela que dá
+# motivo para deslizar. Os slides de oferta são a arte de feed que já existe,
+# com um contador; o fecho é a frase-assinatura. Nada de pedido de curtida,
+# comentário ou compartilhamento em lugar nenhum — a Meta rebaixa.
+# =============================================================================
+
+CARROSSEL_SIZE = FEED_SIZE
+# A Meta aceita 10; a pesquisa só sustenta "6 a 8" fracamente (nenhum estudo
+# com método), e menos slide é mais barato de gerar e de revisar. Capa e fecho
+# ocupam dois: sobram seis ofertas.
+CARROSSEL_MAX_SLIDES = 8
+CTA_CARROSSEL = "LINK NA BIO"
+
+CAPA_TITLE_SIZE = 92
+CAPA_SUB_SIZE = 42
+FECHO_TITLE_SIZE = 76
+
+
+def _slides_de_oferta(posts: list[Post]) -> list[Post]:
+    if not posts:
+        raise SourceError("carrossel sem oferta nenhuma: capa e fecho não são post")
+    return list(posts[:CARROSSEL_MAX_SLIDES - 2])
+
+
+# Capa e fecho centram o BLOCO inteiro (mascote + textos) nesta faixa da tela,
+# em vez de ancorar cada peça num y fixo: com um título de 1, 2 ou 3 linhas os
+# y fixos deixavam 300 px de vazio embaixo (preview de 2026-08-27).
+CARROSSEL_MIOLO = (120, 1200)
+
+
+def _centro_do_bloco(alturas: list[float], espacos: list[float]) -> list[float]:
+    """Os topos de cada peça de um bloco centrado verticalmente em
+    `CARROSSEL_MIOLO`. `espacos[i]` é o respiro DEPOIS da peça i."""
+    topo_faixa, base_faixa = CARROSSEL_MIOLO
+    total = sum(alturas) + sum(espacos[:len(alturas) - 1])
+    y = topo_faixa + ((base_faixa - topo_faixa) - total) / 2
+    topos = []
+    for i, h in enumerate(alturas):
+        topos.append(y)
+        y += h + (espacos[i] if i < len(espacos) else 0)
+    return topos
+
+
+def _capa_plan(draw: ImageDraw.ImageDraw, titulo: str, subtitulo: str,
+               handle: str | None) -> dict:
+    largura, altura = CARROSSEL_SIZE
+    disponivel = largura - 2 * FEED_PAD
+    titulo_dims = _texto_dims(draw, titulo, CAPA_TITLE_SIZE, disponivel, 3, 800, 1.06)
+    sub_dims = _texto_dims(draw, subtitulo, CAPA_SUB_SIZE, disponivel, 2, 500, 1.2)
+    mascote_d = 280
+    mascote_top, titulo_top, sub_top = _centro_do_bloco(
+        [mascote_d, titulo_dims["height"], sub_dims["height"]], [64, 30])
+    return {
+        "tipo": "capa", "titulo": titulo, "subtitulo": subtitulo,
+        "titulo_linhas": list(titulo_dims["lines"]),
+        "subtitulo_linhas": list(sub_dims["lines"]),
+        "titulo_dims": titulo_dims, "sub_dims": sub_dims,
+        "titulo_top": titulo_top, "sub_top": sub_top,
+        "mascote": (largura / 2, mascote_top + mascote_d / 2, mascote_d),
+        "handle": handle or DEFAULT_HANDLE, "handle_y": altura - 118,
+    }
+
+
+def _fecho_plan(draw: ImageDraw.ImageDraw, handle: str | None) -> dict:
+    largura, _ = CARROSSEL_SIZE
+    assinatura = _texto_dims(draw, ASSINATURA, FECHO_TITLE_SIZE,
+                             largura - 2 * FEED_PAD, 2, 800, 1.1)
+    handle_font = _font("mono", 34, 500)
+    cta_font = _font("sans", 46, 800)
+    cta_bbox = draw.textbbox((0, 0), CTA_CARROSSEL, font=cta_font)
+    cta_h = (cta_bbox[3] - cta_bbox[1]) + 2 * 26
+    mascote_d = 240
+    mascote_top, assinatura_top, handle_y, cta_top = _centro_do_bloco(
+        [mascote_d, assinatura["height"], sum(handle_font.getmetrics()), cta_h],
+        [60, 40, 60])
+    return {
+        "tipo": "fecho", "assinatura": ASSINATURA, "cta": CTA_CARROSSEL,
+        "assinatura_dims": assinatura, "assinatura_top": assinatura_top,
+        "handle": handle or DEFAULT_HANDLE, "handle_y": handle_y,
+        "handle_font": handle_font,
+        "mascote": (largura / 2, mascote_top + mascote_d / 2, mascote_d),
+        "cta_font": cta_font, "cta_bbox": cta_bbox,
+        "cta_size": ((cta_bbox[2] - cta_bbox[0]) + 2 * 44, cta_h),
+        "cta_top": cta_top,
+    }
+
+
+def _oferta_plan(draw: ImageDraw.ImageDraw, post: Post, indice: int, total: int,
+                 handle: str | None) -> dict:
+    plan = _feed_plan(draw, post.offer, post.verdict, handle)
+    return {
+        "tipo": "oferta", "indice": indice, "total": total,
+        "item_id": post.offer.item_id, "source": post.offer.source,
+        "preco": format_brl(post.offer.price_current_cents),
+        **_resumo(plan),
+    }
+
+
+def carrossel_plan(posts: list[Post], titulo: str, subtitulo: str,
+                   handle: str | None = None) -> list[dict]:
+    """O que cada slide vai ser, na ordem — capa, uma oferta por slide, fecho.
+
+    Mesmo papel de `story_plan`/`feed_plan`/`grafico_plan`: os testes afirmam
+    sobre ISTO. Cada slide de oferta traz o que o veredito do post autoriza
+    (`selo`, `riscado`, `badge_pct`), lido de `post.verdict` e não recalculado.
+    Sem oferta nenhuma levanta `SourceError`: capa e fecho não são post."""
+    escolhidos = _slides_de_oferta(posts)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    capa = _capa_plan(draw, titulo, subtitulo, handle)
+    fecho = _fecho_plan(draw, handle)
+    slides = [{k: v for k, v in capa.items() if not k.endswith("_dims")}]
+    slides += [_oferta_plan(draw, post, i, len(escolhidos), handle)
+               for i, post in enumerate(escolhidos, start=1)]
+    slides.append({k: v for k, v in fecho.items()
+                   if k not in ("assinatura_dims", "cta_font", "cta_bbox",
+                                "handle_font")})
+    return slides
+
+
+def _draw_mascote_em_disco(canvas: Image.Image, draw: ImageDraw.ImageDraw,
+                           cx: float, cy: float, d: float) -> None:
+    draw.ellipse([cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2], fill=GOLD)
+    draw_mascot(canvas, cx, cy, d * 0.98, ink=NAVY, skin=CREAM, cap=NAVY)
+
+
+def _draw_bloco_centralizado(draw: ImageDraw.ImageDraw, largura: int, top: float,
+                             dims: dict, fill: tuple[int, int, int]) -> float:
+    y = top
+    for line in dims["lines"]:
+        bbox = draw.textbbox((0, 0), line, font=dims["font"])
+        x = (largura - (bbox[2] - bbox[0])) / 2
+        draw.text((x - bbox[0], y - bbox[1]), line, font=dims["font"], fill=fill)
+        y += dims["line_h"]
+    return y
+
+
+def _render_capa(titulo: str, subtitulo: str, handle: str | None) -> bytes:
+    largura, altura = CARROSSEL_SIZE
+    canvas = _glow_background(largura, altura, largura / 2, 300, largura * 0.62, 420)
+    draw = ImageDraw.Draw(canvas)
+    plan = _capa_plan(draw, titulo, subtitulo, handle)
+    _draw_mascote_em_disco(canvas, draw, *plan["mascote"])
+    _draw_bloco_centralizado(draw, largura, plan["titulo_top"], plan["titulo_dims"], TEXT)
+    _draw_bloco_centralizado(draw, largura, plan["sub_top"], plan["sub_dims"], MUTED)
+    _draw_centered(draw, largura, plan["handle_y"], plan["handle"].upper(),
+                   _font("mono", 30, 500), GOLD)
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _render_fecho(handle: str | None) -> bytes:
+    largura, altura = CARROSSEL_SIZE
+    canvas = _glow_background(largura, altura, largura / 2, 300, largura * 0.62, 420)
+    draw = ImageDraw.Draw(canvas)
+    plan = _fecho_plan(draw, handle)
+    _draw_mascote_em_disco(canvas, draw, *plan["mascote"])
+    _draw_bloco_centralizado(draw, largura, plan["assinatura_top"],
+                             plan["assinatura_dims"], TEXT)
+    _draw_centered(draw, largura, plan["handle_y"], plan["handle"].upper(),
+                   plan["handle_font"], MUTED)
+    cta_w, cta_h = plan["cta_size"]
+    x0, y0 = (largura - cta_w) / 2, plan["cta_top"]
+    # `radius` é METADE DA ALTURA, não 999: com um raio maior que o lado curto
+    # o Pillow devolve uma elipse, e a pill do fecho saía oval (preview de
+    # 2026-08-27). Nas pills largas do story isso nunca apareceu.
+    draw.rounded_rectangle([x0, y0, x0 + cta_w, y0 + cta_h], radius=cta_h / 2, fill=GOLD)
+    bbox = plan["cta_bbox"]
+    draw.text((x0 + 44 - bbox[0], y0 + 26 - bbox[1]), CTA_CARROSSEL,
+              font=plan["cta_font"], fill=INK)
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _draw_contador(draw: ImageDraw.ImageDraw, largura: int, indice: int, total: int) -> None:
+    texto = f"{indice}/{total}"
+    font = _font("mono", 26, 500)
+    bbox = draw.textbbox((0, 0), texto, font=font)
+    w = (bbox[2] - bbox[0]) + 2 * 20
+    h = (bbox[3] - bbox[1]) + 2 * 14
+    x0 = largura - FEED_PAD - w
+    y0 = 64 + (62 - h) / 2                     # centrado no avatar do cabeçalho
+    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=999,
+                           fill=SURFACE, outline=PILL_BORDER, width=2)
+    draw.text((x0 + 20 - bbox[0], y0 + 14 - bbox[1]), texto, font=font, fill=MUTED)
+
+
+def _render_slide_oferta(post: Post, indice: int, total: int, client: httpx.Client | None,
+                         handle: str | None, brand_name: str) -> bytes:
+    """A arte de feed que já existe, com o contador do carrossel — `_draw_card`,
+    `_draw_price_pill` e `selo_label` são os mesmos; nada é reimplementado."""
+    width, height = CARROSSEL_SIZE
+    try:
+        product = _open_product_image(_get_image_bytes(post.offer, client))
+    except SourceError as exc:
+        raise SourceError(f"slide {indice} ({post.offer.item_id}): {exc}") from exc
+    canvas = _glow_background(width, height, 540, 81, 594, 338)
+    draw = ImageDraw.Draw(canvas)
+    plan = _feed_plan(draw, post.offer, post.verdict, handle)
+    _draw_header_feed(draw, canvas, FEED_PAD, 64, 62, brand_name, handle)
+    _draw_contador(draw, width, indice, total)
+    _draw_card(canvas, draw, product, 64, 158, 952, 600, 26, 20,
+               plan["badge_pct"], 42, 12, 20, 26)
+    _draw_feed_body(draw, width, post.offer, plan["title"], plan["price"],
+                    plan["meta"], plan["selo"])
+    _draw_feed_footer(draw, width, FEED_PAD, post.offer, plan["footer"])
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def render_carrossel(posts: list[Post], titulo: str, subtitulo: str,
+                     handle: str | None = None, client: httpx.Client | None = None,
+                     brand_name: str = DEFAULT_BRAND_NAME) -> list[bytes]:
+    """Os PNGs do carrossel, na ordem: capa, um slide por oferta, fecho.
+
+    Capa: `titulo` grande, `subtitulo` e o mascote — nenhum preço, porque ela
+    vende o CONCEITO ("3 ofertas, 1 é real"), que é o que faz alguém deslizar.
+    Ofertas: a arte de feed com um contador (foto, título, pill de preço e o
+    veredito, tudo pelas mesmas funções). Fecho: a frase-assinatura, o handle e
+    "link na bio" — nunca um pedido de curtida ou comentário.
+
+    No máximo `CARROSSEL_MAX_SLIDES` (8): as ofertas além da sexta são
+    ignoradas. Sem oferta nenhuma, ou com uma foto de produto que não baixa,
+    levanta `SourceError` — o mesmo contrato de `render_feed`, e o que mantém
+    `carrossel_plan` e o desenho dizendo a mesma coisa."""
+    escolhidos = _slides_de_oferta(posts)
+    imagens = [_render_capa(titulo, subtitulo, handle)]
+    imagens += [_render_slide_oferta(post, i, len(escolhidos), client, handle, brand_name)
+                for i, post in enumerate(escolhidos, start=1)]
+    imagens.append(_render_fecho(handle))
+    return imagens

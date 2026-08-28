@@ -27,12 +27,22 @@ from afiliado.errors import SourceError
 from afiliado.models import Offer, Post, Verdict
 
 __all__ = ["GRAPH", "GRAPH_HOSTS", "MAX_ITENS_CARROSSEL", "bloco_indexavel",
-           "InstagramFeedChannel"]
+           "sanitiza_titulo", "InstagramFeedChannel"]
 
 # Teto da Meta para um álbum. O teto do DESENHO é outro e menor
 # (`creative.CARROSSEL_MAX_SLIDES`, 8); este aqui é o da API, e existe para o
 # canal recusar antes de gastar N uploads e N containers.
 MAX_ITENS_CARROSSEL = 10
+
+
+def sanitiza_titulo(title: str) -> str:
+    """Corta o título no primeiro "http" (case-insensitive) — o título vem de
+    dados de terceiros (a oferta) e não pode carregar um link para o caption
+    público do Instagram."""
+    idx = title.lower().find("http")
+    if idx == -1:
+        return title
+    return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
 
 
 def bloco_indexavel(titulo: str, offer: Offer, verdict: Verdict) -> str:
@@ -177,19 +187,15 @@ class InstagramFeedChannel(InstagramBase):
             return PublishResult(False, error=f"{erro} ({detalhe})" if detalhe else erro)
         return PublishResult(True, str(post_id))
 
-    @staticmethod
-    def _sanitize_title(title: str) -> str:
-        """Corta o título no primeiro "http" (case-insensitive) — o título vem
-        de dados de terceiros (a oferta) e não pode carregar um link para o
-        caption público do Instagram."""
-        idx = title.lower().find("http")
-        if idx == -1:
-            return title
-        return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
+    # Nome antigo, mantido porque é assim que o canal o chama desde a 2A. A
+    # implementação virou função de módulo na 5D: a legenda do carrossel
+    # (`cli.legenda_do_carrossel`) precisa da mesma limpeza, e ir buscar um
+    # método privado de outro módulo é pior que ter a função pública.
+    _sanitize_title = staticmethod(sanitiza_titulo)
 
     def _build_caption(self, post: Post) -> str:
         offer, copy = post.offer, post.copy
-        titulo = self._sanitize_title(offer.title)
+        titulo = sanitiza_titulo(offer.title)
         # Mesmo veredito do texto do Telegram e da arte: linha de preço,
         # prova social e selo vêm de `post.verdict` (ver afiliado.pricing).
         linha_preco, prova_social = pricing.price_line(offer, post.verdict)

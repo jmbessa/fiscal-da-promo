@@ -12,7 +12,7 @@ from afiliado import (categorias, config, creative, flagrante, llm, pipeline, pr
                       selection)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import GRAPH_HOSTS, graph_error
-from afiliado.channels.instagram_feed import InstagramFeedChannel
+from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
 from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.instagram_story_link import InstagramStoryLinkChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
@@ -912,7 +912,7 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
     linhas = [titulo, subtitulo, ""]
     for i, post in enumerate(posts, start=1):
         offer = post.offer
-        nome = InstagramFeedChannel._sanitize_title(offer.title)
+        nome = sanitiza_titulo(offer.title)
         selo = " · selo do Fiscal" if post.verdict.seal else ""
         linhas.append(f"{i}. {nome} — {format_brl(offer.price_current_cents)}{selo}")
     linhas += ["", "🔗 Link na bio e no canal do Telegram", ""]

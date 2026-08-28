@@ -543,3 +543,27 @@ def test_enrich_usa_a_chave_por_fonte(tmp_path):
     (out,) = pricing.enrich_offers([make_offer(source="meli")], db, None, CFG)
     assert out.price_ref_cents == 0
     db.close()
+
+
+def test_format_sales_marca_a_faixa_do_mercado_livre():
+    """O contador do ML é um BALDE, não uma contagem: o anúncio publica
+    "+250 mil vendidos". Escrever "250 mil vendidos" seco afirma uma precisão
+    que o dado não tem.
+
+    Contexto (2026-08-27): o dono flagrou um story dizendo "5 mil vendidos"
+    para um produto com 250 mil no anúncio. Eram DOIS erros somados — o número
+    era a estimativa MENSAL do JoomPulse (`catalogOrderCount1m`) em vez do
+    contador acumulado (`catalogSales`), e ainda vinha sem o "+" que diz que é
+    um piso. Este teste guarda a segunda metade."""
+    assert pricing.format_sales(250000, faixa=True) == "+250 mil vendidos"
+    assert pricing.format_sales(250000) == "250 mil vendidos"
+    # Shopee devolve contagem fina; nada de "+" ali.
+    assert pricing.format_sales(33800) == "33 mil vendidos"
+    assert pricing.format_sales(0, faixa=True) == ""
+
+
+def test_format_sales_escreve_milhoes_por_extenso():
+    """1.000.000 virava "1000 mil vendidos" — a creatina do pool tem 1 milhão."""
+    assert pricing.format_sales(1_000_000, faixa=True) == "+1 milhão vendidos"
+    assert pricing.format_sales(2_000_000, faixa=True) == "+2 milhões vendidos"
+    assert pricing.format_sales(1_500_000) == "1,5 milhões vendidos"

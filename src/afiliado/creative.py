@@ -422,7 +422,7 @@ def _meta_parts(offer: Offer) -> tuple[str, str]:
     Shopee") — a estrela entra entre os dois, desenhada como vetor
     (`_draw_star`). Sem nota (rating == 0): ("", "30 mil vendidos · Shopee") —
     nada de estrela, o texto começa em vendas (ou na loja)."""
-    resto = " · ".join(p for p in (pricing.format_sales(offer.sales),
+    resto = " · ".join(p for p in (pricing.format_sales(offer.sales, offer.sales_e_faixa),
                                     _source_label(offer.source)) if p)
     if offer.rating > 0:
         nota = f"{offer.rating:.1f}".replace(".", ",")
@@ -659,7 +659,7 @@ def _draw_feed_body(draw, canvas_width, offer, title, price, meta, selo) -> None
 # Por isso a área tocável é posicionada EM CIMA desta pill (ver
 # `story_cta_tap_area`), e não numa faixa vazia com uma seta apontando para
 # lugar nenhum — que foi a primeira tentativa, e o dono não achou o link.
-CTA_FIGURINHA = "TOQUE AQUI PARA COMPRAR"
+CTA_FIGURINHA = "LINK PARA O PRODUTO"
 
 
 def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,

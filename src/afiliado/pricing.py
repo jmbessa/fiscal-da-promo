@@ -113,12 +113,21 @@ def verdict(offer: Offer, min_real_discount_pct: int) -> Verdict:
     return Verdict("B", 0, seal, seal_days)
 
 
-def format_sales(sales: int) -> str:
-    """>= 1000 -> '30 mil vendidos'; >= 1 -> '850 vendidos'; 0 -> ''."""
+def format_sales(sales: int, faixa: bool = False) -> str:
+    """>= 1000 -> '30 mil vendidos'; >= 1 -> '850 vendidos'; 0 -> ''.
+
+    `faixa=True` quando o número é um BALDE e não uma contagem: o Mercado Livre
+    publica só a faixa e o anúncio escreve "+250 mil vendidos". Aí o texto sai
+    com o "+", porque o que sabemos é "pelo menos isso"."""
+    prefixo = "+" if faixa else ""
+    if sales >= 1_000_000:
+        milhoes = sales / 1_000_000
+        inteiro = f"{milhoes:.0f}" if milhoes == int(milhoes) else f"{milhoes:.1f}".replace(".", ",")
+        return f"{prefixo}{inteiro} milhão vendidos" if inteiro == "1" else                f"{prefixo}{inteiro} milhões vendidos"
     if sales >= 1000:
-        return f"{sales // 1000} mil vendidos"
+        return f"{prefixo}{sales // 1000} mil vendidos"
     if sales >= 1:
-        return f"{sales} vendidos"
+        return f"{prefixo}{sales} vendidos"
     return ""
 
 
@@ -127,7 +136,7 @@ def _social_proof(offer: Offer) -> str:
     partes = []
     if offer.rating > 0:
         partes.append("⭐ " + f"{offer.rating:.1f}".replace(".", ","))
-    vendas = format_sales(offer.sales)
+    vendas = format_sales(offer.sales, offer.sales_e_faixa)
     if vendas:
         partes.append(vendas)
     return " · ".join(partes)

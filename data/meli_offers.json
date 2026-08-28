@@ -1,7 +1,7 @@
 {
   "generated_at": "2026-08-26",
   "valid_days": 30,
-  "source": "JoomPulse (vendas = ESTIMATIVA do JoomPulse, nao numero oficial do Mercado Livre) - MercadoProductsWeekly + MlbProductsSortedByProductId + MlbProductPricesDaily",
+  "source": "JoomPulse — MercadoProductsWeekly + MlbProductsSortedByProductId + MlbProductPricesDaily. `sales` = catalogSales (contador ACUMULADO do próprio Mercado Livre, não estimativa); preço = mediana/p25 de 13 semanas do anúncio do buy box.",
   "offers": [
     {
       "product_id": "MLB68104527",
@@ -15,7 +15,7 @@
       "price_window_days": 42,
       "price_historic_min_cents": 14023,
       "price_min_window_days": 365,
-      "sales": 22556,
+      "sales": 100000,
       "rating": 4.7
     },
     {
@@ -30,7 +30,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 4990,
       "price_min_window_days": 365,
-      "sales": 13158,
+      "sales": 500000,
       "rating": 4.9
     },
     {
@@ -45,7 +45,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 6227,
       "price_min_window_days": 365,
-      "sales": 11459,
+      "sales": 500000,
       "rating": 4.9
     },
     {
@@ -60,7 +60,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 5899,
       "price_min_window_days": 365,
-      "sales": 10033,
+      "sales": 100000,
       "rating": 4.5
     },
     {
@@ -75,7 +75,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 1710,
       "price_min_window_days": 365,
-      "sales": 8844,
+      "sales": 250000,
       "rating": 4.8
     },
     {
@@ -90,7 +90,7 @@
       "price_window_days": 77,
       "price_historic_min_cents": 8877,
       "price_min_window_days": 365,
-      "sales": 5271,
+      "sales": 250000,
       "rating": 4.7
     },
     {
@@ -105,8 +105,8 @@
       "price_window_days": 91,
       "price_historic_min_cents": 5071,
       "price_min_window_days": 365,
-      "sales": 5223,
-      "rating": 5
+      "sales": 250000,
+      "rating": 5.0
     },
     {
       "product_id": "MLB19755099",
@@ -120,7 +120,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 5590,
       "price_min_window_days": 365,
-      "sales": 5151,
+      "sales": 250000,
       "rating": 4.9
     },
     {
@@ -135,7 +135,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 2370,
       "price_min_window_days": 365,
-      "sales": 4862,
+      "sales": 100000,
       "rating": 4.9
     },
     {
@@ -150,7 +150,7 @@
       "price_window_days": 77,
       "price_historic_min_cents": 1590,
       "price_min_window_days": 365,
-      "sales": 4317,
+      "sales": 100000,
       "rating": 4.9
     },
     {
@@ -165,8 +165,8 @@
       "price_window_days": 35,
       "price_historic_min_cents": 997,
       "price_min_window_days": 365,
-      "sales": 4119,
-      "rating": 5
+      "sales": 250000,
+      "rating": 5.0
     },
     {
       "product_id": "MLB18391034",
@@ -180,7 +180,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 5930,
       "price_min_window_days": 365,
-      "sales": 4101,
+      "sales": 250000,
       "rating": 4.9
     },
     {
@@ -195,7 +195,7 @@
       "price_window_days": 70,
       "price_historic_min_cents": 1979,
       "price_min_window_days": 365,
-      "sales": 4000,
+      "sales": 10000,
       "rating": 4.8
     },
     {
@@ -210,7 +210,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 7890,
       "price_min_window_days": 365,
-      "sales": 19182,
+      "sales": 250000,
       "rating": 4.8
     },
     {
@@ -225,7 +225,7 @@
       "price_window_days": 77,
       "price_historic_min_cents": 9243,
       "price_min_window_days": 365,
-      "sales": 9375,
+      "sales": 100000,
       "rating": 4.9
     },
     {
@@ -240,7 +240,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 6300,
       "price_min_window_days": 365,
-      "sales": 9375,
+      "sales": 100000,
       "rating": 4.9
     },
     {
@@ -255,7 +255,7 @@
       "price_window_days": 70,
       "price_historic_min_cents": 5499,
       "price_min_window_days": 365,
-      "sales": 7874,
+      "sales": 100000,
       "rating": 4.8
     },
     {
@@ -270,7 +270,7 @@
       "price_window_days": 49,
       "price_historic_min_cents": 4179,
       "price_min_window_days": 365,
-      "sales": 7692,
+      "sales": 50000,
       "rating": 5
     },
     {
@@ -285,7 +285,7 @@
       "price_window_days": 84,
       "price_historic_min_cents": 5696,
       "price_min_window_days": 365,
-      "sales": 7673,
+      "sales": 100000,
       "rating": 4.8
     },
     {
@@ -300,8 +300,8 @@
       "price_window_days": 84,
       "price_historic_min_cents": 4590,
       "price_min_window_days": 365,
-      "sales": 7493,
-      "rating": 5
+      "sales": 250000,
+      "rating": 5.0
     },
     {
       "product_id": "MLB50850550",
@@ -315,7 +315,7 @@
       "price_window_days": 84,
       "price_historic_min_cents": 3599,
       "price_min_window_days": 365,
-      "sales": 6652,
+      "sales": 100000,
       "rating": 4.5
     },
     {
@@ -330,7 +330,7 @@
       "price_window_days": 84,
       "price_historic_min_cents": 4887,
       "price_min_window_days": 365,
-      "sales": 6508,
+      "sales": 100000,
       "rating": 4.8
     },
     {
@@ -345,7 +345,7 @@
       "price_window_days": 84,
       "price_historic_min_cents": 7108,
       "price_min_window_days": 365,
-      "sales": 7576,
+      "sales": 50000,
       "rating": 4.5
     },
     {
@@ -360,7 +360,7 @@
       "price_window_days": 77,
       "price_historic_min_cents": 10312,
       "price_min_window_days": 365,
-      "sales": 6178,
+      "sales": 250000,
       "rating": 4.7
     },
     {
@@ -375,7 +375,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 3918,
       "price_min_window_days": 365,
-      "sales": 5952,
+      "sales": 50000,
       "rating": 4.5
     },
     {
@@ -390,7 +390,7 @@
       "price_window_days": 42,
       "price_historic_min_cents": 6699,
       "price_min_window_days": 365,
-      "sales": 5172,
+      "sales": 50000,
       "rating": 4.9
     },
     {
@@ -405,7 +405,7 @@
       "price_window_days": 56,
       "price_historic_min_cents": 2800,
       "price_min_window_days": 365,
-      "sales": 4478,
+      "sales": 10000,
       "rating": 4.6
     },
     {
@@ -420,8 +420,8 @@
       "price_window_days": 84,
       "price_historic_min_cents": 3192,
       "price_min_window_days": 365,
-      "sales": 4317,
-      "rating": 4.8
+      "sales": 100000,
+      "rating": 4.7
     },
     {
       "product_id": "MLB73043518",
@@ -435,7 +435,7 @@
       "price_window_days": 49,
       "price_historic_min_cents": 3400,
       "price_min_window_days": 365,
-      "sales": 3797,
+      "sales": 10000,
       "rating": 4.7
     },
     {
@@ -450,7 +450,7 @@
       "price_window_days": 49,
       "price_historic_min_cents": 3184,
       "price_min_window_days": 365,
-      "sales": 3191,
+      "sales": 5000,
       "rating": 4.8
     },
     {
@@ -465,7 +465,7 @@
       "price_window_days": 84,
       "price_historic_min_cents": 3039,
       "price_min_window_days": 365,
-      "sales": 3030,
+      "sales": 10000,
       "rating": 4.8
     },
     {
@@ -480,8 +480,8 @@
       "price_window_days": 77,
       "price_historic_min_cents": 3617,
       "price_min_window_days": 365,
-      "sales": 2970,
-      "rating": 5
+      "sales": 10000,
+      "rating": 4.8
     },
     {
       "product_id": "MLB26796581",
@@ -495,7 +495,7 @@
       "price_window_days": 84,
       "price_historic_min_cents": 3191,
       "price_min_window_days": 365,
-      "sales": 27574,
+      "sales": 1000000,
       "rating": 4.9
     },
     {
@@ -510,7 +510,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 3231,
       "price_min_window_days": 365,
-      "sales": 20202,
+      "sales": 1000000,
       "rating": 4.9
     },
     {
@@ -525,7 +525,7 @@
       "price_window_days": 35,
       "price_historic_min_cents": 5699,
       "price_min_window_days": 365,
-      "sales": 16630,
+      "sales": 1000000,
       "rating": 4.9
     },
     {
@@ -540,8 +540,8 @@
       "price_window_days": 77,
       "price_historic_min_cents": 5990,
       "price_min_window_days": 365,
-      "sales": 13489,
-      "rating": 5
+      "sales": 500000,
+      "rating": 5.0
     },
     {
       "product_id": "MLB18725310",
@@ -555,7 +555,7 @@
       "price_window_days": 91,
       "price_historic_min_cents": 4792,
       "price_min_window_days": 365,
-      "sales": 13329,
+      "sales": 750000,
       "rating": 4.8
     }
   ]

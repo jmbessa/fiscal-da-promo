@@ -32,7 +32,13 @@ class Offer:
     price_p25_cents: int = 0
     price_window_days: int = 0
     price_floor_cents: int = 0        # mínima histórica conhecida. 0 = desconhecida
-    price_floor_window_days: int = 0  # janela da mínima (dias); 0 = desconhecida
+    price_floor_window_days: int = 0
+    # `sales` é um BALDE ("+250 mil"), não uma contagem exata? O Mercado Livre
+    # só publica a faixa (100 mil, 250 mil, 1 milhão) e o anúncio escreve
+    # "+250 mil vendidos". Escrever "250 mil vendidos" seco seria afirmar
+    # precisão que o dado não tem — e, no primeiro story real, o número exibido
+    # estava 50x abaixo do anúncio por outro motivo (era estimativa mensal).
+    sales_e_faixa: bool = False  # janela da mínima (dias); 0 = desconhecida
 
     @property
     def discount_pct(self) -> int:

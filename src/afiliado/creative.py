@@ -938,11 +938,11 @@ GRAFICO_KICKER_Y = 156
 # Espaço reservado abaixo do gráfico: rótulos do eixo x + divisória + rodapé.
 GRAFICO_RODAPE_ALTURA = 250
 
-# Um preço acima de `mediana × PICO_FATOR` que dure até `PICO_MAX_DIAS` é a
-# etiqueta que o vendedor pendura para justificar o "de" — não é preço. O caso
-# real que deu origem à régua: 89 dias a R$ 26,00 e UM dia a R$ 68,90.
-PICO_FATOR = 1.5
-PICO_MAX_DIAS = 2
+# A régua do pico inflado mora em `pricing` (é regra de preço, não de desenho)
+# e é a MESMA que o `flagrante` usa. Reexportada aqui só para quem já lê este
+# módulo como o design system.
+PICO_FATOR = pricing.PICO_FATOR
+PICO_MAX_DIAS = pricing.PICO_MAX_DIAS
 
 ROTULO_MEDIANA = "preço de sempre"
 ROTULO_P25 = "promoção de verdade"

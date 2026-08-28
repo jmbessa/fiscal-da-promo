@@ -35,11 +35,20 @@ DEFAULT_REF_MIN_OBSERVATIONS = 14
 DEFAULT_MIN_REAL_DISCOUNT_PCT = 10
 MIN_WINDOW_DAYS = 14
 
+# Fase 5D — a régua do PICO INFLADO, que vale para o gráfico (creative) e para
+# o detector de flagrante. Fica aqui, com o resto da régua, porque é uma regra
+# de preço e não de desenho: um preço acima de `mediana × PICO_FATOR` que dure
+# até `PICO_MAX_DIAS` é a etiqueta que o vendedor pendura para justificar o
+# "de" — não é preço. O caso real que deu origem a ela: 89 dias a R$ 26,00 e
+# UM dia a R$ 68,90, anunciado como "62% OFF".
+PICO_FATOR = 1.5
+PICO_MAX_DIAS = 2
+
 __all__ = ["Verdict", "NO_CLAIM", "verdict", "price_line", "price_line_html",
            "enrich_offers", "record_observations", "median_cents", "p25_cents",
            "window_text", "format_sales", "setting", "MIN_WINDOW_DAYS",
            "DEFAULT_REF_WINDOW_DAYS", "DEFAULT_REF_MIN_OBSERVATIONS",
-           "DEFAULT_MIN_REAL_DISCOUNT_PCT"]
+           "DEFAULT_MIN_REAL_DISCOUNT_PCT", "PICO_FATOR", "PICO_MAX_DIAS"]
 
 
 def setting(section: dict, key: str, default):

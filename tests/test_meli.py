@@ -301,6 +301,16 @@ def _pool_com(tmp_path, entradas):
     return [o.item_id for o in offers], src.pool_warning
 
 
+def _pool_com_nota(tmp_path, entradas):
+    """Como `_pool_com`, mas devolve também a `pool_note` — o canal
+    INFORMATIVO, separado do aviso desde a fase 5J."""
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, entradas)
+    src = source_with(_no_network_handler, tmp_path)
+    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    return [o.item_id for o in offers], src.pool_warning, src.pool_note
+
+
 def test_pool_pula_cada_campo_de_preco_ausente_ou_invalido(tmp_path):
     # Fase 5J: o ZERO deixou de ser "campo ausente" e passou a ter motivo
     # próprio quando é PARCIAL (P2, M2, J1 abaixo) — o resto (nulo, texto,
@@ -563,24 +573,44 @@ def test_pool_sem_historico_nao_e_barrado_pela_faixa_de_preco(tmp_path):
     Verificado: quem barra por preço VIVO é `validate.check_price`, DEPOIS do
     `refresh_price` — a mesma faixa, sobre o preço que vai ao post. Então aqui
     a checagem é pulada, e o aviso diz isso."""
-    ids, aviso = _pool_com(tmp_path, [
+    ids, aviso, nota = _pool_com_nota(tmp_path, [
         {"product_id": "SEM", "title": "t", **SEM_HISTORICO},
         {"product_id": "CARO", "title": "t", "price_ref_cents": 100001},
     ])
     assert ids == ["SEM"]                      # a de R$ 3.000 COM régua cai
-    assert "1 entrada(s) do pool ignorada(s) (1 fora da faixa de preço)" in aviso
-    assert "1 entrada(s) sem histórico" in aviso
-    assert "preço VIVO" in aviso
+    assert aviso == "1 entrada(s) do pool ignorada(s) (1 fora da faixa de preço)"
+    assert "1 entrada(s) sem histórico" in nota
+    assert "preço VIVO" in nota
 
 
-def test_pool_so_com_entradas_sem_historico_avisa_sem_ignorar_nada(tmp_path):
-    ids, aviso = _pool_com(tmp_path, [
+def test_pool_so_com_entradas_sem_historico_nao_gera_aviso_nenhum(tmp_path):
+    """A separação entre `pool_warning` e `pool_note`: pool inteiro sem
+    histórico é estado SAUDÁVEL — nada foi ignorado, e o doctor tem de mostrar
+    ✅. Um ⚠️ aceso todo dia deixa de ser lido, e a entrada silenciosamente
+    ignorada se esconderia atrás dele."""
+    ids, aviso, nota = _pool_com_nota(tmp_path, [
         {"product_id": "A", "title": "t", **SEM_HISTORICO},
         {"product_id": "B", "title": "t", **SEM_HISTORICO},
     ])
     assert ids == ["A", "B"]
-    assert aviso.startswith("2 entrada(s) sem histórico")
-    assert "modo B" in aviso
+    assert aviso is None
+    assert nota.startswith("2 entrada(s) sem histórico")
+    assert "modo B" in nota
+
+
+def test_pool_note_nao_sobrevive_a_uma_leitura_que_nem_chegou_ao_pool(tmp_path):
+    """Retorno antecipado (pool ausente) tem de limpar a nota da leitura
+    anterior — senão ela descreve um pool que não foi lido."""
+    src = source_with(_no_network_handler, tmp_path)
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "A", "title": "t", **SEM_HISTORICO}])
+    cfg = {"meli": {"offers_path": str(pool_path)}, "selection": SEL}
+    assert src.fetch_offers(cfg) and src.pool_note
+
+    cfg["meli"]["offers_path"] = str(tmp_path / "nao_existe.json")
+    assert src.fetch_offers(cfg) == []
+    assert src.pool_note is None
+    assert "pool ausente ou inválido" in src.pool_warning
 
 
 def test_ruler_coverage_conta_quantas_entradas_tem_regua_curada(tmp_path):

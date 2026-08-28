@@ -92,6 +92,10 @@ class MeliSource:
         # ausente/inválido/vencido, entradas puladas e por quê); None quando
         # a última leitura foi limpa. Vai ao doctor e ao resumo de ops.
         self.pool_warning: str | None = None
+        # Observação sobre o pool que NÃO é problema (entradas sem histórico).
+        # Separada do aviso porque o doctor e o resumo tratam as duas de forma
+        # diferente: uma pede ação, a outra só informa.
+        self.pool_note: str | None = None
 
     # -- autenticação ---------------------------------------------------
 
@@ -214,7 +218,11 @@ class MeliSource:
         sel = cfg.get("selection") or {}
         offers_path = Path(me.get("offers_path") or DEFAULT_OFFERS_PATH)
         commission_pct = float(me.get("commission_pct") or 0.0)
+        # Os DOIS zerados aqui: um retorno antecipado (pool ausente ou vencido)
+        # deixaria a nota da leitura anterior de pé, descrevendo um pool que
+        # nem foi lido.
         self.pool_warning = None
+        self.pool_note = None
         hoje = date.today()
 
         try:
@@ -248,20 +256,23 @@ class MeliSource:
             seen_ids.add(offer.item_id)
             self._buy_box_ids[offer.item_id] = str(item["buy_box_item_id"])
             offers.append(offer)
-        avisos: list[str] = []
         if motivos:
             detalhe = ", ".join(f"{n} {motivo}" for motivo, n in
                                 sorted(motivos.items(), key=lambda kv: (-kv[1], kv[0])))
-            avisos.append(
+            self.pool_warning = (
                 f"{sum(motivos.values())} entrada(s) do pool ignorada(s) ({detalhe})")
+        # `pool_note` é INFORMATIVO e mora fora do `pool_warning` de propósito:
+        # este significa "voltou menos do que o pool tem", e é sobre ele que a
+        # rede contra o zero silencioso afirma `is None`. Um pool inteiro sem
+        # histórico é estado SAUDÁVEL — despejá-lo no aviso faria o doctor
+        # imprimir ⚠️ num dia normal, e um ⚠️ que está sempre aceso deixa de
+        # ser lido: a entrada silenciosamente ignorada se esconderia atrás dele.
         sem_regua = len(offers) - self.ruler_coverage(offers)[0]
-        if sem_regua:
-            avisos.append(
-                f"{sem_regua} entrada(s) sem histórico: régua zerada, publicam em "
-                "modo B (sem alegar desconto e sem selo) até o nosso price_log "
-                "sustentar a régua — a faixa de preço delas é checada no preço "
-                "VIVO, depois do refresh, e não na carga")
-        self.pool_warning = "; ".join(avisos) or None
+        self.pool_note = (
+            f"{sem_regua} entrada(s) sem histórico: régua zerada, publicam em "
+            "modo B (sem alegar desconto e sem selo) até o nosso price_log "
+            "sustentar a régua — a faixa de preço delas é checada no preço "
+            "VIVO, depois do refresh, e não na carga") if sem_regua else None
         return offers
 
     # -- preço ao vivo (imediatamente antes de publicar) -------------------

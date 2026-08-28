@@ -93,8 +93,17 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
         if sel.get("require_price_ref") and o.price_ref_cents <= 0:
             corta("sem_ref")
             continue
+        # Fase 5J: `price_current_cents == 0` é "preço ainda DESCONHECIDO", não
+        # "preço zero". É como a entrada do ML sem histórico chega — o pool não
+        # traz mais a mediana da janela e o preço só existe depois do
+        # `refresh_price`, que roda DEPOIS deste filtro. Cortá-la aqui matava
+        # 100% delas em silêncio (a assinatura do zero silencioso), e deixá-la
+        # passar não abre porta nenhuma: `validate.check_price` roda depois do
+        # refresh e aplica ESTA MESMA faixa sobre o preço vivo — a oferta de
+        # R$ 3.000, e a que continuar sem preço, caem lá.
         preco_brl = o.price_current_cents / 100
-        if not sel["price_min_brl"] <= preco_brl <= sel["price_max_brl"]:
+        if o.price_current_cents > 0 and not (
+                sel["price_min_brl"] <= preco_brl <= sel["price_max_brl"]):
             corta("faixa_preco")
             continue
         if (o.source, o.item_id) in ja_postados:
@@ -103,7 +112,15 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
         result.append(o)
     piso = float(sel.get("min_ev_brl") or 0)
     if piso > 0:
-        acima_do_piso = [o for o in result if ev_score(o, cfg) >= piso]
+        # Mesma razão da faixa acima: o EV é a comissão (preço × taxa)
+        # ponderada por popularidade, e sem PREÇO não há comissão a medir — o
+        # piso não tem como julgar a oferta, só zerá-la. Com o `min_ev_brl` do
+        # config real (0,50), isto sozinho matava toda entrada sem histórico.
+        # Ela já paga o preço disso no RANKING: `ev_score` 0 a joga para o fim
+        # da fila, atrás de qualquer oferta com régua; quem a puxa de volta é a
+        # cota por fonte (`next_index_by_quota`), quando o ML está atrasado.
+        acima_do_piso = [o for o in result
+                         if o.price_current_cents <= 0 or ev_score(o, cfg) >= piso]
         cortes["ev"] = len(result) - len(acima_do_piso)
         result = acima_do_piso
     return result, FilterStats(**cortes)

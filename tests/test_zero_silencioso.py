@@ -184,6 +184,50 @@ def test_pool_real_produz_candidatas_com_o_config_real(tmp_path, monkeypatch):
     db.close()
 
 
+def test_pool_so_de_entradas_sem_historico_produz_candidatas(tmp_path):
+    """Fase 5J, e é o zero silencioso de novo: o leitor passou a aceitar a
+    entrada sem histórico, mas ela chega com `price_current_cents == 0` (o
+    preço só existe depois do `refresh_price`, que roda DEPOIS do filtro). Com
+    o `config.yaml` real, a faixa de preço e o piso de `min_ev_brl` matavam
+    100% delas — a fase inteira seria um no-op, sem nada falhar."""
+    from tests.test_meli import SEM_HISTORICO, write_pool
+
+    pool = write_pool(tmp_path / "pool.json", [
+        {"product_id": f"MLB{i}", "title": f"Produto {i}", **SEM_HISTORICO,
+         "image_url": "https://http2.mlstatic.com/x.jpg", "category": "MLB264586",
+         "sales": 13337, "rating": 4.8}
+        for i in range(3)])
+    cfg = load_config(CONFIG_REAL)
+    cfg["meli"]["offers_path"] = str(pool)
+    src = _meli_source(tmp_path)
+    offers = src.fetch_offers(cfg)
+    assert len(offers) == 3, src.pool_warning
+
+    db = StateDB(tmp_path / "s.db")
+    candidatas = selection.filter_offers(pricing.enrich_offers(offers, db, None, cfg), db, cfg)
+    assert len(candidatas) == 3, (
+        "3 entradas sem histórico entraram e nem todas sobraram — é o zero "
+        "silencioso de novo, agora no preço desconhecido")
+    db.close()
+
+
+def test_a_entrada_sem_historico_nao_entra_por_uma_porta_que_a_de_30_reais_nao_usa(tmp_path):
+    """A checagem de faixa foi PULADA na carga, não removida: ela volta no
+    preço VIVO, depois do `refresh_price`. Uma oferta de R$ 3.000 (e uma sem
+    preço nenhum) é barrada lá — pelo mesmo `price_min_brl..price_max_brl`."""
+    from afiliado import validate
+    from afiliado.errors import ValidationError
+    from tests.test_models import make_offer
+
+    cfg = load_config(CONFIG_REAL)
+    sem_regua = dict(source="meli", price_ref_cents=0, price_p25_cents=0,
+                     price_window_days=0, price_original_cents=0)
+    validate.check_price(make_offer(**sem_regua, price_current_cents=3390), cfg)
+    for centavos in (300_000, 1999, 0):
+        with pytest.raises(ValidationError, match="fora da faixa"):
+            validate.check_price(make_offer(**sem_regua, price_current_cents=centavos), cfg)
+
+
 def test_config_real_nao_tem_mais_portao_de_desconto():
     cfg = load_config(CONFIG_REAL)
     assert "min_discount_pct" not in cfg["selection"]

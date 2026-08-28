@@ -119,18 +119,75 @@ que se chama "Fiscal" e existe para denunciar preço enganoso, omitindo que
 ganha comissão em cada indicação. É a única peça do plano em que a marca
 trabalha contra si mesma.
 
-## Fase 5D — o que o pipeline precisa ganhar
+## Fase 5D — o que o pipeline ganhou
 
-1. **Gerador de gráfico de preço** (Pillow): série de 90 dias, pico circulado,
-   linha da mediana e do p25. É a peça central dos três formatos.
-2. **Detector de flagrante**: varre o `price_log` e a watchlist atrás de
-   produtos cujo "de" do vendedor não se sustenta no histórico. Já temos o
-   dado; falta a consulta e o ranqueamento por gravidade.
-3. **Gerador de carrossel** (múltiplas imagens + publicação como álbum na
-   Graph API).
-4. **Gerador de Reel** (ffmpeg): zoom sobre o gráfico, revelação do veredito,
-   narração sintética opcional, mascote.
-5. **Fila de aprovação** para o Flagrante: a peça vai ao chat de operações e só
-   publica com o "ok" do dono.
-6. **Legenda indexável** (o Instagram é indexado pelo Google desde 10/07/2025)
-   e a frase-assinatura fixa.
+Isto **existe e roda**. O comando é `afiliado feed`, ele não sai pelo
+`afiliado run`, e quem o chama em produção é o passo "Conteúdo do feed" do
+`.github/workflows/publish.yml`.
+
+### O comando
+
+| | `--tipo termometro` (padrão) | `--tipo flagrante` |
+|---|---|---|
+| O que monta | carrossel: capa + até 6 ofertas + fecho (1080×1350) | um gráfico de preço de 90 dias (1080×1080) |
+| Para onde vai | **publica** no Instagram (álbum na Graph API) | **chat de operações**, esperando o "ok" do dono |
+| Quem escolhe | `selection.filter_offers` + `rank_offers`, a mesma régua do `run` | `flagrante.encontra`, ordenado por gravidade |
+| Teto | `channels.instagram_carrossel` (1/dia) + o ritmo da 5A | nenhum: não publica |
+| Dedupe | `posted`, por oferta (30 dias) e por carrossel | `day_flags`, 7 dias por produto |
+
+`--dry-run` grava os PNGs em `.claude/previews/`, imprime a legenda e **não**
+escreve no banco nem chama a Graph API.
+
+### As peças
+
+1. **Gráfico de preço** (`creative.render_grafico_preco`): série de 90 dias
+   sobre navy, linha da mediana rotulada "preço de sempre", faixa do p25
+   rotulada "promoção de verdade", cada pico inflado circulado com a duração
+   ("1 dia"). **Não usa a foto do vendedor** — é por ser 100% nosso que o
+   desenho conta como conteúdo original, que é o requisito no topo deste
+   documento.
+2. **Detector de flagrante** (`flagrante.encontra`): quatro portões sobre o
+   `price_log`, `gravidade = (preço "de" ÷ mediana) × (desconto alegado ÷ 100)`.
+   A mediana é a de `pricing.enrich_offers` — a linha desenhada e o limiar da
+   consulta são o mesmo número.
+3. **Carrossel** (`creative.carrossel_fotos` + `render_carrossel` +
+   `InstagramFeedChannel.publish_carrossel`): capa sem preço nenhum (vende o
+   conceito), um slide por oferta reaproveitando a arte de feed com um contador,
+   fecho com a frase-assinatura. Um carrossel de 6 ofertas conta como **UM**
+   post na cota de 100/24 h da Meta. Produto cuja foto não baixa é pulado, com
+   aviso, e a capa e a legenda são montadas depois — a peça nunca anuncia um
+   item que não está nela; abaixo de 2 ofertas, não sai.
+4. **Fila de aprovação do flagrante**: a peça vai ao chat de operações com a
+   legenda dizendo, na primeira linha, que **não** foi publicada e por quê.
+   Nomear um vendedor é risco jurídico e reputacional, e isso não se
+   automatiza. O "ok" que volta pelo chat ainda **não** existe (ver abaixo).
+5. **Legenda indexável**: nome completo do produto, categoria por nome, "Preço
+   verificado nos últimos N dias" (só com N medido) e a frase-assinatura. Nada
+   de pedido de curtida, comentário, compartilhamento ou marcação.
+
+### Cadência entregue
+
+**Um carrossel publicado e um flagrante despachado por dia**, às 08:00 BRT, pelo
+GitHub Actions — o passo é `continue-on-error`, então uma peça que falha não
+derruba o commit de estado do `run`. A pesquisa acima pede 2–3 carrosséis por
+semana e a cadência entregue é 7; a mesma pesquisa mede crescimento monotônico
+com a frequência e nenhuma penalidade por volume, então o teto que manda é o
+`channels.instagram_carrossel.max_per_day` do `config.yaml` — baixar é editar
+esse número ou o cron. Fora do Actions, `afiliado feed` na mão do dono.
+
+### O que ainda falta
+
+- **Reel** (item 4 da lista original): gerador com ffmpeg — zoom sobre o
+  gráfico, revelação do veredito, narração sintética, mascote. É o motor de
+  AQUISIÇÃO (o maior share rate) e não existe: hoje a conta só tem o motor de
+  retenção.
+- **Narração sintética**, que o Reel pressupõe.
+- **O "ok" do dono voltando pelo chat**: o flagrante é despachado, mas quem
+  publica depois é o dono, à mão. Não há bot lendo a resposta.
+- **"Vale a pena esperar?"** (formato 3) e o **carrossel educativo perene**:
+  nenhum dos dois tem gerador.
+- **Copy do LLM sem bloqueio contra engagement bait**: o headline e a CTA vêm
+  do LLM e entram na legenda pública. A proibição está no prompt, e não há
+  regex de rejeição — as palavras de isca ("marca", "salva", "comenta") colidem
+  com copy legítima de produto, e uma rejeição agressiva cairia no fallback
+  neutro em silêncio. Decisão registrada, não esquecimento.

@@ -593,6 +593,22 @@ def test_a_legenda_e_a_capa_so_falam_das_ofertas_que_entraram(
     db.close()
 
 
+def test_carrossel_que_nem_chega_a_existir_avisa_o_ops(tmp_path, monkeypatch, capsys):
+    """Com as fotos todas quebradas o post não sai — e o passo do Actions é
+    `continue-on-error`, então o job segue VERDE. Se isto só fosse ao log, o
+    feed podia parar por uma semana sem que ninguém notasse."""
+    _fontes(monkeypatch, _ofertas(3))
+    _liga_instagram(monkeypatch)
+    ops = _canal_e_ops(monkeypatch, _CanalQueAvisa())
+    monkeypatch.setattr(
+        cli, "_cliente_http",
+        lambda: httpx.Client(transport=httpx.MockTransport(
+            lambda r: httpx.Response(404))))
+
+    assert cli.main(["feed", "--config", _cfg_com_canal(tmp_path)]) == 1
+    assert any("não foi gerado" in texto for texto in ops)
+
+
 def test_o_aviso_do_canal_sai_mesmo_quando_a_publicacao_falha(
         tmp_path, monkeypatch, capsys):
     """O aviso nasce DURANTE a publicação: se ele só saísse no caminho feliz,

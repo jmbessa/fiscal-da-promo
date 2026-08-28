@@ -1001,7 +1001,13 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
             imagens = creative.render_carrossel(fotos, titulo, subtitulo, handle=handle,
                                                 brand_name=nome_marca)
         except SourceError as exc:
+            # O passo do Actions é `continue-on-error` e o job segue VERDE: se
+            # isto só fosse ao log, o feed podia parar por uma semana sem que
+            # ninguém notasse. É o mesmo caminho da falha de publicação.
             print(f"❌ carrossel: falha ao gerar a arte — {exc}")
+            if not args.dry_run:
+                _notifica_ops(cfg, "\n".join(
+                    [f"❌ Carrossel do feed não foi gerado: {exc}", *avisos]))
             return 1
 
     if args.dry_run:

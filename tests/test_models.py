@@ -76,6 +76,42 @@ def test_campos_da_regua_nascem_zerados():
     assert offer.price_floor_window_days == 0
 
 
+# --- Fase 5P: o preço de CHECKOUT, lido do navegador --------------------------
+
+def test_o_preco_de_checkout_nasce_ausente_e_a_oferta_publica_o_de_catalogo():
+    """Sem leitura, tudo é como sempre foi — que é o comportamento para o qual
+    esta fase inteira falha quando qualquer coisa dá errado."""
+    offer = make_offer(price_current_cents=59900)
+    assert offer.price_checkout_cents == 0
+    assert offer.price_checkout_label == ""
+    assert offer.published_price_cents == 59900
+
+
+def test_com_leitura_o_numero_publicado_e_o_de_checkout():
+    """O caso real: publicamos R$ 599,00 e a página cobra R$ 523,48 com cupom."""
+    offer = make_offer(price_current_cents=59900, price_checkout_cents=52348,
+                       price_checkout_label="com cupom")
+    assert offer.published_price_cents == 52348
+    # E o de catálogo continua onde estava: é ele que alimenta o price_log, a
+    # mediana, o p25, o piso do selo e o `check_price`.
+    assert offer.price_current_cents == 59900
+
+
+def test_o_desconto_publicado_fecha_a_conta_dos_dois_numeros_exibidos():
+    """A peça mostra "De: X | Por: Y (N% OFF)". N tem de ser a aritmética de X
+    e Y, senão o seguidor faz a conta e ela não bate. `real_discount_pct`
+    continua sendo o do preço de CATÁLOGO, que é quem decide se há alegação."""
+    offer = make_offer(price_ref_cents=75000, price_current_cents=59900,
+                       price_checkout_cents=52348, price_checkout_label="com cupom")
+    assert offer.real_discount_pct == 20        # 750,00 -> 599,00: o portão
+    assert offer.published_discount_pct == 30   # 750,00 -> 523,48: o que se lê
+
+
+def test_sem_checkout_os_dois_descontos_sao_o_mesmo():
+    offer = make_offer(price_ref_cents=2600, price_current_cents=1890)
+    assert offer.published_discount_pct == offer.real_discount_pct == 27
+
+
 def test_verdict_e_imutavel_e_sem_selo_por_padrao():
     v = Verdict("A", 27, "")
     assert v.seal_window_days == 0

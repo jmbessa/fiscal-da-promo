@@ -623,6 +623,82 @@ def test_quando_falta_espaco_quem_cede_e_a_referencia_riscada(rotulo):
     assert dims["nota_text"] == rotulo.upper()
 
 
+# --- Fase 5P: o rótulo INVERTIDO, quando o navegador leu o preço de checkout --
+#
+# Mesmo slot, mesma medição, sentido oposto: em vez de "SEM CUPOM" (a ressalva
+# que o dono recusou), a CONDIÇÃO do número que a peça está mostrando. Ele só
+# aparece quando houve leitura, e aí o rótulo da 5N não aparece de jeito nenhum
+# — o preço publicado é um só e tem uma condição só.
+
+
+def _lida(**kw):
+    """A oferta do caso real: catálogo R$ 599,00, checkout R$ 523,48."""
+    base = dict(price_current_cents=59900, price_checkout_cents=52348,
+                price_checkout_label="com cupom")
+    base.update(kw)
+    return make_offer(**base)
+
+
+def test_a_pill_desenha_o_preco_lido_com_a_condicao(rotulo):
+    """Nos dois estados do interruptor da 5N: a condição da leitura tem
+    precedência sobre ele."""
+    offer = _lida()
+    for plan in (story_plan(offer, NO_CLAIM), feed_plan(offer, NO_CLAIM)):
+        assert plan["sem_cupom"] == "COM CUPOM"
+    assert _pill_story(offer)["cur_text"] == "R$ 523,48"
+    assert _pill_feed(offer)["cur_text"] == "R$ 523,48"
+
+
+def test_a_condicao_lida_tambem_nao_custa_um_pixel_de_altura(rotulo):
+    for pill in (_pill_story, _pill_feed):
+        assert pill(_lida())["height"] == pill(make_offer())["height"]
+
+
+def test_com_cupom_mede_o_mesmo_que_sem_cupom():
+    """A medição da 5K vale inteira para o rótulo desta fase: as duas palavras
+    têm a mesma largura, então o pior caso publicável continua sendo os 906 px
+    de pill no story, com 30 px de folga na largura útil."""
+    for pill, largura in ((_pill_story, STORY_TITLE_WIDTH), (_pill_feed, FEED_TITLE_WIDTH)):
+        offer = make_offer_ref(PIOR_REF, price_current_cents=PIOR_PRECO,
+                               price_checkout_cents=PIOR_PRECO,
+                               price_checkout_label="com cupom")
+        dims = pill(offer, Verdict("A", 90, ""))
+        assert dims["nota_text"] == "COM CUPOM"
+        assert dims["width"] <= largura
+        assert not dims["orig_text"].endswith("…")
+
+
+def test_a_condicao_longa_cabe_no_canvas_e_no_story_quem_cede_e_a_referencia():
+    """"NO PIX COM CUPOM" é 126 px mais larga que "COM CUPOM" no story (288
+    contra 162) e 112 no feed (256 contra 144). Medido em 2026-08-28, no pior
+    caso publicável (R$ 999,99 com referência riscada de R$ 1.999,99):
+
+        story  720 px sem rótulo · 906 com "COM CUPOM" · 929 com o longo (936 útil)
+        feed   637 px sem rótulo · 803 com "COM CUPOM" · 915 com o longo (952 útil)
+
+    Ou seja: os dois cabem, e no STORY o guarda cobra a diferença da referência
+    riscada — que é a precedência certa e a que a 5K já tinha desenhado. O
+    riscado é decoração e nasceu com mecanismo de corte; a condição é a
+    honestidade do número e não pode sumir para caber."""
+    offer = make_offer_ref(PIOR_REF, price_current_cents=PIOR_PRECO,
+                           price_checkout_cents=PIOR_PRECO,
+                           price_checkout_label="no Pix com cupom")
+    story = _pill_story(offer, Verdict("A", 90, ""))
+    feed = _pill_feed(offer, Verdict("A", 90, ""))
+    assert story["nota_text"] == feed["nota_text"] == "NO PIX COM CUPOM"
+    assert story["width"] <= STORY_TITLE_WIDTH and feed["width"] <= FEED_TITLE_WIDTH
+    assert story["orig_text"].endswith("…")
+    assert not feed["orig_text"].endswith("…")
+
+
+def test_no_modo_b_a_condicao_longa_nem_encosta_no_guarda():
+    """O modo B não tem riscado para ceder — e não precisa: sem ele a pill é o
+    preço mais o rótulo, e sobra largura útil de sobra nos dois formatos."""
+    offer = _lida(price_checkout_label="no Pix com cupom")
+    assert _pill_story(offer)["width"] <= STORY_TITLE_WIDTH
+    assert _pill_feed(offer)["width"] <= FEED_TITLE_WIDTH
+
+
 def test_a_direita_do_preco_na_pill_e_o_rotulo_ou_e_ouro_liso(rotulo):
     """O que a IMAGEM prova, nos dois estados.
 

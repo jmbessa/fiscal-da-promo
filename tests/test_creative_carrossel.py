@@ -90,6 +90,19 @@ def test_o_slide_de_oferta_acompanha_o_rotulo_da_shopee(rotulo):
     assert [s["sem_cupom"] for s in ofertas] == [rotulo.upper(), ""]
 
 
+def test_o_slide_de_oferta_publica_o_preco_lido_com_a_condicao(rotulo):
+    """Fase 5P: com leitura de checkout, o slide mostra o número da PÁGINA e a
+    condição dele, nos dois estados do interruptor da 5N — e a legenda do álbum
+    (`cli.legenda_do_carrossel`, que lê `pricing.preco_publicado`) diz o mesmo.
+    Sem leitura nada muda."""
+    lido = _post(1, price_current_cents=59900, price_checkout_cents=52348,
+                 price_checkout_label="com cupom")
+    (slide,) = [s for s in carrossel_plan([lido], TITULO, SUBTITULO)
+                if s["tipo"] == "oferta"]
+    assert slide["preco"] == "R$ 523,48"
+    assert slide["sem_cupom"] == "COM CUPOM"
+
+
 def test_carrossel_nunca_passa_de_oito_slides():
     """Capa + fecho ocupam dois lugares: sobram seis para ofertas. A pesquisa
     só sustenta "6 a 8 slides" fracamente, e menos slide é mais barato de

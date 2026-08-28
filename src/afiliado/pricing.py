@@ -80,7 +80,7 @@ MOSTRAR_SEM_CUPOM = False
 __all__ = ["Verdict", "NO_CLAIM", "verdict", "price_line", "price_line_html",
            "enrich_offers", "record_observations", "median_cents", "p25_cents",
            "window_text", "format_sales", "sales_window_text", "setting",
-           "sem_cupom", "preco_publicado", "SEM_CUPOM",
+           "sem_cupom", "rotulo_do_preco", "preco_publicado", "SEM_CUPOM",
            "MIN_WINDOW_DAYS",
            "DEFAULT_REF_WINDOW_DAYS", "DEFAULT_REF_MIN_OBSERVATIONS",
            "DEFAULT_MIN_REAL_DISCOUNT_PCT", "PICO_FATOR", "PICO_MAX_DIAS"]
@@ -130,6 +130,13 @@ def verdict(offer: Offer, min_real_discount_pct: int) -> Verdict:
     `real_discount_pct >= min_real_discount_pct` (e > 0: sem referência o
     desconto verificado é 0 e o post nunca alega "0% OFF").
 
+    `current` aqui é sempre o preço de CATÁLOGO (`price_current_cents`), mesmo
+    quando a fase 5P leu um preço de checkout mais barato: a série que produziu
+    a mediana e o p25 é de preços de catálogo, e comparar um preço de cupom com
+    ela faria "abaixo do quartil mais barato" valer todo dia em que houvesse
+    cupom. A leitura de checkout NUNCA abre uma alegação que o catálogo não
+    ganhou — ela só muda o número (e o percentual) que a peça imprime.
+
     O quartil é ESTRITO (`<`, não `<=`): preços são discretos e repetidos, e
     um preço que ocupa 40% dos dias É o próprio p25 — com `<=`, "68,90 em 54
     dias / 26,00 em 36" ganharia "62% OFF verificado", exatamente o padrão
@@ -153,7 +160,11 @@ def verdict(offer: Offer, min_real_discount_pct: int) -> Verdict:
               and offer.price_current_cents < offer.price_p25_cents
               and desconto > 0 and desconto >= min_real_discount_pct)
     if modo_a:
-        return Verdict("A", desconto, seal, seal_days)
+        # O PORTÃO acima é decidido com o preço de CATÁLOGO, contra uma série
+        # de preços de catálogo. O percentual que sai daqui é o do número
+        # EXIBIDO (fase 5P: com leitura de checkout eles diferem), para que
+        # "De: X | Por: Y (N% OFF)" feche a conta na peça.
+        return Verdict("A", offer.published_discount_pct, seal, seal_days)
     return Verdict("B", 0, seal, seal_days)
 
 
@@ -227,18 +238,35 @@ def sem_cupom(offer: Offer, mostrar: bool | None = None) -> str:
     return SEM_CUPOM if offer.source == "shopee" else ""
 
 
+def rotulo_do_preco(offer: Offer) -> str:
+    """A frase que qualifica o número publicado — UMA, nunca duas.
+
+    Fase 5P: quando o navegador leu o preço de checkout, o rótulo é a condição
+    que a página deu a ele ("com cupom", "no Pix com cupom") e ela tem
+    precedência sobre o "sem cupom" da 5N em qualquer estado do interruptor —
+    publicar "R$ 523,48 sem cupom" diria o contrário do que o número significa.
+
+    Sem leitura, tudo é como na 5N: o "sem cupom" da Shopee, se ligado; nada no
+    resto. Este é o ÚNICO lugar que decide qual dos dois é; arte, texto do
+    Telegram e legendas importam daqui."""
+    if offer.price_checkout_cents > 0:
+        return offer.price_checkout_label
+    return sem_cupom(offer)
+
+
 def _com_rotulo(offer: Offer, preco: str) -> str:
     """O preço já marcado (texto puro ou `<b>…</b>`) com o rótulo colado
     depois dele — fora de qualquer marcação, porque o negrito é do NÚMERO."""
-    rotulo = sem_cupom(offer)
+    rotulo = rotulo_do_preco(offer)
     return f"{preco} {rotulo}" if rotulo else preco
 
 
 def preco_publicado(offer: Offer) -> str:
-    """O preço atual como ele vai ao público: o número e — enquanto o rótulo
-    estiver ligado — o "sem cupom" das ofertas da Shopee. É o que a legenda do
-    carrossel usa, e é por existir aqui que ela não reimplementa a regra."""
-    return _com_rotulo(offer, format_brl(offer.price_current_cents))
+    """O preço como ele vai ao público: o número (`published_price_cents` — o de
+    checkout quando houve leitura, o de catálogo quando não) e a frase que o
+    qualifica. É o que a legenda do carrossel usa, e é por existir aqui que ela
+    não reimplementa a regra."""
+    return _com_rotulo(offer, format_brl(offer.published_price_cents))
 
 
 def price_line(offer: Offer, verdict: Verdict) -> tuple[str, str]:
@@ -267,7 +295,7 @@ def price_line_html(offer: Offer, verdict: Verdict) -> tuple[str, str]:
     Com o rótulo ligado ele entra depois do preço e FORA do negrito — o herói
     do bloco é o número.
     `format_brl` não produz caractere especial de HTML: nada precisa de escape."""
-    preco = _com_rotulo(offer, f"<b>{format_brl(offer.price_current_cents)}</b>")
+    preco = _com_rotulo(offer, f"<b>{format_brl(offer.published_price_cents)}</b>")
     if verdict.mode == "A":
         return (f"De: <s>{format_brl(offer.price_ref_cents)}</s> | "
                 f"Por: {preco} ({verdict.discount_pct}% OFF)", "")

@@ -328,6 +328,81 @@ def test_price_line_html_poe_o_rotulo_fora_do_negrito(rotulo):
         f"De: <s>R$ 799,00</s> | Por: <b>R$ 689,99</b>{sufixo} (13% OFF)")
 
 
+# -- Fase 5P: o rótulo INVERTIDO, quando o navegador leu o preço de checkout ---
+#
+# O rótulo da 5N ("sem cupom") é a versão NEGATIVA do mesmo fato e está
+# desligado. Este é o outro: só existe quando temos o número REAL da página, e
+# diz o que ele exige. Os dois nunca convivem — o preço publicado é um só, e ele
+# tem uma condição só.
+
+
+def _com_checkout(**kw):
+    """A oferta do caso real: catálogo R$ 599,00, checkout R$ 523,48 com cupom."""
+    base = dict(price_current_cents=59900, price_checkout_cents=52348,
+                price_checkout_label="com cupom")
+    base.update(kw)
+    return make_offer(**base)
+
+
+def test_o_rotulo_do_preco_e_a_condicao_lida_e_engole_o_sem_cupom(rotulo):
+    """Com leitura, o rótulo é a condição da página nos DOIS estados do
+    interruptor da 5N: publicar "R$ 523,48 sem cupom" seria dizer o contrário do
+    que o número significa."""
+    assert pricing.rotulo_do_preco(_com_checkout()) == "com cupom"
+
+
+def test_sem_leitura_o_rotulo_continua_sendo_o_da_5n(rotulo):
+    assert pricing.rotulo_do_preco(make_offer()) == rotulo
+    assert pricing.rotulo_do_preco(make_offer(source="meli")) == ""
+
+
+def test_preco_publicado_com_leitura_e_o_numero_da_pagina(rotulo):
+    assert pricing.preco_publicado(_com_checkout()) == "R$ 523,48 com cupom"
+
+
+def test_price_line_com_leitura_no_modo_b(rotulo):
+    offer = _com_checkout(rating=4.9, sales=45950, sales_window_days=30)
+    assert pricing.price_line(offer, NO_CLAIM) == (
+        "R$ 523,48 com cupom", "⭐ 4,9 · 45 mil vendidos no último mês")
+
+
+def test_price_line_html_com_leitura_deixa_a_condicao_fora_do_negrito(rotulo):
+    assert pricing.price_line_html(_com_checkout(), NO_CLAIM)[0] == (
+        "<b>R$ 523,48</b> com cupom")
+
+
+def test_a_leitura_nao_abre_alegacao_de_desconto_que_o_catalogo_nao_ganhou():
+    """O PORTÃO continua sendo o preço de catálogo contra o p25 da nossa série
+    — que é uma série de preços de catálogo. Deixar o preço de cupom entrar aí
+    faria a regra do quartil da fase 5B alegar desconto todo dia em que houvesse
+    cupom, que é justamente o padrão "promoção recorrente" que ela recusa."""
+    # Catálogo 599,00 em cima do p25 de 590,00: modo B. O checkout de 523,48
+    # passaria folgado no quartil — e não é ele quem decide.
+    offer = _com_checkout(price_ref_cents=75000, price_p25_cents=59000,
+                          price_window_days=90)
+    assert pricing.verdict(offer, 10).mode == "B"
+
+
+def test_no_modo_a_o_percentual_fecha_a_conta_dos_numeros_exibidos():
+    """"De: R$ 750,00 | Por: R$ 523,48 com cupom (30% OFF)": 30 é a conta de
+    750,00 para 523,48. O portão foi decidido com o de catálogo (20%), e o
+    número que a peça mostra é o que a peça consegue justificar."""
+    offer = _com_checkout(price_ref_cents=75000, price_p25_cents=75000,
+                          price_window_days=90)
+    veredito = pricing.verdict(offer, 10)
+    assert (veredito.mode, veredito.discount_pct) == ("A", 30)
+    assert pricing.price_line(offer, veredito)[0] == (
+        "De: R$ 750,00 | Por: R$ 523,48 com cupom (30% OFF)")
+
+
+def test_o_selo_continua_lendo_o_preco_de_catalogo():
+    """O selo diz "menor preço dos últimos N dias" sobre a série que medimos, e
+    a série é de preços de catálogo. Com o de cupom, todo item com cupom viraria
+    mínima histórica."""
+    offer = _com_checkout(price_floor_cents=55000, price_floor_window_days=90)
+    assert pricing.verdict(offer, 10).seal == ""
+
+
 # -- price_line --------------------------------------------------------------
 
 def test_price_line_modo_a_desconto_verificado():

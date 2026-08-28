@@ -41,6 +41,20 @@ class Offer:
     price_window_days: int = 0
     price_floor_cents: int = 0        # mínima histórica conhecida. 0 = desconhecida
     price_floor_window_days: int = 0
+    # Fase 5P — o preço de CHECKOUT, lido do navegador (`afiliado.preco_real`),
+    # e a condição que a própria página deu a ele ("com cupom", "no Pix com
+    # cupom"). 0/"" = não houve leitura, que é o estado normal e o estado para o
+    # qual toda falha da leitura cai.
+    #
+    # Ele NÃO substitui `price_current_cents`, e isso é o desenho: o preço de
+    # catálogo é a série que o `price_log`, a mediana, o p25, o piso do selo, o
+    # `check_price` e os filtros de faixa usam. Um preço de cupom dentro dessa
+    # série tornaria a regra do quartil da 5B mentirosa — "abaixo do quartil
+    # mais barato" passaria a valer todo dia em que houvesse cupom, que é
+    # exatamente o padrão "promoção recorrente" que ela existe para não
+    # certificar. O checkout muda o número EXIBIDO e nada mais.
+    price_checkout_cents: int = 0
+    price_checkout_label: str = ""
     # `sales` é um BALDE ("+250 mil"), não uma contagem exata? O Mercado Livre
     # só publica a faixa (100 mil, 250 mil, 1 milhão) e o anúncio escreve
     # "+250 mil vendidos". Escrever "250 mil vendidos" seco seria afirmar
@@ -83,6 +97,29 @@ class Offer:
         if self.price_ref_cents <= 0 or self.price_current_cents >= self.price_ref_cents:
             return 0
         return (self.price_ref_cents - self.price_current_cents) * 100 // self.price_ref_cents
+
+    @property
+    def published_price_cents(self) -> int:
+        """O número que vai à peça: o de checkout quando o navegador o leu, o de
+        catálogo quando não (fase 5P). Um lugar só, para que arte, texto do
+        Telegram e legendas nunca mostrem números diferentes."""
+        return self.price_checkout_cents or self.price_current_cents
+
+    @property
+    def published_discount_pct(self) -> int:
+        """O desconto que FECHA A CONTA dos dois números exibidos — a mesma
+        aritmética de `real_discount_pct`, sobre o preço publicado.
+
+        São dois números diferentes de propósito. `real_discount_pct` é o do
+        PORTÃO: ele compara catálogo com catálogo e decide se o post pode alegar
+        desconto (a régua da 5B). Este é o do RÓTULO: se a peça mostra
+        "De: R$ 750,00 | Por: R$ 523,48", o percentual impresso tem de ser o de
+        750,00 para 523,48, senão o seguidor faz a conta e ela não bate. Sem
+        leitura os dois são o mesmo número."""
+        publicado = self.published_price_cents
+        if self.price_ref_cents <= 0 or publicado >= self.price_ref_cents:
+            return 0
+        return (self.price_ref_cents - publicado) * 100 // self.price_ref_cents
 
 
 @dataclass(frozen=True)

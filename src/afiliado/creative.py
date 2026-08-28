@@ -356,7 +356,11 @@ def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: 
 # --- Pill de preço (align-self: flex-start) -----------------------------------
 
 def _pill_nota(offer: Offer) -> str:
-    """O rótulo à DIREITA do preço na pill: "SEM CUPOM" nas ofertas da Shopee,
+    """O rótulo à DIREITA do preço na pill: a frase que qualifica o número.
+
+    Fase 5P: quando o navegador leu o preço de checkout, é a CONDIÇÃO dele
+    ("COM CUPOM", "NO PIX COM CUPOM") — o mesmo slot, o mesmo alinhamento, o
+    sentido oposto ao da 5N. Sem leitura é o "SEM CUPOM" das ofertas da Shopee,
     "" no resto (fase 5K) — e "" em tudo enquanto `pricing.MOSTRAR_SEM_CUPOM`
     estiver desligado, que é o estado desde a fase 5N.
 
@@ -380,8 +384,13 @@ def _pill_nota(offer: Offer) -> str:
 
     À direita do preço, alinhado pela linha de base, ele custa ZERO altura
     (cabe na que o preço já ocupa) e entra no guarda horizontal que a pill já
-    tinha — onde falta espaço quem cede é a referência riscada, não ele."""
-    return pricing.sem_cupom(offer).upper()
+    tinha — onde falta espaço quem cede é a referência riscada, não ele.
+
+    "COM CUPOM" mede exatamente o mesmo que "SEM CUPOM" (162 px no story, 144 no
+    feed), então a medição da 5K vale inteira. "NO PIX COM CUPOM" mede 288 px e
+    não cabe no pior caso publicável junto do riscado — e é aí que o guarda faz
+    o que sempre fez: corta o riscado, nunca a condição."""
+    return pricing.rotulo_do_preco(offer).upper()
 
 
 def _pill_left(offer: Offer, verdict: Verdict) -> tuple[str, bool]:
@@ -405,7 +414,10 @@ def _price_pill_dims(
     left_text, strike = pill_left
     orig_font = _font("sans", orig_size, 600 if strike else 500)
     cur_font = _font("sans", cur_size, 800)
-    cur_text = format_brl(offer.price_current_cents)
+    # `published_price_cents`: o de checkout quando a fase 5P o leu, o de
+    # catálogo quando não. A pill e o texto do Telegram leem o MESMO campo — é
+    # o que impede arte e legenda de mostrarem números diferentes.
+    cur_text = format_brl(offer.published_price_cents)
     cur_bbox = draw.textbbox((0, 0), cur_text, font=cur_font)
     orig_asc, orig_desc = orig_font.getmetrics()
     cur_asc, cur_desc = cur_font.getmetrics()
@@ -1581,7 +1593,7 @@ def _oferta_plan(draw: ImageDraw.ImageDraw, post: Post, indice: int, total: int,
     return {
         "tipo": "oferta", "indice": indice, "total": total,
         "item_id": post.offer.item_id, "source": post.offer.source,
-        "preco": format_brl(post.offer.price_current_cents),
+        "preco": format_brl(post.offer.published_price_cents),
         **_resumo(plan),
     }
 

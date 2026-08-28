@@ -38,7 +38,25 @@ class Offer:
     # "+250 mil vendidos". Escrever "250 mil vendidos" seco seria afirmar
     # precisão que o dado não tem — e, no primeiro story real, o número exibido
     # estava 50x abaixo do anúncio por outro motivo (era estimativa mensal).
-    sales_e_faixa: bool = False  # janela da mínima (dias); 0 = desconhecida
+    sales_e_faixa: bool = False
+    # QUAL JANELA o `sales` mede, em dias. 0 = contador VITALÍCIO (o número que
+    # o próprio anúncio exibe); 30 = unidades no último mês.
+    #
+    # Fase 5H: sem isto, `sales` era um int sem unidade, e as duas fontes o
+    # preenchiam em escalas diferentes sem que nada no código dissesse.
+    # Medido em 2026-08-28 contra o cubo `ShbMartItem` do JoomPulse, o
+    # `productOfferV2.sales` da Shopee bate com `sold30Days` e fica 13× a 43×
+    # abaixo do `sold1y` que o anúncio exibe (lençol 16692338189: nosso 45.950,
+    # anúncio 2.000.000). A arte escrevia "45 mil vendidos" para um produto que
+    # o comprador vê anunciado como 2 milhões.
+    #
+    # O default 0 é o valor CERTO para um payload antigo do ML (que já era
+    # vitalício) e ERRADO para um payload antigo da Shopee, gravado em
+    # `candidates` antes desta fase — ele volta a dizer "45 mil vendidos" sem a
+    # janela. É aceito de propósito: `shopee.candidate_max_age_days` é 3, o
+    # estoque gira sozinho, e uma migração de payload custaria mais que a
+    # subestimação de três dias.
+    sales_window_days: int = 0
 
     @property
     def discount_pct(self) -> int:

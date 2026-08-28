@@ -517,8 +517,8 @@ def test_doctor_imprime_a_validacao_do_pool_do_meli(monkeypatch, tmp_path, capsy
     # `sources.meli` do config real faria o resultado depender de um
     # interruptor de produção — foi o que quebrou quando o ML foi ligado.
     cfg.setdefault("sources", {})["meli"] = True
-    links = tmp_path / "l.json"
-    links.write_text('{"A": "https://meli.la/x"}', encoding="utf-8")
+    from tests.test_meli import write_links
+    links = write_links(tmp_path / "l.json", {"A": {"MLB1": "https://meli.la/x"}})
 
     def token_ok(request):
         return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
@@ -824,10 +824,9 @@ def test_o_aviso_do_art_host_so_chega_uma_vez_por_dia(tmp_path, monkeypatch):
 # --- Fase 5C (M5/A6): o doctor olha o pool de links do ML --------------------
 
 def _doctor_com_meli(monkeypatch, tmp_path, links: dict | None, ligado: bool):
-    import json
-
+    """`links` no formato da fase 5M: `{product_id: {item_id: link}}`."""
     import httpx
-    from tests.test_meli import write_pool
+    from tests.test_meli import write_links, write_pool
     cfg = _doctor_base(monkeypatch)
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
     pool = write_pool(tmp_path / "pool.json", [
@@ -838,7 +837,7 @@ def _doctor_com_meli(monkeypatch, tmp_path, links: dict | None, ligado: bool):
     cfg["sources"] = {"shopee": True, "meli": ligado}
     links_path = tmp_path / "links.json"
     if links is not None:
-        links_path.write_text(json.dumps(links), encoding="utf-8")
+        write_links(links_path, links)
     meli = cli.MeliSource("cid", "sec", token_path=tmp_path / "t.json",
                           links_path=links_path,
                           client=httpx.Client(transport=httpx.MockTransport(
@@ -859,18 +858,33 @@ def test_doctor_falha_com_ml_ligado_e_nenhum_link(monkeypatch, tmp_path, capsys)
 
 
 def test_doctor_conta_quantos_produtos_do_pool_tem_link(monkeypatch, tmp_path, capsys):
-    cfg = _doctor_com_meli(monkeypatch, tmp_path, links={"A": "https://meli.la/a"},
+    cfg = _doctor_com_meli(monkeypatch, tmp_path, links={"A": {"MLB1": "https://meli.la/a"}},
                            ligado=True)
     assert cli.doctor(cfg) == 0
-    assert "⚠️ Mercado Livre: 1 de 2 produto(s) do pool com link" in capsys.readouterr().out
+    assert ("⚠️ Mercado Livre: 1 de 2 produto(s) do pool com anúncio linkado"
+            in capsys.readouterr().out)
 
 
 def test_doctor_com_pool_de_links_completo(monkeypatch, tmp_path, capsys):
     cfg = _doctor_com_meli(monkeypatch, tmp_path,
-                           links={"A": "https://meli.la/a", "B": "https://meli.la/b"},
+                           links={"A": {"MLB1": "https://meli.la/a"},
+                                  "B": {"MLB2": "https://meli.la/b"}},
                            ligado=True)
     assert cli.doctor(cfg) == 0
-    assert "✅ Mercado Livre: 2 de 2 produto(s) do pool com link" in capsys.readouterr().out
+    assert ("✅ Mercado Livre: 2 de 2 produto(s) do pool com anúncio linkado"
+            in capsys.readouterr().out)
+
+
+def test_doctor_conta_zero_para_o_produto_que_so_tem_o_link_antigo(monkeypatch, tmp_path,
+                                                                   capsys):
+    """Fase 5M: o link de catálogo continua no arquivo, mas não publica preço —
+    a cobertura precisa dizer isso em vez de esconder atrás de um ✅."""
+    cfg = _doctor_com_meli(monkeypatch, tmp_path,
+                           links={"A": {"MLB1": "https://meli.la/a"}, "B": {}},
+                           ligado=True)
+    assert cli.doctor(cfg) == 0
+    assert ("⚠️ Mercado Livre: 1 de 2 produto(s) do pool com anúncio linkado"
+            in capsys.readouterr().out)
 
 
 def test_doctor_com_pool_de_ofertas_vazio_diz_a_causa(monkeypatch, tmp_path, capsys):
@@ -895,8 +909,9 @@ def test_doctor_conta_quanto_do_pool_tem_regua_curada(monkeypatch, tmp_path, cap
     modo B" vira descoberta de semanas depois."""
     from tests.test_meli import SEM_HISTORICO, write_pool
     cfg = _doctor_com_meli(monkeypatch, tmp_path,
-                           links={"A": "https://meli.la/a", "B": "https://meli.la/b",
-                                  "C": "https://meli.la/c"}, ligado=True)
+                           links={"A": {"MLB1": "https://meli.la/a"},
+                                  "B": {"MLB2": "https://meli.la/b"},
+                                  "C": {"MLB3": "https://meli.la/c"}}, ligado=True)
     cfg["meli"]["offers_path"] = str(write_pool(tmp_path / "misto.json", [
         {"product_id": "A", "title": "t", "price_ref_cents": 5000},
         {"product_id": "B", "title": "t", **SEM_HISTORICO},

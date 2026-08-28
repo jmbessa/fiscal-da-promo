@@ -473,7 +473,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if cobertura is not None and src_offers:
             com_link, total = cobertura(src_offers)
             if com_link * 2 < total:
-                warn(f"⚠️ {src.name}: só {com_link} de {total} produtos têm link — "
+                warn(f"⚠️ {src.name}: só {com_link} de {total} produtos têm anúncio linkado — "
                      "rode /meli-links-refresh")
         # Fase 5J (J4): quanto do pool traz RÉGUA CURADA e quanto está em modo
         # B esperando o nosso price_log. Número do run, não aviso (não passa

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from afiliado import meli_links
 from afiliado.errors import SourceError
 from afiliado.models import Offer
 
@@ -84,10 +85,7 @@ class MeliSource:
             timeout=30, transport=httpx.HTTPTransport(retries=3))
         self._access_token: str | None = None
         self._expires_at: float = 0.0
-        self._links_pool: dict[str, str] | None = None
-        # product_id -> item_id do anúncio que vence o buy box (do pool);
-        # `refresh_price` só aceita o preço DESSE anúncio.
-        self._buy_box_ids: dict[str, str] = {}
+        self._links_pool: dict[str, dict[str, str]] | None = None
         # Motivo de fetch_offers ter devolvido menos do que o pool tem (pool
         # ausente/inválido/vencido, entradas puladas e por quê); None quando
         # a última leitura foi limpa. Vai ao doctor e ao resumo de ops.
@@ -254,7 +252,6 @@ class MeliSource:
                 motivos["id repetido"] += 1
                 continue
             seen_ids.add(offer.item_id)
-            self._buy_box_ids[offer.item_id] = str(item["buy_box_item_id"])
             offers.append(offer)
         if motivos:
             detalhe = ", ".join(f"{n} {motivo}" for motivo, n in
@@ -278,41 +275,46 @@ class MeliSource:
     # -- preço ao vivo (imediatamente antes de publicar) -------------------
 
     def refresh_price(self, offer: Offer) -> Offer:
-        """Preço vivo = o do anúncio que vence o BUY BOX (C7b), nunca o menor
-        entre os vendedores: a página de catálogo mostra o vencedor, e o
-        post dizia R$ 32 enquanto o clique mostrava R$ 45.
+        """Preço vivo = o do anúncio MAIS BARATO **entre os que temos link**
+        (fase 5M). Não é o menor da lista, não é o do buy box: é o preço do
+        objeto que o nosso link abre — e por isso o número do post e o número
+        que o seguidor vê ao chegar são o mesmo, por construção.
 
-        Caminho escolhido (verificado ao vivo em 2026-08-26 com token de
-        aplicação E de usuário, em 3 produtos do pool): `GET /products/{id}`
-        traz a chave `buy_box_winner`, mas sempre `null` — o endpoint não
-        entrega o vencedor a este app. Então: `GET /products/{id}/items` e o
-        item cujo `item_id == buy_box_item_id` do pool (o `buyBoxId` do
-        JoomPulse, presente na lista real: MLB7125449388 a R$ 104,90 entre
-        37 vendedores cujo menor preço era R$ 58,90). Anúncio ausente da
-        lista, sem preço, ou produto sem `buy_box_item_id` → `SourceError`
-        ("sem buy box"): a oferta é descartada — nunca cai para o mínimo.
+        O que a medição fechou (2026-08-28) e por que não há alternativa:
 
-        Rodada de correção (Fix 1): a ORDEM de `/items` também foi conferida
-        contra a página real — `results[0]` bateu em 2 de 3 produtos (no 3º
-        a página mostrava `results[1]`), logo a lista não é "ordenada por buy
-        box" e `results[0]` não substitui o anúncio do pool. O que envelhece
-        é tratado na carga: `buy_box_checked_at` com validade de
-        `BUY_BOX_MAX_AGE_DAYS` (o skill tem um passo semanal que a renova).
+        - o vencedor do buy box NÃO é obtível: `GET /products/{id}` devolve
+          `buy_box_winner: null` (3 produtos em 26/08, de novo em 28/08, com
+          token de aplicação e de usuário) e o campo `tier` de
+          `/products/{id}/items` veio vazio nos 89 anúncios sondados;
+        - o `buy_box_item_id` do pool (o `buyBoxId` do JoomPulse) era só UM
+          vendedor, e nos dois stories errados um caro: R$ 80,00 num produto
+          cuja página mostrava R$ 39,90 (+100%) e R$ 209,87 num de R$ 113
+          (+86%);
+        - conferir o preço lendo a página antes de publicar também está
+          fechado: `/items/{id}` e `/sites/MLB/search` são 403, e a página
+          `/p/{id}` com sessão devolve uma casca de 14,6 KB sem preço.
 
-        Devolve um `Offer` novo (dataclass frozen) com `price_current_cents`.
-        Publicabilidade continua sendo de `selection.max_above_ref` +
-        `validate.check_price`; ref/p25/piso do pool viajam na oferta."""
-        buy_box_id = self._buy_box_ids.get(offer.item_id, "")
-        if not buy_box_id:
-            raise SourceError(f"meli: sem buy box conhecido para {offer.item_id}")
+        Anúncio linkado nenhum na lista viva → `SourceError` e a oferta é
+        descartada. **Nunca** cai para um anúncio sem link: publicar o preço
+        de um vendedor e o link de outro é o bug que esta fase conserta.
+
+        Devolve um `Offer` novo (frozen) com `price_current_cents`,
+        `price_original_cents` (o mesmo: o ML não expõe "de" de vendedor) e
+        `anuncio_id` — que é o que `resolve_affiliate_link` lê."""
+        linkados = self._load_links_pool().get(offer.item_id) or {}
+        if not linkados:
+            raise SourceError(f"meli: sem link de anúncio para {offer.item_id}")
         token = self.ensure_token()
         headers = {"Authorization": f"Bearer {token}"}
         url = f"{API_HOST}/products/{offer.item_id}/items"
 
-        offset, total, vistos = 0, None, 0
+        candidatos: dict[str, int] = {}
+        encontrados: set[str] = set()
+        offset, vistos = 0, 0
         for _ in range(MAX_ITEMS_PAGES):
             try:
-                r = self.client.get(url, headers=headers, params={"offset": offset} if offset else None)
+                r = self.client.get(url, headers=headers,
+                                    params={"offset": offset} if offset else None)
                 r.raise_for_status()
             except httpx.HTTPError as exc:
                 raise SourceError(f"meli API: {exc}") from exc
@@ -322,41 +324,64 @@ class MeliSource:
                 raise SourceError(f"meli API: resposta não é JSON válido: {exc}") from exc
             results = data.get("results") or []
             vistos += len(results)
-            winner = _item_by_id(results, buy_box_id)
-            if winner is not None:
-                live_cents = _price_cents(winner.get("price"))
-                if live_cents is None:
-                    raise SourceError(
-                        f"meli: buy box {buy_box_id} de {offer.item_id} sem preço")
-                return dataclasses.replace(offer, price_current_cents=live_cents)
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("item_id") or "")
+                if item_id not in linkados or item_id in encontrados:
+                    continue
+                encontrados.add(item_id)
+                cents = _price_cents(item.get("price"))
+                if cents is not None and cents > 0:
+                    candidatos[item_id] = cents
+            if len(encontrados) == len(linkados):
+                # Achados todos os linkados, as páginas seguintes não podem
+                # mudar a escolha — e o maior produto do pool tem 277 anúncios.
+                break
             paging = data.get("paging") if isinstance(data.get("paging"), dict) else {}
             total = paging.get("total")
             limit = int(paging.get("limit") or len(results) or 0)
             offset += limit
             if not results or total is None or offset >= int(total):
                 break
-        raise SourceError(
-            f"meli: sem buy box — anúncio {buy_box_id} não está entre os "
-            f"{vistos} vendedores de {offer.item_id}")
+        if not candidatos:
+            raise SourceError(
+                f"meli: nenhum anúncio linkado de {offer.item_id} está à venda entre "
+                f"os {vistos} vendedores")
+        # Empate desempatado pelo id: dois anúncios pelo mesmo preço não podem
+        # fazer o post mudar de link entre um run e outro.
+        anuncio_id, cents = min(candidatos.items(), key=lambda kv: (kv[1], kv[0]))
+        return dataclasses.replace(offer, price_current_cents=cents,
+                                   price_original_cents=cents, anuncio_id=anuncio_id)
 
-    # -- link de afiliado (pool pré-gerado) --------------------------------
+    # -- link de afiliado (pool pré-gerado, por ANÚNCIO) --------------------
 
     def resolve_affiliate_link(self, offer: Offer) -> str:
-        pool = self._load_links_pool()
-        link = pool.get(offer.item_id)
+        """O link do anúncio que o `refresh_price` escolheu — nunca "algum"
+        link do produto: publicar o preço de um vendedor e o link de outro é o
+        bug da fase 5M."""
+        if not offer.anuncio_id:
+            raise SourceError(
+                f"meli: sem anúncio escolhido para {offer.item_id} (refresh_price não rodou)")
+        link = (self._load_links_pool().get(offer.item_id) or {}).get(offer.anuncio_id)
         if not link:
-            raise SourceError(f"sem link de afiliado no pool para {offer.item_id}")
+            raise SourceError(
+                f"sem link de afiliado no pool para {offer.item_id}/{offer.anuncio_id}")
         return link
 
     def link_coverage(self, offers: list[Offer]) -> tuple[int, int]:
-        """(quantas das ofertas têm link no pool, total) — leitura local, sem
-        rede (fase 5C, M5/A6).
+        """(quantas das ofertas têm ao menos UM anúncio linkado, total) —
+        leitura local, sem rede (fase 5C, M5/A6).
 
         `data/meli_links.json` nunca foi commitado e não existe em nenhum
         checkout: com `sources.meli: true` num clone limpo, TODA oferta do ML
         virava um descarte "sem link de afiliado no pool" — e o `doctor` dizia
         ✅ mesmo assim. Agora a cobertura é um número que o doctor e o resumo
-        do run mostram."""
+        do run mostram.
+
+        Fase 5M: um produto que só tem o link ANTIGO (de catálogo, sem
+        anúncio) conta como ZERO — ele não publica preço nenhum, e a cobertura
+        precisa dizer isso em vez de esconder."""
         pool = self._load_links_pool()
         return sum(1 for o in offers if pool.get(o.item_id)), len(offers)
 
@@ -377,17 +402,16 @@ class MeliSource:
     def links_file_exists(self) -> bool:
         return self.links_path.is_file()
 
-    def _load_links_pool(self) -> dict[str, str]:
+    def _load_links_pool(self) -> dict[str, dict[str, str]]:
+        """`{product_id: {item_id: link}}` — só os links por ANÚNCIO. O
+        `product_link` do formato antigo fica guardado no arquivo (é link
+        válido, foi trabalho de painel) mas não entra aqui: ele abre a página
+        de catálogo, onde quem escolhe o vendedor é o Mercado Livre."""
         if self._links_pool is None:
-            pool: dict[str, str] = {}
-            if self.links_path.is_file():
-                try:
-                    data = json.loads(self.links_path.read_text(encoding="utf-8"))
-                    if isinstance(data, dict):
-                        pool = {str(k): str(v) for k, v in data.items()}
-                except (ValueError, OSError):
-                    pool = {}
-            self._links_pool = pool
+            self._links_pool = {
+                pid: dict(entrada["items"])
+                for pid, entrada in meli_links.ler_pool(self.links_path).items()
+                if entrada["items"]}
         return self._links_pool
 
 
@@ -505,13 +529,6 @@ def _dias_desde_a_checagem(checado, generated_at: date, hoje: date) -> int | Non
     except ValueError:
         return None
     return idade if idade >= 0 else None
-
-
-def _item_by_id(results: list, item_id: str) -> dict | None:
-    for result in results:
-        if isinstance(result, dict) and str(result.get("item_id") or "") == item_id:
-            return result
-    return None
 
 
 def _price_cents(price) -> int | None:

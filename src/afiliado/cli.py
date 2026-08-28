@@ -494,7 +494,8 @@ def _doctor_links_do_meli(meli: MeliSource, offers: list, cfg: dict) -> bool:
     elif not meli.links_file_exists:
         situacao = f"pool de links ausente ({caminho})"
     else:
-        situacao = f"{com_link} de {total} produto(s) do pool com link ({caminho})"
+        situacao = (f"{com_link} de {total} produto(s) do pool com anúncio linkado "
+                    f"({caminho})")
     if ligado and com_link == 0:
         print(f"❌ Mercado Livre: {situacao} — o ML não vai publicar nada. "
               f"Rode {acao} (ver docs/runbooks/meli-setup.md)")

@@ -117,7 +117,7 @@ def test_pipeline_publica_a_entrada_sem_historico_em_modo_b(tmp_path, monkeypatc
     uma fonte inteira em silêncio alguma vez, e o preço só existe a partir do
     `refresh_price`, que roda no fim."""
     from afiliado.sources.meli import MeliSource
-    from tests.test_meli import SEM_HISTORICO, write_pool
+    from tests.test_meli import SEM_HISTORICO, _anuncio, write_links, write_pool
 
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     pool = write_pool(tmp_path / "pool.json", [
@@ -125,14 +125,19 @@ def test_pipeline_publica_a_entrada_sem_historico_em_modo_b(tmp_path, monkeypatc
          "image_url": "https://http2.mlstatic.com/D_NQ_NP_123-W.jpg",
          "category": "MLB264586", "buy_box_item_id": "MLB777",
          "sales": 250000, "rating": 4.9}])
-    links = tmp_path / "links.json"
-    links.write_text('{"MLB99": "https://mercadolivre.com/sec/abc123"}', encoding="utf-8")
+    # Fase 5M: o link é do ANÚNCIO. O vendedor a R$ 30,90 não tem link e não
+    # pode virar preço publicado — quem publica é o linkado mais barato.
+    links = write_links(tmp_path / "links.json",
+                        {"MLB99": {"MLB777": "https://mercadolivre.com/sec/abc123",
+                                   "MLB888": "https://mercadolivre.com/sec/def456"}})
 
     def api(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
         if request.url.path == "/products/MLB99/items":
-            return httpx.Response(200, json={"results": [{"item_id": "MLB777", "price": 33.90}]})
+            return httpx.Response(200, json={"results": [
+                _anuncio("MLB666", 30.90), _anuncio("MLB777", 33.90),
+                _anuncio("MLB888", 39.90)]})
         raise AssertionError(f"caminho inesperado: {request.url.path}")
 
     src = MeliSource("cid", "sec", token_path=tmp_path / "t.json", links_path=links,
@@ -148,7 +153,9 @@ def test_pipeline_publica_a_entrada_sem_historico_em_modo_b(tmp_path, monkeypatc
     assert summary.discarded == [], summary.discarded
     assert len(ch.sent) == 1
     post = ch.sent[0]
-    assert post.offer.price_current_cents == 3390        # o preço VIVO do buy box
+    assert post.offer.price_current_cents == 3390        # o preço VIVO do anúncio linkado
+    assert post.offer.anuncio_id == "MLB777"             # ...e é dele o link do post
+    assert post.affiliate_link == "https://mercadolivre.com/sec/abc123"
     assert post.verdict.mode == "B"
     assert post.verdict.discount_pct == 0 and post.verdict.seal == ""
     assert "OFF" not in post.message_text and "<s>" not in post.message_text

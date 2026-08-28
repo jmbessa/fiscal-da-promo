@@ -19,6 +19,14 @@ class Offer:
     image_url: str
     product_url: str
     offer_link: str = ""
+    # Fase 5M — Mercado Livre: o ANÚNCIO (vendedor) de onde o preço publicado
+    # veio e para onde o nosso link aponta. `item_id` do ML é o PRODUTO (a
+    # página de catálogo, que tem dezenas de vendedores e um preço por
+    # vendedor); é `anuncio_id` que amarra preço e link ao mesmo objeto.
+    # Carimbado por `MeliSource.refresh_price` e lido por
+    # `resolve_affiliate_link`. Vazio nas outras fontes (na Shopee o item JÁ é
+    # o anúncio) e antes do refresh.
+    anuncio_id: str = ""
     category: str = ""
     sales: int = 0
     rating: float = 0.0        # nota média (0 = desconhecida)

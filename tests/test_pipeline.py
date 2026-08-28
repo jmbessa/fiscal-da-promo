@@ -1388,7 +1388,7 @@ def test_pool_de_links_do_meli_pela_metade_vira_aviso(tmp_path, monkeypatch):
 
     summary = pipeline.run(CFG, [MeliComPoucosLinks([make_offer(item_id="x", source="meli")])],
                            [FakeChannel()], db, validator=no_network_validator)
-    assert ("⚠️ meli: só 1 de 10 produtos têm link — rode /meli-links-refresh"
+    assert ("⚠️ meli: só 1 de 10 produtos têm anúncio linkado — rode /meli-links-refresh"
             in summary.warnings)
     db.close()
 

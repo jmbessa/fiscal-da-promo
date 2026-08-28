@@ -109,6 +109,13 @@ a mediana também é o teto de publicação (`selection.max_above_ref`).
 janela real no texto). Errar a referência para cima vira desconto inventado —
 na dúvida, arredonde mediana e p25 para BAIXO.
 
+**Prefira `/shopee-regua-refresh` para este passo.** Ele faz exatamente esta
+conta em CÓDIGO testado (`afiliado.shopee_regua`), com as guardas que faltam
+aqui — janela mínima de 14 dias observados, mínima nunca acima do p25, item
+cortado no fim da página cheia — e grava sem tocar em `category_boosts`/
+`hot_items`. O passo abaixo continua descrito por inteiro para quem precisar
+entender ou conferir a conta.
+
 Cubo `ShbModelsPricesDaily`. Fatos já verificados (não gaste consulta
 redescobrindo):
 
@@ -173,6 +180,12 @@ pipeline ainda publica, só não alega desconto (modo B do post).
  "price_refs": {"<itemId>": {"ref_cents": 2590, "p25_cents": 2428, "window_days": 90}},
  "price_floors": {"<itemId>": {"min_price_cents": 1699, "window_days": 196}}}
 ```
+   Regravar o arquivo INTEIRO com `generated_at` de hoje só é honesto para as
+   seções que você mediu hoje. As entradas de `price_refs`/`price_floors` que
+   você NÃO remediu precisam manter o `measured_at` delas, e as seções que
+   ficaram como estavam, a data delas em `section_dates` (fase 5O — o leitor
+   aceita as duas formas, e sem a data por seção o arquivo diz que os
+   `hot_items` foram revistos num dia em que não foram).
 2. Validar:
 ```
 python -c "from afiliado.watchlist import load_watchlist; wl=load_watchlist('data/watchlist.json'); assert wl and not wl.is_stale(); sem_p25=[k for k,v in wl.price_refs.items() if v.p25_cents<=0]; print(len(wl.hot_items),'itens,',len(wl.price_refs),'referencias (',len(sem_p25),'sem p25 ),',len(wl.price_floors),'pisos')"

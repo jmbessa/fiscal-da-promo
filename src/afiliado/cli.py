@@ -1040,13 +1040,17 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
     Um item por linha com o nome COMPLETO e o preço, as categorias por nome, e
     a janela MAIS CURTA entre as ofertas (é a única que vale para o post
     inteiro: prometer a maior seria alegar sobre um item o que só outro
-    sustenta). Fecha na frase-assinatura."""
+    sustenta). Fecha na frase-assinatura.
+
+    O preço sai por `pricing.preco_publicado`, que carrega o "sem cupom" dos
+    itens da Shopee (fase 5K): cada slide é a arte de feed, e ela desenha o
+    rótulo na pill — a legenda não pode discordar do álbum que acompanha."""
     linhas = [titulo, subtitulo, ""]
     for i, post in enumerate(posts, start=1):
         offer = post.offer
         nome = sanitiza_titulo(offer.title)
         selo = " · selo do Fiscal" if post.verdict.seal else ""
-        linhas.append(f"{i}. {nome} — {format_brl(offer.price_current_cents)}{selo}")
+        linhas.append(f"{i}. {nome} — {pricing.preco_publicado(offer)}{selo}")
     linhas += ["", "🔗 Link na bio e no canal do Telegram", ""]
     nomes = list(dict.fromkeys(
         n for n in (categorias.nome(p.offer.category) for p in posts) if n))

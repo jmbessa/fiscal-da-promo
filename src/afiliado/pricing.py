@@ -15,7 +15,9 @@ O desconto deixou de ser um PORTÃO (decidir se publicamos) e virou um RÓTULO
   `min_real_discount_pct`. O selo de menor preço é ESTRITO (`current <=
   piso`, sem tolerância) e diz a janela que mediu;
 - o TEXTO (`price_line`): modo A com "De/Por", modo B com preço + prova
-  social — sempre a partir de um `Verdict` já decidido.
+  social — sempre a partir de um `Verdict` já decidido;
+- o RÓTULO do preço (`sem_cupom`/`preco_publicado`, fase 5K): o número que
+  publicamos da Shopee é o preço SEM CUPOM, e a peça passa a dizê-lo.
 
 `verdict` é o ÚNICO lugar que decide o que o post alega. message.py,
 creative.py, channels/instagram_feed.py, channels/story_dispatch.py e
@@ -44,9 +46,21 @@ MIN_WINDOW_DAYS = 14
 PICO_FATOR = 1.5
 PICO_MAX_DIAS = 2
 
+# Fase 5K — o rótulo que diz QUE PREÇO é esse. Ver
+# `docs/runbooks/shopee-preco.md`: a Shopee cobra um preço menor no Pix COM
+# cupom e o exibe em vermelho grande, com o preço sem cupom em cinza pequeno.
+# O desconto é de CHECKOUT e nenhuma das cinco superfícies da API de afiliados
+# o expõe (todas medidas e fechadas no runbook), então o número que
+# publicamos é — e sempre foi — o preço SEM CUPOM. Dizê-lo transforma a
+# aparente contradição ("o anúncio está mais barato que o post") em serviço.
+# A frase é verdadeira mesmo quando não há cupom nenhum disponível: o preço
+# sem cupom é aquele. Ela NÃO afirma que existe cupom.
+SEM_CUPOM = "sem cupom"
+
 __all__ = ["Verdict", "NO_CLAIM", "verdict", "price_line", "price_line_html",
            "enrich_offers", "record_observations", "median_cents", "p25_cents",
            "window_text", "format_sales", "sales_window_text", "setting",
+           "sem_cupom", "preco_publicado", "SEM_CUPOM",
            "MIN_WINDOW_DAYS",
            "DEFAULT_REF_WINDOW_DAYS", "DEFAULT_REF_MIN_OBSERVATIONS",
            "DEFAULT_MIN_REAL_DISCOUNT_PCT", "PICO_FATOR", "PICO_MAX_DIAS"]
@@ -177,29 +191,59 @@ def _social_proof(offer: Offer) -> str:
     return " · ".join(partes)
 
 
+def sem_cupom(offer: Offer) -> str:
+    """`SEM_CUPOM` para a Shopee, "" para o resto.
+
+    SÓ a Shopee: o preço que publicamos do Mercado Livre é o do anúncio que
+    vence o buy box, que é exatamente o que a página mostra — rotular lá seria
+    ruído sobre um preço que ninguém vai contestar. Este é o ÚNICO lugar que
+    decide isso; arte (`creative`) e textos importam daqui."""
+    return SEM_CUPOM if offer.source == "shopee" else ""
+
+
+def _com_rotulo(offer: Offer, preco: str) -> str:
+    """O preço já marcado (texto puro ou `<b>…</b>`) com o rótulo colado
+    depois dele — fora de qualquer marcação, porque o negrito é do NÚMERO."""
+    rotulo = sem_cupom(offer)
+    return f"{preco} {rotulo}" if rotulo else preco
+
+
+def preco_publicado(offer: Offer) -> str:
+    """O preço atual como ele vai ao público: o número e, na Shopee, o rótulo
+    que diz que ele é o preço sem cupom. É o que a legenda do carrossel usa —
+    e é por existir aqui que ela não reimplementa a regra."""
+    return _com_rotulo(offer, format_brl(offer.price_current_cents))
+
+
 def price_line(offer: Offer, verdict: Verdict) -> tuple[str, str]:
     """Devolve (linha_de_preco, linha_de_prova_social) em texto puro, a
     partir do veredito JÁ decidido.
 
-    Modo A:  ("De: R$ 26,00 | Por: R$ 18,90 (27% OFF)", "")
-    Modo B:  ("R$ 33,90", "⭐ 4,9 · 30 mil vendidos")
-    A prova social só inclui o que é conhecido (rating > 0, sales > 0)."""
+    Modo A:  ("De: R$ 26,00 | Por: R$ 18,90 sem cupom (27% OFF)", "")
+    Modo B:  ("R$ 33,90 sem cupom", "⭐ 4,9 · 30 mil vendidos")
+    A prova social só inclui o que é conhecido (rating > 0, sales > 0).
+
+    O rótulo cola no preço ATUAL (nunca na referência riscada, que é uma
+    mediana nossa e não um preço de checkout) e some fora da Shopee — a mesma
+    colocação que a pill da arte usa, para que arte e texto não discordem."""
     if verdict.mode == "A":
         return (f"De: {format_brl(offer.price_ref_cents)} | "
-                f"Por: {format_brl(offer.price_current_cents)} ({verdict.discount_pct}% OFF)", "")
-    return format_brl(offer.price_current_cents), _social_proof(offer)
+                f"Por: {preco_publicado(offer)} ({verdict.discount_pct}% OFF)", "")
+    return preco_publicado(offer), _social_proof(offer)
 
 
 def price_line_html(offer: Offer, verdict: Verdict) -> tuple[str, str]:
     """`price_line` com a marcação HTML do Telegram — mesmo veredito.
 
-    Modo A: ("De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)", "")
-    Modo B: ("<b>R$ 33,90</b>", "⭐ 4,9 · 30 mil vendidos") — o preço é o herói.
+    Modo A: ("De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> sem cupom (27% OFF)", "")
+    Modo B: ("<b>R$ 33,90</b> sem cupom", "⭐ 4,9 · 30 mil vendidos") — o preço
+    é o herói, e o rótulo fica FORA do negrito.
     `format_brl` não produz caractere especial de HTML: nada precisa de escape."""
+    preco = _com_rotulo(offer, f"<b>{format_brl(offer.price_current_cents)}</b>")
     if verdict.mode == "A":
         return (f"De: <s>{format_brl(offer.price_ref_cents)}</s> | "
-                f"Por: <b>{format_brl(offer.price_current_cents)}</b> ({verdict.discount_pct}% OFF)", "")
-    return f"<b>{format_brl(offer.price_current_cents)}</b>", _social_proof(offer)
+                f"Por: {preco} ({verdict.discount_pct}% OFF)", "")
+    return preco, _social_proof(offer)
 
 
 def record_observations(db: StateDB, offers: list[Offer]) -> None:

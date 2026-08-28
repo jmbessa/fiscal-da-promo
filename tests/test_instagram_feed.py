@@ -231,8 +231,15 @@ def test_caption_respeita_o_veredito_do_post():
 
 def test_caption_modo_a_usa_a_nossa_referencia():
     caption = _caption_for(**_ref(price_original_cents=35000, price_current_cents=1890))
-    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)" in caption
+    assert "De: R$ 26,00 | Por: R$ 18,90 sem cupom (27% OFF)" in caption
     assert "R$ 350,00" not in caption
+
+
+def test_caption_da_shopee_diz_que_o_preco_e_sem_cupom():
+    """Fase 5K: a arte do feed desenha "SEM CUPOM" na pill; a legenda pública
+    tem de dizer o mesmo, colada no mesmo número. O ML fica de fora."""
+    assert "R$ 18,90 sem cupom" in _caption_for(price_current_cents=1890)
+    assert "sem cupom" not in _caption_for(price_current_cents=1890, source="meli")
 
 
 def test_caption_modo_b_sem_referencia_nao_alega_desconto():
@@ -408,7 +415,7 @@ def test_caption_traz_o_selo_do_veredito():
                                                 if k != "price_ref_cents"}), 10)
     assert v.seal == "🏷️ Menor preço dos últimos 6 meses (verificado)"
     caption = _caption_for(verdict=v, **offer_kw)
-    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)\n🏷️ Menor preço dos últimos 6 meses (verificado)" in caption
+    assert "De: R$ 26,00 | Por: R$ 18,90 sem cupom (27% OFF)\n🏷️ Menor preço dos últimos 6 meses (verificado)" in caption
     assert "Menor preço" not in _caption_for(verdict=NO_CLAIM, **offer_kw)
 
 

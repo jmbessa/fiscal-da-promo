@@ -12,7 +12,7 @@ ESPERADO_MODO_A = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> (50% OFF)
+De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> sem cupom (50% OFF)
 
 Corre que acaba rápido 👇
 👉 https://shope.ee/abc123"""
@@ -23,7 +23,7 @@ ESPERADO_MODO_B = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-<b>R$ 249,99</b>
+<b>R$ 249,99</b> sem cupom
 ⭐ 4,8 · 12 mil vendidos
 
 Corre que acaba rápido 👇
@@ -33,7 +33,7 @@ ESPERADO_COM_SELO = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> (50% OFF)
+De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> sem cupom (50% OFF)
 🏷️ Menor preço dos últimos 12 meses (verificado)
 
 Corre que acaba rápido 👇
@@ -83,7 +83,7 @@ def test_build_message_usa_a_nossa_referencia_nunca_o_de_do_vendedor():
     offer = make_offer_ref(2600, title=TITULO, price_original_cents=35000,
                            price_current_cents=1890)
     texto = _texto(offer)
-    assert "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)" in texto
+    assert "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> sem cupom (27% OFF)" in texto
     assert "R$ 350,00" not in texto
 
 
@@ -144,6 +144,24 @@ def test_build_message_obedece_ao_veredito_e_nao_recalcula():
     assert "<s>" not in modo_b and "Menor preço" not in modo_b and "R$ 249,99" in modo_b
     v = Verdict("A", 50, "🏷️ Menor preço dos últimos 12 meses (verificado)", 365)
     assert build_message(offer, _copy(), LINK, v) == ESPERADO_COM_SELO
+
+
+def test_build_message_da_shopee_diz_que_o_preco_e_sem_cupom():
+    """Fase 5K: arte e texto não podem discordar. A pill desenha "SEM CUPOM"
+    ao lado do preço; o texto do Telegram diz o mesmo, colado no mesmo número,
+    e o rótulo fica FORA do negrito (o herói é o preço)."""
+    modo_b = make_offer(title=TITULO, price_current_cents=68999)
+    assert "<b>R$ 689,99</b> sem cupom" in _texto(modo_b)
+    modo_a = make_offer_ref(79900, title=TITULO, price_current_cents=68999)
+    assert "Por: <b>R$ 689,99</b> sem cupom (13% OFF)" in _texto(modo_a)
+
+
+def test_build_message_do_ml_nao_leva_o_rotulo():
+    """O preço do ML é o do anúncio do buy box — o mesmo que a página mostra."""
+    offer = make_offer(title=TITULO, source="meli", price_current_cents=68999)
+    texto = _texto(offer)
+    assert "<b>R$ 689,99</b>" in texto
+    assert "sem cupom" not in texto
 
 
 def test_build_message_escapa_titulo_e_copy():

@@ -436,11 +436,17 @@ def _source_label(source: str) -> str:
 
 def _meta_parts(offer: Offer) -> tuple[str, str]:
     """Linha mono abaixo do preço, em dois segmentos ao redor da estrela:
-    (texto até a nota, o resto). Com nota: ("4,9 ", " · 30 mil vendidos ·
-    Shopee") — a estrela entra entre os dois, desenhada como vetor
-    (`_draw_star`). Sem nota (rating == 0): ("", "30 mil vendidos · Shopee") —
-    nada de estrela, o texto começa em vendas (ou na loja)."""
-    resto = " · ".join(p for p in (pricing.format_sales(offer.sales, offer.sales_e_faixa),
+    (texto até a nota, o resto). Com nota: ("4,9 ", " · 45 mil vendidos no
+    último mês · Shopee") — a estrela entra entre os dois, desenhada como vetor
+    (`_draw_star`). Sem nota (rating == 0): ("", "45 mil vendidos no último mês
+    · Shopee") — nada de estrela, o texto começa em vendas (ou na loja).
+
+    O texto de vendas diz a JANELA que o número mede (fase 5H): a Shopee conta
+    30 dias, o ML publica o contador vitalício ("+250 mil vendidos"). A linha
+    não quebra — ela é centrada e única —, e a folga medida está em
+    `tests/test_creative.py`."""
+    resto = " · ".join(p for p in (pricing.format_sales(offer.sales, offer.sales_e_faixa,
+                                                        offer.sales_window_days),
                                     _source_label(offer.source)) if p)
     if offer.rating > 0:
         nota = f"{offer.rating:.1f}".replace(".", ",")

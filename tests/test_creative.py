@@ -7,6 +7,7 @@ from PIL import Image, ImageChops, ImageDraw
 
 from afiliado import pricing
 from afiliado.creative import (
+    FEED_PAD,
     FEED_TITLE_SIZE,
     FEED_TITLE_WIDTH,
     GOLD,
@@ -273,6 +274,38 @@ def test_meta_parts_separa_o_texto_ao_redor_da_estrela():
     for offer in (make_offer(sales=30000, rating=4.9), make_offer(sales=0, rating=0.0)):
         assert "★" not in "".join(_meta_parts(offer))
         assert "⭐" not in "".join(_meta_parts(offer))
+
+
+def test_meta_diz_a_janela_do_sales_da_shopee():
+    """Fase 5H: o número da Shopee é de ~30 dias e a arte dizia só "45 mil
+    vendidos", para um anúncio que exibe 2 milhões. A linha de meta passa a
+    dizer a janela; a do ML (janela 0, contador vitalício) não muda."""
+    shopee = make_offer(sales=45950, rating=4.9, sales_window_days=30)
+    assert _meta_parts(shopee) == ("4,9 ", " · 45 mil vendidos no último mês · Shopee")
+    meli = make_offer(sales=250000, rating=4.9, source="meli", sales_e_faixa=True)
+    assert _meta_parts(meli) == ("4,9 ", " · +250 mil vendidos · Mercado Livre")
+
+
+def test_a_linha_de_meta_com_a_janela_cabe_na_arte():
+    """A meta é UMA linha centrada: ela não quebra, ela VAZA. Com o texto da
+    janela ela cresce ~250 px no story, então a folga vira teste — o pior caso
+    plausível da Shopee (nota + 6 dígitos de vendas + janela + loja) tem de
+    caber dentro das margens do story e do feed.
+
+    Medido em 2026-08-28, story (mono 30, margem de 72 px): 840 px com "45 mil"
+    (48 px de folga), 858 com "999 mil" (39) e 930 com "1,5 milhões" (3 px, o
+    limite). O maior `sales` de 30 dias já visto na Shopee é 77.344 — 1,5
+    milhão/mês é 20× isso. Acima daí a linha encosta na margem, e ela não tem
+    guarda horizontal nenhuma (nunca teve: "99,9 milhões vendidos · Mercado
+    Livre" já vazaria antes desta fase)."""
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    piores = [make_offer(sales=n, rating=4.9, sales_window_days=30)
+              for n in (45_950, 77_344, 100_000, 999_999, 1_500_000)]
+    for offer in piores:
+        story = _meta_dims(draw, offer, 30)["width"]
+        assert (1080 - story) / 2 >= STORY_PAD, f"meta vaza no story: {_meta_parts(offer)}"
+        feed = _meta_dims(draw, offer, 27)["width"]
+        assert (1080 - feed) / 2 >= FEED_PAD, f"meta vaza no feed: {_meta_parts(offer)}"
 
 
 def test_draw_star_desenha_poligono_de_cinco_pontas():

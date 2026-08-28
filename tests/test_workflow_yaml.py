@@ -34,17 +34,27 @@ def _passo(nome: str) -> dict:
     return next(s for s in steps if s.get("name") == nome)
 
 
-def _disparos_brt() -> list[datetime]:
-    """Todos os horários de disparo do cron, convertidos de UTC para BRT
-    (UTC−3, sem horário de verão no Brasil desde 2019)."""
+def _crons() -> list[str]:
     on_section = _workflow().get("on", _workflow().get(True))  # PyYAML: "on:" é True
+    return [entry["cron"] for entry in on_section["schedule"]]
+
+
+def _horas_brt(cron: str) -> list[int]:
+    """As horas BRT em que UM cron dispara (UTC−3, sem horário de verão no
+    Brasil desde 2019)."""
+    horas = cron.split()[1]
+    inicio, _, fim = horas.partition("-")
+    return [(h - 3) % 24 for h in range(int(inicio), int(fim or inicio) + 1)]
+
+
+def _disparos_brt() -> list[datetime]:
+    """Todos os horários de disparo do cron, convertidos de UTC para BRT."""
     horarios: list[datetime] = []
-    for entry in on_section["schedule"]:
-        minutos, horas = entry["cron"].split()[0], entry["cron"].split()[1]
-        inicio, _, fim = horas.partition("-")
-        for h in range(int(inicio), int(fim or inicio) + 1):
+    for cron in _crons():
+        minutos = cron.split()[0]
+        for h in _horas_brt(cron):
             for m in (int(x) for x in minutos.split(",")):
-                horarios.append(datetime(2026, 8, 26, (h - 3) % 24, m))
+                horarios.append(datetime(2026, 8, 26, h, m))
     return sorted(horarios)
 
 
@@ -57,9 +67,12 @@ def test_publish_roda_de_hora_em_hora_das_08_as_23_brt():
     # (21:00–23:00 BRT). Eram 32 (de 30 em 30 min) até a revisão da 5C mostrar
     # que o GitHub cobra cada job arredondado para cima — ver
     # test_a_cadencia_cabe_na_cota_mensal_de_minutos.
-    crons = [entry["cron"] for entry in
-             _workflow().get("on", _workflow().get(True))["schedule"]]
-    assert crons == ["0 11-23 * * *", "0 0-2 * * *"]
+    #
+    # A primeira hora ficou num cron SÓ DELA na rodada de fechamento da 5D:
+    # `github.event.schedule` vale a string do cron que disparou, então
+    # "0 11-23 * * *" não distingue as 08:00 das outras doze — e é nessa hora
+    # que o conteúdo de feed sai, uma vez por dia. A cadência não mudou.
+    assert _crons() == ["0 11 * * *", "0 12-23 * * *", "0 0-2 * * *"]
     assert len(_disparos_brt()) == 16
     assert _disparos_brt()[0].hour == 8 and _disparos_brt()[-1].hour == 23
 
@@ -146,6 +159,46 @@ def test_o_job_mede_a_propria_duracao():
     inicio = next(s for s in _workflow()["jobs"]["run"]["steps"]
                   if "JOB_START" in str(s.get("run", "")) and s is not passo)
     assert "GITHUB_ENV" in inicio["run"]
+
+
+# -- fase 5D (F1): alguém chama o `afiliado feed` ------------------------------
+
+PASSO_FEED = "Conteúdo do feed"
+
+
+def test_o_feed_sai_uma_vez_por_dia_no_primeiro_disparo():
+    """A fase 5D entregou `afiliado feed` e NADA o executava — o carrossel era
+    gesto manual do dono. O cron deste workflow é de hora em hora e o teto do
+    `instagram_carrossel` é 1/dia: rodar o comando nos 16 disparos para
+    descartar 15 gastaria minutos à toa. O passo é condicionado ao cron do
+    PRIMEIRO disparo do dia (08:00 BRT), e o teto do config fica como rede."""
+    passo = _passo(PASSO_FEED)
+    cron = re.search(r"github\.event\.schedule == '([^']+)'", passo["if"]).group(1)
+    assert cron in _crons()
+    assert _horas_brt(cron) == [8] == [_disparos_brt()[0].hour]
+    assert "afiliado feed" in passo["run"]
+
+
+def test_o_feed_nao_pode_derrubar_o_commit_de_estado():
+    """Um carrossel que falha (foto que não baixa, Graph API fora) não pode
+    impedir o commit do `state.db` que o `run` acabou de produzir: sem ele o
+    dedupe e o teto do próximo run saem furados. Daí `continue-on-error`, e a
+    posição — depois do run, antes do commit."""
+    assert _passo(PASSO_FEED)["continue-on-error"] is True
+    nomes = [s.get("name") for s in _workflow()["jobs"]["run"]["steps"]]
+    assert (nomes.index("Executar pipeline") < nomes.index(PASSO_FEED)
+            < nomes.index("Commitar estado"))
+    # E uma peça não pode derrubar a outra dentro do próprio passo: o shell do
+    # Actions é `bash -e` e o primeiro comando com saída != 0 encerraria o resto.
+    run = _passo(PASSO_FEED)["run"]
+    assert run.count("afiliado feed") == run.count("||") == 2
+
+
+def test_o_feed_recebe_os_mesmos_segredos_do_run():
+    """O carrossel publica pela Graph API (IG_*), hospeda a arte pelo bot
+    secundário (ART_HOST_BOT_TOKEN), ranqueia com o LLM (CLAUDE_CODE_*) e
+    despacha o flagrante ao chat de ops (TELEGRAM_*) — e busca nas duas lojas."""
+    assert _passo(PASSO_FEED)["env"] == _passo("Executar pipeline")["env"]
 
 
 def test_publish_repassa_todos_os_segredos():

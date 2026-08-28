@@ -93,8 +93,21 @@ nas raízes, contra 1.800 posts/mês), não do número de varreduras.
 - **Desligar:** GitHub → Actions → publish → `...` → *Disable workflow*. O
   GitHub também desativa workflows agendados após 60 dias sem atividade no
   repositório — o heartbeat diário no chat de operações é o que denuncia isso.
+- **Conteúdo de feed (fase 5D):** o passo "Conteúdo do feed" roda **uma vez por
+  dia**, no disparo das 08:00 BRT (`if: github.event.schedule == '0 11 * * *'`
+  — é por isso que a primeira hora tem um cron só dela). Ele publica **um
+  carrossel** do termômetro no Instagram e **despacha um flagrante** ao chat de
+  operações para o dono aprovar; o teto de `channels.instagram_carrossel`
+  (1/dia) é a rede se o cron um dia se duplicar. O passo é
+  `continue-on-error: true`: um carrossel que falha não pode impedir o commit
+  do `state.db`. Custo: ~1 job/dia a mais de minutos, dentro da tabela acima.
+  **Não há passo de feed na VPS** — mesmo com o timer systemd ligado, quem
+  publica o feed é o Actions (ou o dono, à mão, com `afiliado feed`).
 - **Disparo manual:** aba Actions → publish → Run workflow (com opção
-  dry-run).
+  dry-run). O disparo manual **não** roda o passo do feed: ele se prende ao
+  cron das 08:00, e `github.event.schedule` não existe num
+  `workflow_dispatch`. Para uma peça fora de hora, rode `afiliado feed` na
+  máquina do dono.
 
 ### O `state.db` commitado — o que a medição disse
 

@@ -110,6 +110,14 @@ ao vivo → link) em `docs/runbooks/meli-setup.md`.
   aqui, e este comando usa um **banco próprio** (`state.stories_path`, padrão
   `data/state_stories.db`, no `.gitignore`), então o dedupe dele é
   independente do resto.
+- `afiliado feed [--tipo termometro|flagrante] [--dry-run]` — o conteúdo de
+  feed da fase 5D, que **não** sai pelo `afiliado run`. `termometro` (padrão)
+  monta o carrossel do dia (capa + até 6 ofertas + fecho) e publica pela Graph
+  API; `flagrante` desenha o gráfico de 90 dias do "de" inflado de um vendedor
+  e **despacha ao chat de operações** — nunca publica, porque nomear um
+  vendedor é risco jurídico e isso não se automatiza. Em produção quem o chama
+  é o GitHub Actions, **uma vez por dia** (ver Agendamento). `--dry-run` grava
+  as artes em `.claude/previews/` e não escreve no banco.
 - `afiliado ig-login` — cria/renova `data/ig_session.json`, a sessão do
   instagrapi, lendo `IG_USERNAME`/`IG_PASSWORD` do ambiente. Um login
   bem-sucedido também **rearma** o canal, se ele tiver se desarmado hoje. Ver
@@ -220,6 +228,15 @@ prompt promete 30 candidatas e precisa entregar 30.
   ainda não foi medida — o job a imprime no *Summary*; a conta inteira está em
   `docs/runbooks/vps-setup.md`. Disparo manual: aba Actions → publish → Run
   workflow (com opção dry-run).
+- **Conteúdo de feed, 1×/dia (fase 5D)** — o mesmo workflow tem um passo
+  "Conteúdo do feed" preso ao disparo das **08:00 BRT**: um `afiliado feed
+  --tipo termometro` (publica o carrossel) e um `afiliado feed --tipo
+  flagrante` (despacha ao chat de ops para o dono aprovar). É `continue-on-
+  error`: uma peça que falha não impede o commit do `state.db`. O teto de
+  `channels.instagram_carrossel` (1/dia) é a rede contra cron duplicado, e o
+  disparo manual do workflow **não** roda esse passo. A pesquisa pede 2–3
+  carrosséis por semana; a cadência entregue é 7 — o teto e o ritmo da 5A
+  mandam, e baixar é editar `max_per_day`.
 - **VPS a cada 5 min (opcional)** — o timer systemd chama `afiliado run` a
   cada 5 minutos das 08:00 às 23:55 (192 execuções/dia, 1 oferta por run),
   para quem quiser cadência mais fina e um estoque de candidatas mais fresco;

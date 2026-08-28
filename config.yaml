@@ -244,9 +244,14 @@ channels:
   # tem teto próprio porque é um post por vez e não deve competir com o feed de
   # oferta única. **Um carrossel de 6 ofertas conta como UM post** na cota — é
   # isso que torna o formato barato.
-  # A pesquisa (2026-08-28) recomenda 2-3 carrosséis por semana; este comando
-  # NÃO sai pelo `afiliado run` — é agendado à parte, e o teto de 1/dia é o que
-  # impede um agendador errado de virar seis por dia.
+  # Este comando NÃO sai pelo `afiliado run`: quem o chama é o passo "Conteúdo
+  # do feed" do publish.yml, UMA vez por dia (disparo das 08:00 BRT). O teto de
+  # 1/dia é a rede — se o cron um dia se duplicar, `pacing_budget` +
+  # `count_posts_today` barram o segundo carrossel.
+  # A pesquisa (2026-08-28) recomenda 2-3 carrosséis por semana e a cadência
+  # entregue é diária: a mesma pesquisa mede crescimento MONOTÔNICO com a
+  # frequência e nenhuma penalidade por volume. Para voltar aos 2-3, o lugar é
+  # aqui (`max_per_day: 0` em dias alternados não existe — mude o cron).
   instagram_carrossel:
     enabled: true
     max_per_day: 1

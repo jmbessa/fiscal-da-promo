@@ -8,6 +8,11 @@
 # `--posts-per-run 5` o cobre com uma vaga de folga para recuperar um disparo
 # perdido (atraso de cron é rotina no Actions).
 #
+# O conteúdo de FEED (fase 5D) tem cadência própria: o passo "Conteúdo do feed"
+# roda UMA vez por dia, no disparo das 08:00 BRT — um carrossel publicado e um
+# flagrante despachado ao chat de operações. Ele custa ~1 job/dia de minutos e
+# não pode derrubar o commit de estado (`continue-on-error`).
+#
 # Custo — a conta REFEITA (o GitHub cobra cada JOB arredondado para o minuto
 # SEGUINTE; runner Linux = 1×; plano grátis de repo privado = 2.000 min/mês):
 #
@@ -41,7 +46,12 @@
 name: publish
 on:
   schedule:
-    - cron: "0 11-23 * * *"      # 08:00–20:00 BRT
+    # A primeira hora tem um cron SÓ DELA porque `github.event.schedule` vale a
+    # string do cron que disparou o run: com "0 11-23 * * *" as treze horas
+    # seriam indistinguíveis, e o passo do feed (1×/dia) não teria como se
+    # reconhecer. A cadência é a mesma de antes: 16 disparos.
+    - cron: "0 11 * * *"         # 08:00 BRT — o primeiro run do dia
+    - cron: "0 12-23 * * *"      # 09:00–20:00 BRT
     - cron: "0 0-2 * * *"        # 21:00–23:00 BRT
   workflow_dispatch:
     inputs:
@@ -104,6 +114,44 @@ jobs:
           # gravar de volta em secret. MELI_REFRESH_TOKEN fica só como rede de
           # segurança; se um dia o client_credentials for recusado, ver
           # "Token do ML no runner efêmero" em docs/runbooks/meli-setup.md.
+          MELI_CLIENT_ID: ${{ secrets.MELI_CLIENT_ID }}
+          MELI_CLIENT_SECRET: ${{ secrets.MELI_CLIENT_SECRET }}
+          MELI_REFRESH_TOKEN: ${{ secrets.MELI_REFRESH_TOKEN }}
+      # Fase 5D (F1): o `afiliado feed` existia e ninguém o executava — o
+      # carrossel do termômetro era gesto manual do dono. Ele é DIÁRIO (o teto
+      # de `channels.instagram_carrossel` é 1/dia), e este workflow dispara de
+      # hora em hora: rodar o comando nos 16 disparos para descartar 15 é
+      # desperdício de minutos, então o passo se prende ao cron do PRIMEIRO
+      # disparo do dia. O teto do config fica como rede — se um dia o cron for
+      # duplicado, `pacing_budget` + `count_posts_today` barram o segundo.
+      #
+      # As duas peças num passo só (um bloco de segredos, não três) e nenhuma
+      # derrubando a outra: o shell é `bash -e` e o `||` é o que impede o
+      # primeiro comando com saída != 0 de encerrar o resto.
+      #
+      # O flagrante NÃO publica: ele desenha o gráfico e manda ao chat de
+      # operações esperando o "ok" do dono (`docs/feed.md`). Ele só pode ser
+      # diário porque a rodada de fechamento lhe deu dedupe de 7 dias
+      # (`day_flags`) — sem isso o mesmo produto voltaria toda manhã.
+      - name: Conteúdo do feed
+        if: github.event.schedule == '0 11 * * *'
+        # Um carrossel que falha não pode impedir o commit do `state.db` que o
+        # `run` acabou de produzir: sem ele, o dedupe e o teto do próximo run
+        # saem furados. O passo avisa e o job segue verde.
+        continue-on-error: true
+        run: |
+          afiliado feed --tipo termometro || echo "::warning::carrossel do feed falhou"
+          afiliado feed --tipo flagrante || echo "::warning::flagrante do feed falhou"
+        env:
+          SHOPEE_APP_ID: ${{ secrets.SHOPEE_APP_ID }}
+          SHOPEE_APP_SECRET: ${{ secrets.SHOPEE_APP_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_OPS_CHAT_ID: ${{ secrets.TELEGRAM_OPS_CHAT_ID }}
+          ART_HOST_BOT_TOKEN: ${{ secrets.ART_HOST_BOT_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           MELI_CLIENT_ID: ${{ secrets.MELI_CLIENT_ID }}
           MELI_CLIENT_SECRET: ${{ secrets.MELI_CLIENT_SECRET }}
           MELI_REFRESH_TOKEN: ${{ secrets.MELI_REFRESH_TOKEN }}

@@ -1259,19 +1259,21 @@ class FatiaDeDescoberta(FakeSource):
     """Fonte que devolve uma fatia diferente a cada run, como a varredura
     rotativa da Shopee."""
 
-    def __init__(self, fatias):
+    def __init__(self, fatias, **stats_extra):
         self._fatias = list(fatias)
-        self.discovery_stats = pipeline_stats(0, 0, 0)
+        self._stats_extra = stats_extra
+        self.discovery_stats = pipeline_stats(0, 0, 0, **stats_extra)
 
     def fetch_offers(self, cfg):
         lote = self._fatias.pop(0) if self._fatias else []
-        self.discovery_stats = pipeline_stats(8, len(lote) * 2, len(lote))
+        self.discovery_stats = pipeline_stats(8, len(lote) * 2, len(lote),
+                                              **self._stats_extra)
         return lote
 
 
-def pipeline_stats(calls, nodes, eligible):
+def pipeline_stats(calls, nodes, eligible, **kw):
     from afiliado.sources.shopee import DiscoveryStats
-    return DiscoveryStats(calls, nodes, eligible)
+    return DiscoveryStats(calls, nodes, eligible, **kw)
 
 
 def test_a_candidata_de_um_run_anterior_continua_publicavel(tmp_path, monkeypatch):
@@ -1299,6 +1301,37 @@ def test_resumo_registra_a_fatia_de_descoberta(tmp_path, monkeypatch):
     assert summary.discovery == [
         "🔎 shopee: 8 chamadas · 6 nós · 3 elegíveis · 3 novos no estoque (3 no total)"]
     assert "🔎 shopee: 8 chamadas" in summary.text()
+    db.close()
+
+
+def test_resumo_registra_a_fatia_do_data_feed_a_parte(tmp_path, monkeypatch):
+    """Fase 5L: as duas superfícies de descoberta têm custos e rendimentos
+    diferentes, e uma linha só ("8 chamadas · 400 nós") não diria qual rendeu o
+    quê — a comparação entre elas viraria opinião."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta(
+        [[make_offer(item_id="0")]],
+        feed="2 chamadas · 500 linhas · 161 elegíveis · 10 mantidas")
+    summary = pipeline.run(CFG_ESTOQUE, [fonte], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert "📦 shopee: 2 chamadas · 500 linhas · 161 elegíveis · 10 mantidas" in summary.discovery
+    db.close()
+
+
+def test_o_feed_que_falhou_avisa_sem_engolir_o_aviso_do_plano(tmp_path, monkeypatch):
+    """Os dois avisos da descoberta são independentes: um é erro de CONFIG da
+    busca, o outro é o feed fora do ar. Antes o pipeline lia só `warning`."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta(
+        [[make_offer(item_id="0")]],
+        warning="⚠️ shopee: calls_per_run=5 corta o plano",
+        feed_warning="⚠️ shopee: data feed indisponível (quota) — a busca continua")
+    summary = pipeline.run(CFG_ESTOQUE, [fonte], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert any("calls_per_run" in a for a in summary.warnings)
+    assert any("data feed indisponível" in a for a in summary.warnings)
     db.close()
 
 

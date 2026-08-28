@@ -307,6 +307,16 @@ def candidate_max_age_days(cfg: dict, source: str) -> int:
         return 0
 
 
+def _avisos_da_descoberta(stats) -> list[str]:
+    """Os avisos que a fatia de descoberta juntou. `DiscoveryStats.avisos()`
+    quando a fonte o oferece; senão, o `warning` de sempre — uma fonte
+    duplicada em teste não pode quebrar por causa de um campo novo."""
+    avisos = getattr(stats, "avisos", None)
+    if callable(avisos):
+        return [a for a in avisos() if a]
+    return [a for a in [getattr(stats, "warning", "")] if a]
+
+
 def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
                        frescas: dict[str, list], summary: RunSummary,
                        dry_run: bool, warn: "_Warner") -> list:
@@ -344,11 +354,18 @@ def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
                 f"🔎 {src.name}: {stats.calls} chamadas · {stats.nodes} nós · "
                 f"{stats.eligible} elegíveis · {novos} novos no estoque "
                 f"({len(conhecidos | {o.item_id for o in lote})} no total)")
-            # Erro de CONFIG da varredura (ex.: `calls_per_run` que corta o
-            # plano e desliga subcategorias/keywords em silêncio). É aviso, não
-            # número do run: passa pelo warn_once e notifica uma vez por dia.
-            if getattr(stats, "warning", ""):
-                warn(stats.warning)
+            # Fase 5L: a fatia do DATA FEED, à parte. São duas superfícies com
+            # custos e rendimentos diferentes, e uma linha só não diria qual
+            # rendeu o quê — a comparação entre elas viraria opinião.
+            if getattr(stats, "feed", ""):
+                summary.discovery.append(f"📦 {src.name}: {stats.feed}")
+            # Erros de CONFIG/infra da descoberta (`calls_per_run` que corta o
+            # plano e desliga subcategorias/keywords em silêncio; o data feed
+            # fora do ar). São avisos, não números do run: passam pelo
+            # warn_once e notificam uma vez por dia. `avisos()` é opcional —
+            # uma fonte que só tem `warning` continua funcionando.
+            for aviso in _avisos_da_descoberta(stats):
+                warn(aviso)
     return list(resultado.values())
 
 

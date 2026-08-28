@@ -172,6 +172,18 @@ def test_rank_prompt_mostra_o_desconto_do_veredito_nao_o_cru():
     assert "50%" not in prompt
 
 
+def test_rank_prompt_diz_a_janela_das_vendas():
+    """As duas lojas entram na MESMA lista e o LLM é instruído a olhar "apelo
+    popular": `vendas=1000000` do ML ao lado de `vendas=45950` da Shopee o faria
+    reconcentrar o que a fatia por vendas acabou de diversificar. O número vai
+    com a unidade."""
+    shopee = make_offer(item_id="s1", sales=45_950, sales_window_days=30)
+    meli = make_offer(item_id="m1", source="meli", sales=1_000_000, sales_e_faixa=True)
+    prompt = selection._rank_prompt([shopee, meli], [], 2, cfg=CFG)
+    assert "vendas=45950 (últimos 30 dias)" in prompt
+    assert "vendas=1000000 (total)" in prompt
+
+
 def test_filter_offers_min_ev_floor(tmp_path):
     db = StateDB(tmp_path / "s.db")
     offers = [
@@ -517,6 +529,61 @@ def test_o_expoente_inverte_de_verdade_um_par_mais_proximo():
 
 def test_ev_com_comissao_zero_nao_explode():
     assert selection.ev_score(make_offer(commission_brl=0.0, commission_pct=0.0), CFG) == 0.0
+
+
+def test_o_log10_do_ev_amortece_a_escala_diferente_das_fontes():
+    """Fase 5H: `sales` NÃO é comparável entre fontes (o do ML é vitalício, o
+    da Shopee é de 30 dias), e ainda assim ele entra CRU no `ev_score`. A
+    medição que sustenta essa decisão, para ninguém "consertar" por intuição:
+    o `log10` reduz 250.000 × 45.950 (5,4×) a 2,62 × 2,40 no fator de
+    popularidade — 9% de vantagem para o ML, com a `source_quota` de 0,5/0,5
+    limitando o resto. Quem conserta a comparação crua é a fatia por vendas do
+    slate, onde ela decidia a fatia INTEIRA."""
+    meli = make_offer(source="meli", commission_brl=10.0, sales=250_000)
+    shopee = make_offer(source="shopee", commission_brl=10.0, sales=45_950)
+    assert selection.ev_score(meli, CFG) / selection.ev_score(shopee, CFG) == pytest.approx(
+        1.09, abs=0.01)
+
+
+def test_a_fatia_por_vendas_ordena_por_posicao_dentro_da_fonte():
+    """H3: com o ML em escala vitalícia e a Shopee em 30 dias, `sorted(sales)`
+    cru punha TODO o ML na frente. A fatia passa a alternar: o mais vendido de
+    cada loja, depois o segundo de cada."""
+    candidatas = [make_offer(source="meli", item_id=f"m{i}", sales=s)
+                  for i, s in enumerate((1_000_000, 250_000, 100_000))]
+    candidatas += [make_offer(source="shopee", item_id=f"s{i}", sales=s)
+                   for i, s in enumerate((77_344, 45_950, 31_077))]
+    ordem = [o.item_id for o in selection._por_vendas_normalizadas(candidatas)]
+    assert ordem == ["m0", "s0", "m1", "s1", "m2", "s2"]
+
+
+def test_a_fatia_por_vendas_nao_premia_a_fonte_com_mais_candidatas():
+    """Por POSIÇÃO e não por percentil (`i / n`): o pool da Shopee tem centenas
+    de candidatas e o do ML dezenas — o percentil daria os primeiros lugares à
+    Shopee inteira e a monocultura só trocaria de dono."""
+    candidatas = [make_offer(source="shopee", item_id=f"s{i}", sales=80_000 - i)
+                  for i in range(300)]
+    candidatas += [make_offer(source="meli", item_id=f"m{i}", sales=1_000_000 - i)
+                   for i in range(5)]
+    ordem = [o.item_id for o in selection._por_vendas_normalizadas(candidatas)][:6]
+    assert ordem == ["m0", "s0", "m1", "s1", "m2", "s2"]
+
+
+def test_o_slate_por_vendas_nao_vira_monocultura_do_meli():
+    """O efeito no slate: com o ML ganhando também no EV, as 30 vagas saíam
+    TODAS dele — a fatia por vendas, que existe para diversificar, repetia o
+    que o EV já tinha escolhido. Uma categoria só, para que o limite por
+    categoria não resgate ninguém."""
+    candidatas = [make_offer(source="meli", item_id=f"m{i}", category="saude",
+                             commission_brl=20.0, sales=1_000_000 - i * 1000)
+                  for i in range(40)]
+    candidatas += [make_offer(source="shopee", item_id=f"s{i}", category="saude",
+                              commission_brl=2.0, sales=77_000 - i * 100)
+                   for i in range(20)]
+    slate = selection.build_slate(candidatas, CFG)
+    assert {o.source for o in slate} == {"meli", "shopee"}
+    # o campeão de vendas da Shopee chega ao LLM, não só o do ML
+    assert {"m0", "s0"} <= {o.item_id for o in slate}
 
 
 def _camera(i):

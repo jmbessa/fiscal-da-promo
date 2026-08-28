@@ -2,24 +2,93 @@ import argparse
 import io
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import httpx
 
-from afiliado import config, llm, pipeline
+from afiliado import (categorias, config, creative, flagrante, llm, pipeline, pricing,
+                      selection)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import GRAPH_HOSTS, graph_error
-from afiliado.channels.instagram_feed import InstagramFeedChannel
+from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
 from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.instagram_story_link import InstagramStoryLinkChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
-from afiliado.channels.telegram import TelegramChannel, send_text
+from afiliado.channels.telegram import TelegramChannel, send_photo_bytes, send_text
+from afiliado.errors import SourceError
+from afiliado.models import CopyParts, Post, format_brl
 from afiliado.sources.meli import DEFAULT_OFFERS_PATH, MeliSource
 from afiliado.sources.shopee import ShopeeSource
 from afiliado.state import StateDB
 from afiliado.watchlist import load_watchlist
+
+
+# --- Fase 5D: a peça de feed -------------------------------------------------
+
+FEED_TIPOS = ("termometro", "flagrante")
+
+# Onde `--dry-run` grava as artes para o dono olhar antes de publicar.
+PREVIEWS_DIR = Path(".claude/previews")
+
+# O carrossel é publicado pelo `InstagramFeedChannel` (mesmo endpoint, mesma
+# cota da Meta), mas tem TETO PRÓPRIO — ele é um post por vez e não deve
+# competir com o feed de oferta única pelo `max_per_day` daquele canal.
+#
+# Duas chaves em `posted`, e o motivo importa:
+#   - CANAL_CARROSSEL guarda UMA linha por carrossel publicado (a primeira
+#     oferta como representante). É essa contagem que `count_posts_today` lê,
+#     e é o que faz "um carrossel = um post" valer também para o teto.
+#   - CANAL_CARROSSEL_ITEM guarda uma linha por oferta que entrou no post. Não
+#     conta para teto nenhum; existe para o DEDUPE (que é por fonte+item,
+#     qualquer canal) não oferecer os mesmos seis produtos amanhã.
+CANAL_CARROSSEL = "instagram_carrossel"
+CANAL_CARROSSEL_ITEM = "instagram_carrossel_item"
+DEFAULT_CARROSSEL_MAX_PER_DAY = 1
+
+# Capa e fecho ocupam dois dos oito slides (ver creative.CARROSSEL_MAX_SLIDES).
+MAX_OFERTAS_NO_CARROSSEL = creative.CARROSSEL_MAX_SLIDES - 2
+
+SUBTITULO_TERMOMETRO = "O Fiscal olhou o histórico de preço de cada uma."
+
+# Por quantos dias um flagrante JÁ DESPACHADO ao chat de operações não volta.
+# Ele não registrava nada: agendado todo dia, o produto de maior gravidade
+# voltaria toda manhã, porque nada no mundo muda de um dia para o outro num
+# histórico de 90 dias. A marca vai em `day_flags` e NUNCA em `posted` —
+# registrar como publicação bloquearia o produto no Telegram por 30 dias
+# (`selection.dedupe_days`), que é efeito colateral de outra decisão. É por
+# PRODUTO, não "um flagrante por semana": bloqueado o pior, o comando desce
+# para o próximo, senão um item calaria uma semana inteira de denúncias.
+FLAGRANTE_DEDUPE_DAYS = 7
+FLAGRANTE_FLAG_PREFIXO = "flagrante"
+
+# Fase 5G (G2): o teto DIÁRIO do flagrante, no mesmo lugar (`day_flags`) e com
+# a mesma semântica do dedupe por produto. Ele existe porque o passo do Actions
+# deixou de se prender ao cron das 08:00: ~15 dos 16 disparos são descartados
+# pelo agendador (medido em 2026-08-28), e prender a peça a um slug de cron era
+# feed que nunca sai. Rodando em todo disparo, o dedupe por PRODUTO não segura
+# nada — ele desce para o próximo item, e o ops receberia 16 flagrantes
+# diferentes por dia. A marca é gravada só DEPOIS do despacho bem-sucedido:
+# um envio que falhou não gastou o dia, e o disparo seguinte repete.
+FLAGRANTE_DIA_FLAG = "feed_flagrante_do_dia"
+
+# Fase 5I: a produção saiu do GitHub Actions e passou para o Agendador de
+# Tarefas do Windows, na máquina do dono. Estes são os nomes das duas tarefas
+# que `deploy/agendar-windows.ps1` cria — e que o `doctor` procura. O nome é o
+# CONTRATO entre os dois lados: tests/test_agendador_windows.py trava os dois.
+TAREFA_RUN = "FiscalDaPromo-Run"
+TAREFA_STORIES = "FiscalDaPromo-Stories"
+# As duas peças de FEED entram na lista porque o único lugar que chamava
+# `afiliado feed` era o passo "Conteúdo do feed" do publish.yml: desligar o
+# `schedule:` de lá sem agendá-las mataria o carrossel e o flagrante em
+# SILÊNCIO, que é o defeito que esta fase existe para acabar.
+TAREFA_FEED = "FiscalDaPromo-Feed"
+TAREFA_FLAGRANTE = "FiscalDaPromo-Flagrante"
+TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_STORIES, TAREFA_FEED, TAREFA_FLAGRANTE)
+SCRIPT_DO_AGENDADOR = "deploy/agendar-windows.ps1"
+RUNBOOK_DA_PRODUCAO = "docs/runbooks/producao-windows.md"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -30,8 +99,9 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="APIs reais, mas imprime em vez de publicar")
     prun.add_argument("--config", default="config.yaml")
     prun.add_argument("--posts-per-run", type=int, default=None,
-                      help="sobrepõe selection.posts_per_run (o Actions roda a cada "
-                           "30 min e precisa de mais que a VPS, que roda a cada 5)")
+                      help="sobrepõe selection.posts_per_run (a máquina do dono roda a "
+                           "cada 15 min e precisa de folga para disparos perdidos; a "
+                           "VPS, que roda a cada 5, não precisa)")
     pdoc = sub.add_parser("doctor", help="verifica credenciais e dependências")
     pdoc.add_argument("--config", default="config.yaml")
     # Fase 5F: os canais de story ganham comando próprio porque o
@@ -46,6 +116,18 @@ def _build_parser() -> argparse.ArgumentParser:
     pst.add_argument("--config", default="config.yaml")
     plog = sub.add_parser("ig-login", help="cria/renova a sessão do instagrapi")
     plog.add_argument("--config", default="config.yaml")
+    # Fase 5D: a peça de FEED tem comando próprio porque não é o mesmo trabalho
+    # do `run` — ela junta VÁRIAS ofertas num post só (ou nomeia um vendedor) e
+    # sai 2 ou 3 vezes por semana, não a cada 5 minutos.
+    pfeed = sub.add_parser("feed", help="monta a peça de feed do dia (carrossel ou flagrante)")
+    pfeed.add_argument("--dry-run", action="store_true",
+                       help=f"grava os PNGs em {PREVIEWS_DIR} e não publica nem "
+                            "escreve no banco")
+    pfeed.add_argument("--tipo", choices=FEED_TIPOS, default=FEED_TIPOS[0],
+                       help="termometro (padrão): carrossel do dia, publicado. "
+                            "flagrante: gráfico do 'de' que não se sustenta, "
+                            "despachado ao chat de operações SEM publicar")
+    pfeed.add_argument("--config", default="config.yaml")
     return p
 
 
@@ -456,6 +538,69 @@ def _cota_de_publicacao(data) -> tuple[int | None, int | None, int]:
             segundos // 3600 if segundos else 24)
 
 
+def _no_windows() -> bool:
+    """Função (e não `sys.platform` solto) para o teste do item do agendador
+    valer em qualquer plataforma: a suíte roda no Linux do CI e na máquina do
+    dono, e o veredito não pode depender de onde o pytest foi chamado."""
+    return sys.platform.startswith("win")
+
+
+def estado_da_tarefa(nome: str) -> str:
+    """O `State` da tarefa agendada do Windows — `Ready`, `Disabled`,
+    `Running`, `Queued` — ou string vazia quando ela não existe.
+
+    `Get-ScheduledTask` e não `schtasks /query`: o `State` do módulo
+    ScheduledTasks é um enum em INGLÊS em qualquer idioma do Windows, enquanto
+    o "Status:" do schtasks é traduzido (nesta máquina ele imprime "Pronto" e
+    "Desabilitado") — a checagem quebraria calada num Windows em outro idioma.
+    """
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         f"(Get-ScheduledTask -TaskName '{nome}' -ErrorAction SilentlyContinue).State"],
+        capture_output=True, text=True, timeout=60)
+    return (r.stdout or "").strip()
+
+
+def _doctor_agendador(consulta=None) -> bool:
+    """Fase 5I (T4): as duas tarefas da produção existem e estão habilitadas?
+
+    Este é o item que faltava. Na 5G o agendador do GitHub descartou ~15 de 16
+    disparos por mais de um dia e NADA no projeto sabia dizer "ninguém está me
+    chamando" — a produção mudou de host, e a pergunta continua valendo.
+
+    Fora do Windows o item é PULADO sem falhar (a suíte roda no Linux do CI, e
+    a VPS continua sendo uma opção). Consulta que estoura vira ⚠️, nunca ❌:
+    um erro do PowerShell não é prova de tarefa ausente, e mandar o dono
+    recriar tarefas que existem é pior do que calar.
+    """
+    if not _no_windows():
+        print(f"ℹ️ Agendador: item pulado (não é Windows) — a produção roda no "
+              f"Agendador de Tarefas da máquina do dono (ver {RUNBOOK_DA_PRODUCAO})")
+        return True
+    consulta = consulta or estado_da_tarefa
+    ok = True
+    for nome in TAREFAS_DA_PRODUCAO:
+        try:
+            estado = (consulta(nome) or "").strip()
+        except Exception as exc:                  # noqa: BLE001 - vira aviso, não veredito
+            print(f"⚠️ Agendador: não consegui consultar {nome} ({exc})")
+            continue
+        if not estado:
+            ok = False
+            print(f"❌ Agendador: a tarefa {nome} não existe — NINGUÉM está chamando o "
+                  f"pipeline. Rode `powershell -ExecutionPolicy Bypass -File "
+                  f"{SCRIPT_DO_AGENDADOR}` (ver {RUNBOOK_DA_PRODUCAO})")
+        elif estado.lower() == "disabled":
+            ok = False
+            print(f"❌ Agendador: a tarefa {nome} existe mas está DESABILITADA — ela "
+                  f"aparece na lista e não roda. Habilite no Agendador de Tarefas ou "
+                  f"rode `powershell -ExecutionPolicy Bypass -File {SCRIPT_DO_AGENDADOR}` "
+                  f"(ver {RUNBOOK_DA_PRODUCAO})")
+        else:
+            print(f"✅ Agendador: {nome} ({estado})")
+    return ok
+
+
 def doctor(cfg: dict) -> int:
     ok = True
     try:
@@ -557,6 +702,11 @@ def doctor(cfg: dict) -> int:
         print("ℹ️ Instagram: não configurado (ver docs/runbooks/meta-setup.md)")
 
     if not _doctor_story_link(cfg):
+        ok = False
+
+    # Por último de propósito: é o item que responde "quem me chama?", e ele
+    # fala do MUNDO (o agendador), não das credenciais.
+    if not _doctor_agendador():
         ok = False
 
     return 0 if ok else 1
@@ -702,6 +852,448 @@ def _rearma_o_canal(cfg: dict) -> None:
         db.close()
 
 
+# =============================================================================
+# Fase 5D — comando `afiliado feed`
+#
+# Duas peças, dois destinos. O TERMÔMETRO monta o carrossel do dia e publica —
+# é o motor de retenção. O FLAGRANTE gera o gráfico do "de" que não se sustenta
+# e NÃO publica: vai ao chat de operações esperar o "ok" do dono, porque
+# nomear um vendedor específico com base em dado automatizado é risco jurídico
+# e reputacional, e isso não se automatiza (`docs/feed.md`).
+#
+# Os dois respeitam o teto diário e o ritmo da 5A, como os outros canais.
+# =============================================================================
+
+
+def _cliente_http() -> httpx.Client:
+    """O cliente que baixa as fotos dos produtos para as artes do feed.
+
+    É uma função (e não um `httpx.Client()` embutido) para o teste injetar um
+    `MockTransport`: nenhum teste da suíte toca a rede."""
+    return httpx.Client(timeout=creative.DOWNLOAD_TIMEOUT)
+
+
+def _marca(cfg: dict) -> tuple[str | None, str]:
+    brand = cfg.get("brand") or {}
+    return brand.get("handle") or None, brand.get("name") or "Fiscal da Promo"
+
+
+def _grava_previews(prefixo: str, imagens: list[bytes]) -> list[Path]:
+    PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    caminhos = []
+    for i, png in enumerate(imagens, start=1):
+        nome = f"{prefixo}.png" if len(imagens) == 1 else f"{prefixo}-{i:02d}.png"
+        caminho = PREVIEWS_DIR / nome
+        caminho.write_bytes(png)
+        caminhos.append(caminho)
+    return caminhos
+
+
+def _watchlist(cfg: dict):
+    try:
+        return load_watchlist((cfg.get("watchlist") or {}).get("path", "data/watchlist.json"))
+    except Exception:      # noqa: BLE001 - sem watchlist a peça sai sem boosts
+        return None
+
+
+def _ofertas_do_feed(cfg: dict, db: StateDB, avisos: list[str],
+                     dry_run: bool = False) -> tuple[list, dict]:
+    """As ofertas candidatas à peça de feed, com a régua já carimbada.
+
+    Estoque de candidatas (o que os runs do pipeline acumularam) UNIÃO a fatia
+    que as fontes devolvem agora — a mesma união do `pipeline`, sem o laço de
+    publicação. A fatia fresca sobrescreve o estoque: preço mais novo vence.
+    Fonte que falha vira aviso e não derruba o comando.
+
+    A fatia fresca também ENTRA no estoque (rodada de fechamento, F2). Este
+    comando paga a mesma descoberta que o `run` paga — 8 chamadas à Shopee por
+    execução — e antes jogava fora o que ela achou: o que não coubesse no
+    carrossel de hoje sumia com o processo. A descoberta é do projeto, não do
+    comando. Em `--dry-run` nada é gravado (A10), e fonte sem
+    `candidate_max_age_days` não usa o estoque (o pool do ML é relido inteiro a
+    cada run) — gravá-la só engordaria o `state.db` que o Actions commita."""
+    sources, avisos_fontes = _build_sources(cfg, db)
+    avisos.extend(avisos_fontes)
+    por_chave: dict[tuple[str, str], object] = {}
+    for src in sources:
+        idade = pipeline.candidate_max_age_days(cfg, src.name)
+        if idade > 0:
+            for o in db.load_candidates(src.name, idade):
+                por_chave[(o.source, o.item_id)] = o
+    for src in sources:
+        try:
+            lote = list(src.fetch_offers(cfg))
+        except Exception as exc:     # noqa: BLE001 - fonte isolada, como no pipeline
+            _aviso(avisos, f"⚠️ fonte {src.name} falhou: {exc}")
+            continue
+        for o in lote:
+            por_chave[(o.source, o.item_id)] = o
+        idade = pipeline.candidate_max_age_days(cfg, src.name)
+        if lote and idade > 0 and not dry_run:
+            db.upsert_candidates(lote)
+            db.prune_candidates(idade, source=src.name)
+    ofertas = pricing.enrich_offers(list(por_chave.values()), db, _watchlist(cfg), cfg)
+    return ofertas, {s.name: s for s in sources}
+
+
+def _minimo_de_desconto(cfg: dict) -> int:
+    return int(pricing.setting(cfg.get("selection") or {}, "min_real_discount_pct",
+                               pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT))
+
+
+def _teto_do_carrossel(cfg: dict) -> tuple[bool, int]:
+    """`(ligado, teto diário)` de `channels.instagram_carrossel`. Seção ausente
+    = ligado com `DEFAULT_CARROSSEL_MAX_PER_DAY` (um por dia)."""
+    raw = (cfg.get("channels") or {}).get(CANAL_CARROSSEL)
+    if raw is None:
+        return True, DEFAULT_CARROSSEL_MAX_PER_DAY
+    ligado, max_per_day = _channel_settings(raw)
+    return ligado, int(max_per_day or DEFAULT_CARROSSEL_MAX_PER_DAY)
+
+
+def _carrossel_pode_sair(cfg: dict, db: StateDB) -> tuple[bool, str]:
+    """O ritmo da 5A aplicado ao carrossel: o teto diário distribuído pela
+    janela de `schedule:`. Fora da janela o orçamento é 0 e a peça não sai."""
+    ligado, teto = _teto_do_carrossel(cfg)
+    if not ligado:
+        return False, f"canal {CANAL_CARROSSEL} desligado em config.yaml"
+    horario = pipeline.schedule_settings(cfg)
+    orcamento = pipeline.pacing_budget(teto, db.local_now(),
+                                       horario["window_start"], horario["window_end"])
+    usados = db.count_posts_today(CANAL_CARROSSEL)
+    if usados >= orcamento:
+        return False, (f"teto/ritmo do carrossel: {usados} publicado(s) hoje, "
+                       f"orçamento agora {orcamento} (teto do dia {teto})")
+    return True, ""
+
+
+def _canal_do_carrossel(cfg: dict, avisos: list[str]) -> InstagramFeedChannel | None:
+    """O canal que publica o álbum — a MESMA classe do feed (mesmo endpoint,
+    mesma cota da Meta). O teto é do `instagram_carrossel`, mas as credenciais
+    e o aviso de `ART_HOST_BOT_TOKEN` são os do `instagram_feed`."""
+    handle, nome = _marca(cfg)
+    canais: list = []
+    _monta_instagram(InstagramFeedChannel, {InstagramFeedChannel.name: True}, cfg,
+                     canais, avisos, brand_handle=handle, brand_name=nome)
+    return canais[0] if canais else None
+
+
+def _posts_do_carrossel(escolhidas: list, by_name: dict, cfg: dict, db: StateDB,
+                        dry_run: bool, avisos: list[str]) -> list[Post]:
+    """Preço vivo + veredito, uma oferta por slide.
+
+    O preço é atualizado antes de virar arte (o pool do ML chega com a MEDIANA
+    como "atual"); oferta cujo refresh falha fica FORA do carrossel — publicar
+    um preço velho num post que se chama Fiscal é o pior resultado possível.
+    A copy não é usada pelo desenho do slide (`render_carrossel` lê só
+    `post.offer` e `post.verdict`), então não se gasta LLM aqui."""
+    minimo = _minimo_de_desconto(cfg)
+    posts: list[Post] = []
+    for offer in escolhidas:
+        refresh = getattr(by_name.get(offer.source), "refresh_price", None)
+        if refresh is not None:
+            try:
+                offer = refresh(offer)
+            except Exception as exc:      # noqa: BLE001 - a oferta sai, o post continua
+                _aviso(avisos, f"⚠️ {offer.item_id}: preço não atualizado ({exc}) "
+                               "— fora do carrossel")
+                continue
+            if not dry_run:
+                db.record_price(offer.source, offer.item_id, offer.price_current_cents)
+        posts.append(Post(offer=offer, copy=CopyParts("", "", ""), affiliate_link="",
+                          verdict=pricing.verdict(offer, minimo)))
+    return posts
+
+
+def capa_do_termometro(posts: list[Post]) -> tuple[str, str]:
+    """Título e subtítulo da capa. O número vem da RÉGUA, não do marketing:
+    "passou" é a oferta que o veredito autoriza a alegar desconto verificado ou
+    que carrega o selo de menor preço."""
+    n = len(posts)
+    aprovadas = sum(1 for p in posts if p.verdict.mode == "A" or p.verdict.seal)
+    if aprovadas == 0:
+        titulo = f"NENHUMA DAS {n} PASSOU."
+    elif aprovadas == 1 and n > 1:
+        # A variante que a pesquisa cita nominalmente ("3 ofertas, 1 é real") —
+        # e que resolve o "1 PASSARAM" de graça.
+        titulo = f"{n} OFERTAS. 1 É REAL."
+    elif aprovadas < n:
+        titulo = f"{n} OFERTAS. {aprovadas} PASSARAM."
+    else:
+        titulo = f"AS {n} DO DIA COM SELO DO FISCAL"
+    return titulo, SUBTITULO_TERMOMETRO
+
+
+def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
+    """A legenda do álbum — página de busca, não pedido de curtida.
+
+    Um item por linha com o nome COMPLETO e o preço, as categorias por nome, e
+    a janela MAIS CURTA entre as ofertas (é a única que vale para o post
+    inteiro: prometer a maior seria alegar sobre um item o que só outro
+    sustenta). Fecha na frase-assinatura."""
+    linhas = [titulo, subtitulo, ""]
+    for i, post in enumerate(posts, start=1):
+        offer = post.offer
+        nome = sanitiza_titulo(offer.title)
+        selo = " · selo do Fiscal" if post.verdict.seal else ""
+        linhas.append(f"{i}. {nome} — {format_brl(offer.price_current_cents)}{selo}")
+    linhas += ["", "🔗 Link na bio e no canal do Telegram", ""]
+    nomes = list(dict.fromkeys(
+        n for n in (categorias.nome(p.offer.category) for p in posts) if n))
+    if nomes:
+        linhas.append("Categorias: " + " · ".join(nomes))
+    janelas = [p.offer.price_window_days for p in posts if p.offer.price_window_days > 0]
+    if janelas:
+        linhas.append(f"Preço verificado nos últimos {min(janelas)} dias.")
+    linhas.append(creative.ASSINATURA)
+    return "\n".join(linhas)
+
+
+def _notifica_ops(cfg: dict, texto: str) -> None:
+    token, ops = _env("TELEGRAM_BOT_TOKEN"), _env("TELEGRAM_OPS_CHAT_ID")
+    if token and ops:
+        send_text(token, ops, texto)
+
+
+def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
+    avisos: list[str] = []
+    canal = None
+    if not args.dry_run:
+        pode, motivo = _carrossel_pode_sair(cfg, db)
+        if not pode:
+            print(f"ℹ️ carrossel não sai agora — {motivo}")
+            return 0
+        canal = _canal_do_carrossel(cfg, avisos)
+        if canal is None:
+            print("❌ carrossel: canal do Instagram não montado "
+                  "(ver docs/runbooks/meta-setup.md)")
+            return 1
+
+    ofertas, by_name = _ofertas_do_feed(cfg, db, avisos, args.dry_run)
+    candidatas = selection.filter_offers(ofertas, db, cfg)
+    if not candidatas:
+        print(f"ℹ️ carrossel: {len(ofertas)} oferta(s), nenhuma candidata — nada a montar")
+        return 0
+    # O ranking que já existe, com a vaga do carrossel no lugar da do post.
+    cfg_ranking = {**cfg, "selection": {**cfg["selection"],
+                                        "posts_per_run": MAX_OFERTAS_NO_CARROSSEL}}
+    escolhidas = selection.rank_offers(candidatas, db.recent_titles(), cfg_ranking,
+                                       _watchlist(cfg))[:MAX_OFERTAS_NO_CARROSSEL]
+    posts = _posts_do_carrossel(escolhidas, by_name, cfg, db, args.dry_run, avisos)
+    if not posts:
+        print("ℹ️ carrossel: nenhuma oferta sobreviveu à atualização de preço")
+        return 0
+
+    handle, nome_marca = _marca(cfg)
+    # As fotos primeiro, a capa e a legenda depois (F4): produto cuja imagem
+    # não baixa é pulado, e uma capa que diz "6 OFERTAS" ou uma legenda que
+    # lista um item que o álbum não tem seria a peça mentindo sobre si mesma.
+    with _cliente_http() as client:
+        try:
+            fotos = creative.carrossel_fotos(posts, client, avisos)
+            posts = [post for post, _ in fotos]
+            titulo, subtitulo = capa_do_termometro(posts)
+            legenda = legenda_do_carrossel(posts, titulo, subtitulo)
+            imagens = creative.render_carrossel(fotos, titulo, subtitulo, handle=handle,
+                                                brand_name=nome_marca)
+        except SourceError as exc:
+            # O passo do Actions é `continue-on-error` e o job segue VERDE: se
+            # isto só fosse ao log, o feed podia parar por uma semana sem que
+            # ninguém notasse. É o mesmo caminho da falha de publicação.
+            print(f"❌ carrossel: falha ao gerar a arte — {exc}")
+            if not args.dry_run:
+                _notifica_ops(cfg, "\n".join(
+                    [f"❌ Carrossel do feed não foi gerado: {exc}", *avisos]))
+            return 1
+
+    if args.dry_run:
+        caminhos = _grava_previews("feed-carrossel", imagens)
+        print(f"--- DRY-RUN: carrossel de {len(posts)} oferta(s), "
+              f"{len(imagens)} slides ---")
+        for caminho in caminhos:
+            print(f"  {caminho}")
+        print(f"\n{legenda}\n")
+        for aviso in avisos:
+            print(aviso)
+        return 0
+
+    resultado = canal.publish_carrossel(imagens, legenda)
+    # F3: há aviso que só EXISTE depois de publicar — o "polling cego" da 5E,
+    # quando a Meta não devolve `status_code` do container. Quem o drena é o
+    # laço do `pipeline.run`, que este comando não usa: sem isto ele morria
+    # dentro do objeto do canal. Aqui não há `_Warner` (não há run nem
+    # deduplicação por dia), então as linhas vão ao resumo que o comando já
+    # manda — e vão nos DOIS caminhos: o run que mais precisa de diagnóstico é
+    # justamente o que falhou.
+    avisos.extend(pipeline.drena_avisos(canal))
+    for aviso in avisos:
+        print(aviso)
+    if not resultado.ok:
+        print(f"❌ carrossel: publicação falhou — {resultado.error}")
+        _notifica_ops(cfg, "\n".join(
+            [f"❌ Carrossel do feed falhou: {resultado.error}", *avisos]))
+        return 1
+
+    # UMA linha no canal que conta para o teto (um carrossel é um post) e uma
+    # por oferta no canal de item, para o dedupe não repetir os mesmos produtos.
+    db.record_post(posts[0], CANAL_CARROSSEL, resultado.message_id)
+    for post in posts:
+        db.record_post(post, CANAL_CARROSSEL_ITEM, resultado.message_id)
+    print(f"✅ carrossel publicado ({resultado.message_id}): {titulo}")
+    _notifica_ops(cfg, "\n".join(
+        [f"🎠 Carrossel publicado — {titulo}",
+         *(f"• {p.offer.title[:40]}" for p in posts), *avisos]))
+    return 0
+
+
+def legenda_do_flagrante(achado, verdict) -> str:
+    """O que o dono lê no chat de operações antes de decidir publicar.
+
+    Diz o que o vendedor alega, o que o nosso histórico mostra, e — em
+    primeiro lugar — que a peça NÃO foi publicada."""
+    offer = achado.offer
+    linhas = [
+        "🔎 FLAGRANTE PARA APROVAR — NÃO foi publicado",
+        "",
+        offer.title,
+        f"O vendedor anuncia -{achado.desconto_alegado_pct}% sobre "
+        f"{format_brl(offer.price_original_cents)}.",
+    ]
+    if achado.dias_no_pico:
+        linhas.append(f"Esse preço existiu por {achado.dias_no_pico} dia(s) em "
+                      f"{len(achado.historico)} dias de histórico "
+                      f"(pico medido: {format_brl(achado.pico_cents)}).")
+    else:
+        linhas.append(f"Esse preço NUNCA existiu nos {len(achado.historico)} dias "
+                      "de histórico que medimos.")
+    linhas += [
+        f"Preço de sempre (mediana): {format_brl(offer.price_ref_cents)} · "
+        f"hoje: {format_brl(offer.price_current_cents)}",
+        f"Gravidade: {achado.gravidade:.2f}",
+    ]
+    if verdict.seal:
+        linhas.append(verdict.seal)
+    linhas += [
+        "",
+        "Publique só se você concordar: nomear um vendedor é risco jurídico e "
+        "reputacional, e por isso esta peça nunca sai sozinha.",
+        creative.ASSINATURA,
+    ]
+    return "\n".join(linhas)
+
+
+def serie_ate_hoje(historico: list, offer, hoje) -> list:
+    """A série do gráfico termina no preço de HOJE — o mesmo que a legenda diz.
+
+    O `price_log` pode ainda não ter a observação de hoje (em `--dry-run` nada
+    é gravado, e o run que grava roda à parte), e aí o último ponto do gráfico
+    era o preço de ONTEM enquanto a legenda dizia o de hoje. Medido no primeiro
+    preview do comando: o gráfico marcava R$ 27,60 e o texto, R$ 26,00. Um
+    gráfico que contradiz a própria legenda é pior que nenhum gráfico."""
+    if offer.price_current_cents <= 0:
+        return historico
+    return [(d, c) for d, c in historico if d != hoje] + [(hoje, offer.price_current_cents)]
+
+
+def chave_do_flagrante(offer) -> str:
+    """A chave da marca de dedupe em `day_flags`, por PRODUTO."""
+    return f"{FLAGRANTE_FLAG_PREFIXO}:{offer.source}:{offer.item_id}"
+
+
+def _flagrante_pode_sair(db: StateDB) -> tuple[bool, str]:
+    """O teto diário do flagrante, conferido ANTES da descoberta — como o
+    `_carrossel_pode_sair` faz com o carrossel. Um disparo que já gastou a cota
+    do dia sai sem pagar as 8 chamadas de descoberta e sem tocar em rede.
+
+    Vale também em `--dry-run` (o preview mostra a peça que SAIRIA, e a que
+    sairia é nenhuma), como já vale o dedupe por produto; o que o dry-run não
+    faz é gravar (`somente_leitura`)."""
+    marca = db.day_flag(FLAGRANTE_DIA_FLAG)
+    return (False, marca) if marca else (True, "")
+
+
+def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
+    avisos: list[str] = []
+    pode, marca = _flagrante_pode_sair(db)
+    if not pode:
+        print(f"ℹ️ flagrante não sai agora — já houve um hoje ({marca})")
+        return 0
+    ofertas, _ = _ofertas_do_feed(cfg, db, avisos, args.dry_run)
+    achados = flagrante.encontra(ofertas, db, cfg)
+    if not achados:
+        print(f"ℹ️ nenhum flagrante entre {len(ofertas)} oferta(s) — "
+              "nenhum 'de' inflado com histórico que o desminta")
+        return 0
+    # O dedupe vale também em `--dry-run`, e aqui ele NÃO esconde nada: o
+    # preview existe para mostrar a peça que sairia, e a peça que sairia é a do
+    # próximo produto ainda não despachado. Nada é gravado (`somente_leitura`),
+    # então olhar o preview de manhã não cala a peça da tarde.
+    ineditos = [a for a in achados
+                if not db.day_flag_recente(chave_do_flagrante(a.offer),
+                                           FLAGRANTE_DEDUPE_DAYS)]
+    if not ineditos:
+        print(f"ℹ️ {len(achados)} flagrante(s), todos já despachados nos últimos "
+              f"{FLAGRANTE_DEDUPE_DAYS} dias — nada a mandar")
+        return 0
+    achado = ineditos[0]     # o de maior gravidade entre os que ainda não saíram
+    verdict = pricing.verdict(achado.offer, _minimo_de_desconto(cfg))
+    handle, nome_marca = _marca(cfg)
+    serie = serie_ate_hoje(achado.historico, achado.offer, db.local_today())
+    try:
+        png = creative.render_grafico_preco(achado.offer, serie, verdict,
+                                            handle=handle, brand_name=nome_marca)
+    except SourceError as exc:
+        print(f"❌ flagrante: falha ao gerar o gráfico — {exc}")
+        return 1
+    legenda = legenda_do_flagrante(achado, verdict)
+
+    if args.dry_run:
+        caminho = _grava_previews("feed-flagrante", [png])[0]
+        print(f"--- DRY-RUN: flagrante de {len(ineditos)} candidato(s) ---\n  {caminho}")
+        print(f"\n{legenda}\n")
+        return 0
+
+    # NÃO publica. Nunca. A peça vai ao chat de operações e espera o dono.
+    token, ops = _env("TELEGRAM_BOT_TOKEN"), _env("TELEGRAM_OPS_CHAT_ID")
+    if not (token and ops):
+        print("❌ flagrante: TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausentes — "
+              "sem chat de operações não há a quem pedir aprovação")
+        return 1
+    resposta = send_photo_bytes(token, ops, png, caption=legenda,
+                                filename="flagrante.png", mime="image/png")
+    if not resposta.get("ok"):
+        print(f"❌ flagrante: envio ao chat de operações falhou — "
+              f"{resposta.get('description') or resposta}")
+        return 1
+    # F5: a marca do dedupe. Em `day_flags`, nunca em `posted` — e só DEPOIS de
+    # o despacho ter dado certo: um envio que falhou não foi despachado, e
+    # calar o produto por uma semana por causa disso seria perder a denúncia.
+    db.set_day_flag(chave_do_flagrante(achado.offer),
+                    f"despachado · gravidade {achado.gravidade:.2f}")
+    # G2: e a marca do TETO DO DIA, pelo mesmo motivo e no mesmo instante —
+    # depois do "ok". O comando roda em todos os disparos do dia; esta linha é
+    # o que faz o segundo sair calado em vez de mandar outro produto ao ops.
+    db.set_day_flag(FLAGRANTE_DIA_FLAG,
+                    f"despachado · {achado.offer.item_id} · "
+                    f"gravidade {achado.gravidade:.2f}")
+    print(f"✅ flagrante despachado ao chat de operações (gravidade "
+          f"{achado.gravidade:.2f}) — aguardando o ok do dono, e este produto "
+          f"não volta por {FLAGRANTE_DEDUPE_DAYS} dias")
+    return 0
+
+
+def feed(cfg: dict, args) -> int:
+    db = _abre_estado(cfg)
+    # A10, como no `run`: em dry-run nem o cursor da descoberta avança.
+    db.somente_leitura = args.dry_run
+    try:
+        if args.tipo == "flagrante":
+            return _feed_flagrante(cfg, args, db)
+        return _feed_termometro(cfg, args, db)
+    finally:
+        db.close()
+
+
 def load_dotenv(path: str | Path = ".env", override: bool = True) -> int:
     """Carrega KEY=VALUE de um .env local para o ambiente. Por padrão o .env
     do projeto TEM precedência sobre variáveis globais da máquina — evita que
@@ -765,6 +1357,8 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(cfg)
     if args.cmd == "ig-login":
         return ig_login(cfg)
+    if args.cmd == "feed":
+        return feed(cfg, args)
 
     # `stories` (fase 5F) é o MESMO run — mesmo ritmo, dedupe, teto diário e
     # resumo de operações — com os canais recortados nos de story. O nome do
@@ -797,8 +1391,15 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         wl = None
     try:
+        # `checa_cadencia` (5G, G3): o aviso de buraco na cadência é do run de
+        # PRODUÇÃO. Desde a 5I as duas tarefas rodam na mesma máquina e na
+        # mesma cadência, então quem vigia o agendador é o `afiliado run`;
+        # ligar o aviso aqui também só duplicaria a mesma mensagem — e o
+        # `stories` tem banco próprio, com uma tabela `runs` que só ele
+        # alimenta.
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
-                               warnings_iniciais=avisos)
+                               warnings_iniciais=avisos,
+                               checa_cadencia=not somente_story)
     except pipeline.RunAborted as exc:
         # Todas as fontes falharam: a causa está no próprio motivo (os avisos
         # por fonte podem já ter sido deduplicados hoje) e vai ao journal e

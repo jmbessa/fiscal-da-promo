@@ -6,6 +6,15 @@ from afiliado.models import Offer
 class Source(Protocol):
     name: str
 
+    # A janela, em dias, que o `sales` desta fonte MEDE — 0 = contador
+    # VITALÍCIO (o número que o próprio anúncio exibe), 30 = último mês.
+    # OBRIGATÓRIO numa fonte nova, e o mesmo valor tem de ir para o
+    # `Offer.sales_window_days` que ela constrói: foi por falta desta
+    # declaração que a Shopee publicou por meses um número de 30 dias como se
+    # fosse o total do anúncio (fase 5H; o teste que trava isso está em
+    # `tests/test_sales_window.py`).
+    sales_window_days: int
+
     def fetch_offers(self, cfg: dict) -> list[Offer]: ...
 
     def resolve_affiliate_link(self, offer: Offer) -> str: ...

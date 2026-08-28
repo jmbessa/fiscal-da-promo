@@ -113,6 +113,37 @@ projeto existe para não fazer. Use `catalogSales` em `sales`.
 `catalogOrderCount1m` continua servindo para ORDENAR (quem vende mais AGORA) e
 para o filtro `gt 0` — só não vai para o arquivo.
 
+### A mesma armadilha existe na Shopee — e ela mordeu (medido em 2026-08-28)
+
+Não é uma peculiaridade do Mercado Livre: **toda loja publica os dois números**,
+o contador do anúncio e a janela recente, e o campo que a API entrega raramente
+diz qual dos dois é. O `productOfferV2.sales` da Shopee sobreviveu à correção do
+ML acima porque ninguém foi conferir. Comparado com o cubo `ShbMartItem` do
+JoomPulse — que define `sold1y` como o "cumulative lifetime sold counter **as
+displayed by Shopee**" e `sold30Days` como a estimativa do último mês:
+
+| item | nosso `sales` | `sold1y` (o que o anúncio exibe) | `sold30Days` |
+|---|---|---|---|
+| 16692338189 Lençol Micropercal | 45.950 | **2.000.000** | 50.000 |
+| 22893738408 Lençol Extra Macio | 77.344 | **1.000.000** | 70.000 |
+| 58256439593 Percarbonato | 73.175 | **100.000** | 70.000 |
+| 9212570285 Creatina Soldiers | 31.077 | **100.000** | 30.000 |
+
+Nos quatro casos o nosso número bate com a janela de ~30 dias e fica **13× a 43×
+abaixo** do contador vitalício. (Os campos `sold*` são estimativas do JoomPulse
+calibradas sobre os contadores arredondados que a Shopee publica, não dados
+transacionais — a ordem de grandeza é que é inequívoca.) A arte escrevia "45 mil
+vendidos" para um anúncio cuja PRÓPRIA FOTO traz o selo "+ DE 2 MILHÕES DE
+UNIDADES VENDIDAS".
+
+Buscar o `sold1y` para enriquecer a Shopee não fecha na cota (~9 consultas/dia
+contra centenas de candidatas girando a cada 3 dias), então a fase 5H manteve o
+número e mudou o TEXTO: cada fonte declara sua janela em
+`Offer.sales_window_days` e `pricing.format_sales` escreve "45 mil vendidos no
+último mês". Ao trocar de fonte de dados aqui, **confira a janela antes de
+gravar em `sales`** — e ajuste a declaração da fonte, senão
+`tests/test_sales_window.py` reprova.
+
 (O filtro `catalogOrderCount1m gt 0` é exigido por `pulse://rules`: ordenar
 `desc` por medida põe NULL primeiro.) Guarde por produto: `buyBoxId`,
 `buyBoxPriceAmount`, `buyBoxPriceAmountHistoricMin`, `catalogSales`,

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from afiliado import state
 from afiliado.models import NO_CLAIM, CopyParts, Post, Verdict
@@ -43,6 +43,24 @@ def test_record_run(tmp_path):
     db = StateDB(tmp_path / "state.db")
     db.record_run(published=3, discarded=1, notes="ok")
     db.close()  # sem exceção = schema e insert funcionam
+
+
+def test_last_run_finished_at_no_fuso_local(tmp_path, monkeypatch):
+    """Fase 5G (G3): quando terminou o run ANTERIOR — a matéria-prima do aviso
+    de buraco na cadência. `finished_at` é ISO UTC no banco e volta no fuso
+    LOCAL, que é onde a pergunta "foi hoje?" tem resposta."""
+    db = StateDB(tmp_path / "state.db")
+    assert db.last_run_finished_at() is None          # tabela vazia: sem run anterior
+
+    _congela(monkeypatch, datetime(2026, 8, 26, 8, 7, tzinfo=BRT))
+    db.record_run(published=1, discarded=0)
+    _congela(monkeypatch, datetime(2026, 8, 26, 9, 7, tzinfo=BRT))
+    db.record_run(published=0, discarded=0)
+
+    ultimo = db.last_run_finished_at()
+    assert ultimo.utcoffset() == timedelta(hours=-3)
+    assert (ultimo.date(), ultimo.hour, ultimo.minute) == (date(2026, 8, 26), 9, 7)
+    db.close()
 
 
 def test_record_price_mantem_o_menor_do_dia(tmp_path):
@@ -258,16 +276,52 @@ def test_day_flag_nao_escreve_em_dry_run(tmp_path, monkeypatch):
     db.close()
 
 
-def test_record_run_poda_as_marcas_de_dias_anteriores(tmp_path, monkeypatch):
+def test_record_run_poda_as_marcas_fora_da_janela(tmp_path, monkeypatch):
+    """A poda guardava SÓ o dia de hoje. O dedupe do flagrante (fase 5D, F5)
+    precisa de memória de dias, e é a mesma tabela: a poda passa a guardar
+    `DAY_FLAGS_RETENTION_DAYS`. O que NÃO muda é `day_flag`, que continua
+    respondendo só sobre hoje — o `instagram_story_link` amanhece rearmado
+    mesmo com a marca de ontem ainda no banco."""
     db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
     _congela(monkeypatch, datetime(2026, 8, 25, 12, 0, tzinfo=BRT))
     db.set_day_flag("a", "ontem")
+    _congela(monkeypatch, datetime(2026, 7, 1, 12, 0, tzinfo=BRT))
+    db.set_day_flag("antiga", "muito velha")
     _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
     db.set_day_flag("b", "hoje")
     db.record_run(published=0, discarded=0)
+
     rows = db.conn.execute("SELECT key, day FROM day_flags ORDER BY day").fetchall()
-    assert rows == [("b", "2026-08-26")]
+    assert rows == [("a", "2026-08-25"), ("b", "2026-08-26")]
+    assert db.day_flag("a") == ""             # ontem não vale para HOJE
+    assert db.day_flag("b") == "hoje"
     db.close()
+
+
+def test_day_flag_recente_enxerga_a_janela_e_nao_o_que_saiu_dela(tmp_path, monkeypatch):
+    """`day_flag` responde "hoje"; `day_flag_recente` responde "nesta janela" —
+    o que o dedupe do flagrante precisa (um despacho não se repete por uma
+    semana) sem gastar uma tabela nova."""
+    db = StateDB(tmp_path / "s.db", timezone="America/Sao_Paulo")
+    _congela(monkeypatch, datetime(2026, 8, 20, 12, 0, tzinfo=BRT))
+    db.set_day_flag("flagrante:shopee:x", "despachado")
+
+    # Hoje conta como o primeiro dia da janela: 7 dias cobrem 20 a 26/08.
+    _congela(monkeypatch, datetime(2026, 8, 26, 12, 0, tzinfo=BRT))
+    assert db.day_flag("flagrante:shopee:x") == ""          # não é de hoje
+    assert db.day_flag_recente("flagrante:shopee:x", 7) == "despachado"
+
+    _congela(monkeypatch, datetime(2026, 8, 27, 12, 0, tzinfo=BRT))
+    assert db.day_flag_recente("flagrante:shopee:x", 7) == ""
+    assert db.day_flag_recente("nunca-vista", 7) == ""
+    db.close()
+
+
+def test_a_janela_do_flagrante_cabe_na_retencao_das_marcas(tmp_path):
+    """Se a poda apagasse antes do fim da janela, o dedupe seria silenciosamente
+    inútil — o flagrante voltaria e ninguém notaria."""
+    from afiliado import cli
+    assert cli.FLAGRANTE_DEDUPE_DAYS <= state.DAY_FLAGS_RETENTION_DAYS
 
 
 # --- Fase 5A: heartbeat (contagem de ontem) ----------------------------------
@@ -455,4 +509,38 @@ def test_posted_today_by_source(tmp_path, monkeypatch):
     assert db.posted_today_by_source() == {"shopee": 1, "meli": 1}
     _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
     assert db.posted_today_by_source() == {}
+    db.close()
+
+
+# --- Fase 5D: a série que o gráfico desenha ----------------------------------
+
+def test_price_history_dated_devolve_dia_e_preco_do_mais_antigo_ao_mais_novo(tmp_path):
+    """O gráfico e o `flagrante` precisam do DIA de cada preço, não só do valor:
+    um pico de um dia só é pico porque durou um dia."""
+    from datetime import date, timedelta
+
+    db = StateDB(tmp_path / "s.db")
+    hoje = db.local_today()
+    for delta, cents in ((0, 1890), (1, 6890), (2, 2600), (100, 9999)):
+        db.record_price("shopee", "123456", cents,
+                        day=(hoje - timedelta(days=delta)).isoformat())
+    serie = db.price_history_dated("shopee", "123456", days=90)
+    assert serie == [(hoje - timedelta(days=2), 2600),
+                     (hoje - timedelta(days=1), 6890),
+                     (hoje, 1890)]
+    assert all(isinstance(d, date) for d, _ in serie)
+    assert db.price_history_dated("shopee", "outro", days=90) == []
+    db.close()
+
+
+def test_price_history_dated_ignora_dia_ilegivel(tmp_path):
+    """`price_log.day` é TEXT: uma linha gravada por outra ferramenta (ou por
+    uma versão futura) não pode derrubar o gráfico — ela é pulada."""
+    db = StateDB(tmp_path / "s.db")
+    hoje = db.local_today()
+    db.record_price("shopee", "123456", 2600, day=hoje.isoformat())
+    db.conn.execute("INSERT INTO price_log (source, item_id, day, price_cents) "
+                    "VALUES (?,?,?,?)", ("shopee", "123456", "ontem", 9999))
+    db.conn.commit()
+    assert db.price_history_dated("shopee", "123456", days=3650) == [(hoje, 2600)]
     db.close()

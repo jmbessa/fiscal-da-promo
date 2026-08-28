@@ -20,6 +20,14 @@ EnvironmentFile=/opt/afiliado/.env
 Environment=HOME=/home/afiliado
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/afiliado/.venv/bin/afiliado run
+# Fase 5D: esta unidade roda SÓ o `run` (ofertas avulsas). O conteúdo de FEED
+# (carrossel do termômetro + flagrante para aprovação) é DIÁRIO e sai pelo
+# GitHub Actions — passo "Conteúdo do feed" do publish.yml, que desde a 5G roda
+# em todo disparo e se segura nos tetos do CÓDIGO (o do `instagram_carrossel` e
+# a marca em `day_flags` do flagrante), porque o agendador descarta a maioria
+# dos disparos. Não há timer de feed aqui: se a VPS assumir a produção, o
+# carrossel passa a ser `afiliado feed` na mão do dono (ver
+# docs/runbooks/vps-setup.md e docs/feed.md).
 # Um ciclo típico leva menos de 2 min; acima disso algo travou. O SIGTERM
 # daqui é tratado pelo CLI (avisa o ops e sai com 143) e, como a unidade
 # falha, OnFailure= dispara o segundo aviso.

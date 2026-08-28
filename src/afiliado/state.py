@@ -84,6 +84,15 @@ DEFAULT_REF_WINDOW_DAYS = 90
 # das 13:20 às 21:00 e furar o teto no dia 1. `posted_at`/`finished_at`
 # continuam ISO UTC; só a CONTAGEM por dia muda de fuso.
 DEFAULT_TIMEZONE = "America/Sao_Paulo"
+# Fase 5D (F5): `day_flags` guardava SÓ o dia de hoje — a poda apagava tudo que
+# fosse anterior. O dedupe do flagrante precisa de memória de DIAS (um flagrante
+# despachado ao chat de operações não se repete por uma semana), e é a mesma
+# tabela: uma marca do dia local, agora lida também por janela
+# (`day_flag_recente`). O que NÃO mudou é `day_flag`, que continua respondendo
+# só sobre hoje — o desarme do `instagram_story_link` amanhece rearmado como
+# sempre, mesmo com a marca de ontem ainda no banco. 30 dias cobrem a maior
+# janela em uso com folga, e a tabela continua com dezenas de linhas.
+DAY_FLAGS_RETENTION_DAYS = 30
 
 
 def _now() -> datetime:
@@ -249,6 +258,28 @@ class StateDB:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def price_history_dated(self, source: str, item_id: str,
+                            days: int) -> list[tuple[date, int]]:
+        """A mesma janela de `price_history`, com o DIA de cada preço e do mais
+        ANTIGO para o mais novo — a ordem em que uma série de tempo é desenhada
+        (fase 5D).
+
+        `price_history` devolve só os valores e do mais recente para o mais
+        antigo, que é o que a mediana precisa e o que um gráfico não pode usar:
+        um pico de um dia só é pico porque durou um dia, e isso exige a data.
+        Linha com `day` ilegível é PULADA — `price_log.day` é TEXT, e uma linha
+        estranha não pode derrubar a arte."""
+        cutoff = (self.local_today() - timedelta(days=days)).isoformat()
+        serie: list[tuple[date, int]] = []
+        for dia, price in self.conn.execute(
+                "SELECT day, price_cents FROM price_log WHERE source=? AND item_id=? "
+                "AND day>=? ORDER BY day ASC", (source, item_id, cutoff)).fetchall():
+            try:
+                serie.append((date.fromisoformat(str(dia)), int(price)))
+            except (TypeError, ValueError):
+                continue
+        return serie
+
     def price_histories(self, source: str, item_ids: list[str],
                         days: int) -> dict[str, list[int]]:
         """`price_history` de vários itens de uma vez (mais recentes primeiro).
@@ -386,11 +417,27 @@ class StateDB:
                 (key, dia, str(value)))
         self.conn.commit()
 
-    def prune_day_flags(self) -> None:
-        """Só o dia local de hoje interessa — os anteriores saem junto com a
-        poda de `warned`."""
-        self.conn.execute("DELETE FROM day_flags WHERE day<?",
-                          (self.local_today().isoformat(),))
+    def day_flag_recente(self, key: str, days: int) -> str:
+        """O valor mais recente gravado para `key` nos últimos `days` dias
+        locais — HOJE conta como o primeiro deles —, ou "" se não há nenhum.
+
+        `day_flag` responde "isto foi marcado hoje?"; isto responde "foi
+        marcado nesta janela?", que é o que um dedupe de dias precisa. Depende
+        de a poda guardar a janela inteira: ver `DAY_FLAGS_RETENTION_DAYS`."""
+        cutoff = (self.local_today() - timedelta(days=max(0, days - 1))).isoformat()
+        row = self.conn.execute(
+            "SELECT value FROM day_flags WHERE key=? AND day>=? ORDER BY day DESC LIMIT 1",
+            (key, cutoff)).fetchone()
+        return row[0] if row else ""
+
+    def prune_day_flags(self, keep_days: int = DAY_FLAGS_RETENTION_DAYS) -> None:
+        """Apaga as marcas anteriores à janela de retenção.
+
+        Guardava só o dia de hoje até a fase 5D: `day_flag` nunca leu outro
+        dia, mas `day_flag_recente` lê, e uma poda mais curta que a janela
+        deixaria o dedupe silenciosamente inútil."""
+        cutoff = (self.local_today() - timedelta(days=max(0, keep_days))).isoformat()
+        self.conn.execute("DELETE FROM day_flags WHERE day<?", (cutoff,))
         self.conn.commit()
 
     def prune_warned(self) -> None:
@@ -411,6 +458,28 @@ class StateDB:
         self.prune_price_log(ref_window_days)
         self.prune_warned()
         self.prune_day_flags()
+
+    def last_run_finished_at(self) -> datetime | None:
+        """Quando terminou o run ANTERIOR, no fuso LOCAL — ou None se a tabela
+        `runs` está vazia (o primeiro run da vida não tem com o que comparar).
+
+        Fase 5G (G3): o dado para acusar buraco na cadência já estava aqui; o
+        que faltava era a consulta. Volta em hora local porque a pergunta que o
+        aviso faz — "o run anterior foi HOJE?" — só existe no dia local (a
+        fronteira UTC cai às 21:00 BRT e transformaria toda noite em virada de
+        dia). Linha com `finished_at` ilegível vale como ausência: um aviso de
+        observabilidade não pode derrubar o run que ele observa."""
+        row = self.conn.execute(
+            "SELECT finished_at FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return None
+        try:
+            quando = datetime.fromisoformat(str(row[0]))
+        except (TypeError, ValueError):
+            return None
+        if quando.tzinfo is None:
+            quando = quando.replace(tzinfo=timezone.utc)
+        return quando.astimezone(self.tz)
 
     def day_stats(self, day: date) -> DayStats:
         """Contagem de um dia local: ofertas distintas em `posted` (uma

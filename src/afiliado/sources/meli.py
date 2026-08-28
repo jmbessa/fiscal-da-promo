@@ -45,9 +45,17 @@ CAMPOS_DE_PRECO = (
     ("price_min_window_days", "sem janela da mínima"),
 )
 
+# O `sales` do pool é `catalogSales`: o contador VITALÍCIO do próprio Mercado
+# Livre, o mesmo "+250 mil vendidos" que aparece no anúncio. Janela 0 = sem
+# recorte de tempo. (A estimativa mensal, `catalogOrderCount1m`, já esteve
+# neste campo e pôs "5 mil vendidos" num story de um produto com 250 mil —
+# ver `.claude/skills/meli-pool-refresh/SKILL.md`.)
+SALES_WINDOW_DAYS = 0
+
 
 class MeliSource:
     name = "meli"
+    sales_window_days = SALES_WINDOW_DAYS
     # O preço "atual" com que a oferta sai do pool é a MEDIANA da janela, não
     # uma observação: o pipeline não a grava no price_log (C7c). O que entra
     # no histórico do ML é o preço vivo do buy box, logo após `refresh_price`.
@@ -406,8 +414,10 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         category=str(item.get("category") or ""),
         sales=int(item.get("sales") or 0),
         # O contador do ML é uma FAIXA ("+250 mil"), não uma contagem: o campo
-        # vem de `catalogSales`, que é o balde que o anúncio publica.
+        # vem de `catalogSales`, que é o balde que o anúncio publica — e é
+        # VITALÍCIO, sem recorte de tempo (ver SALES_WINDOW_DAYS).
         sales_e_faixa=True,
+        sales_window_days=SALES_WINDOW_DAYS,
         rating=float(item.get("rating") or 0.0),
         price_ref_cents=ref,
         price_p25_cents=p25,

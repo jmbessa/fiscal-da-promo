@@ -572,3 +572,34 @@ def test_format_sales_escreve_milhoes_por_extenso():
     assert pricing.format_sales(1_000_000, faixa=True) == "+1 milhão vendidos"
     assert pricing.format_sales(2_000_000, faixa=True) == "+2 milhões vendidos"
     assert pricing.format_sales(1_500_000) == "1,5 milhões vendidos"
+
+
+def test_format_sales_diz_a_janela_que_o_numero_mede():
+    """Fase 5H: o `sales` da Shopee é a janela de ~30 dias, não o total.
+
+    Medido em 2026-08-28 contra o cubo `ShbMartItem` do JoomPulse: o lençol
+    16692338189 tem `sales` 45.950 no nosso banco, `sold30Days` 50.000 e
+    `sold1y` (o contador que o anúncio EXIBE) 2.000.000. Escrever "45 mil
+    vendidos" seco para um anúncio que diz 2 milhões é a mesma contradição do
+    protetor solar do ML, só que subestimando. O número não muda; o texto passa
+    a dizer o que ele mede."""
+    assert pricing.format_sales(45950, window_days=30) == "45 mil vendidos no último mês"
+    # Janela 0 = contador vitalício: o texto do ML não muda uma vírgula.
+    assert pricing.format_sales(250000, faixa=True) == "+250 mil vendidos"
+    assert pricing.format_sales(250000, faixa=True, window_days=0) == "+250 mil vendidos"
+    assert pricing.format_sales(45950) == "45 mil vendidos"
+    # Zero continua sem texto, com ou sem janela.
+    assert pricing.format_sales(0, window_days=30) == ""
+    # Qualquer outra janela sai por extenso — nada de "mês" para 7 dias.
+    assert pricing.format_sales(1200, window_days=7) == "1 mil vendidos nos últimos 7 dias"
+
+
+def test_prova_social_diz_a_janela_da_oferta():
+    """Quem passa a janela para o texto é a própria oferta: nenhum consumidor
+    (Telegram, arte, legenda) precisa saber de que loja o número veio."""
+    offer = make_offer(sales=45950, rating=4.9, sales_window_days=30)
+    assert pricing.price_line(offer, NO_CLAIM)[1] == "⭐ 4,9 · 45 mil vendidos no último mês"
+    assert pricing.price_line_html(offer, NO_CLAIM)[1] == (
+        "⭐ 4,9 · 45 mil vendidos no último mês")
+    vitalicio = make_offer(sales=250000, rating=4.9, sales_e_faixa=True)
+    assert pricing.price_line(vitalicio, NO_CLAIM)[1] == "⭐ 4,9 · +250 mil vendidos"

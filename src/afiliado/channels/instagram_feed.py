@@ -19,14 +19,60 @@ casa para `instagram_common` — o story virou um segundo canal automático e us
 exatamente as mesmas. Nada do comportamento do feed mudou nessa viagem.
 """
 
-from afiliado import creative, pricing
+from afiliado import categorias, creative, pricing
 from afiliado.channels.base import PublishResult
-from afiliado.channels.instagram_common import (GRAPH, GRAPH_HOSTS, InstagramBase,
-                                                graph_error, to_jpeg)
+from afiliado.channels.instagram_common import (GRAPH, GRAPH_HOSTS, STATUS_TERMINAIS,
+                                                InstagramBase, graph_error, to_jpeg)
 from afiliado.errors import SourceError
-from afiliado.models import Post
+from afiliado.models import Offer, Post, Verdict
 
-__all__ = ["GRAPH", "GRAPH_HOSTS", "InstagramFeedChannel"]
+__all__ = ["GRAPH", "GRAPH_HOSTS", "MAX_ITENS_CARROSSEL", "bloco_indexavel",
+           "sanitiza_titulo", "InstagramFeedChannel"]
+
+# Teto da Meta para um álbum. O teto do DESENHO é outro e menor
+# (`creative.CARROSSEL_MAX_SLIDES`, 8); este aqui é o da API, e existe para o
+# canal recusar antes de gastar N uploads e N containers.
+MAX_ITENS_CARROSSEL = 10
+
+
+def sanitiza_titulo(title: str) -> str:
+    """Corta o título no primeiro "http" (case-insensitive) — o título vem de
+    dados de terceiros (a oferta) e não pode carregar um link para o caption
+    público do Instagram."""
+    idx = title.lower().find("http")
+    if idx == -1:
+        return title
+    return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
+
+
+def bloco_indexavel(titulo: str, offer: Offer, verdict: Verdict) -> str:
+    """O bloco que fecha a legenda: nome completo do produto, categoria por
+    nome e a janela REAL que sustenta o preço, terminando na frase-assinatura.
+
+    Existe porque os posts do Instagram são indexados pelo Google desde
+    10/07/2025 — a legenda é uma página de busca, e o nome do produto por
+    extenso é o que alguém digita. A arte trunca o título em duas linhas; aqui
+    ele vai inteiro.
+
+    O que este bloco NUNCA traz é pedido de curtida, comentário ou
+    compartilhamento: a Meta reduz a distribuição de quem pede (regra oficial
+    de engagement bait), e uma conta sem base de seguidores não tem colchão
+    para pagar isso. No lugar vai a frase-assinatura — CTA de identidade, que
+    constrói reconhecimento sem pedir ação.
+
+    A janela é a MEDIDA (`price_window_days`, ou a do selo quando só ela
+    existe): sem número medido a linha some, em vez de inventar um N. A
+    categoria idem — ID sem nome conhecido não vira texto público
+    (`afiliado.categorias`)."""
+    linhas = [titulo]
+    nome = categorias.nome(offer.category)
+    if nome:
+        linhas.append(f"Categoria: {nome}")
+    janela = offer.price_window_days or verdict.seal_window_days
+    if janela > 0:
+        linhas.append(f"Preço verificado nos últimos {janela} dias.")
+    linhas.append(creative.ASSINATURA)
+    return "\n".join(linhas)
 
 
 class InstagramFeedChannel(InstagramBase):
@@ -69,19 +115,87 @@ class InstagramFeedChannel(InstagramBase):
 
         return PublishResult(True, str(post_id))
 
-    @staticmethod
-    def _sanitize_title(title: str) -> str:
-        """Corta o título no primeiro "http" (case-insensitive) — o título vem
-        de dados de terceiros (a oferta) e não pode carregar um link para o
-        caption público do Instagram."""
-        idx = title.lower().find("http")
-        if idx == -1:
-            return title
-        return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
+    def publish_carrossel(self, imagens: list[bytes], caption: str) -> PublishResult:
+        """Publica N imagens como UM post de carrossel (álbum).
+
+        Três passos da Content Publishing API: um container por imagem com
+        `is_carousel_item=true`, um container `media_type=CAROUSEL` com
+        `children=<ids separados por vírgula>` e a legenda, e o `media_publish`
+        do container pai.
+
+        **A cota de publicação da Meta é de 100 por 24 h e um carrossel conta
+        como UM post** — não como oito. É isto que torna o formato barato: seis
+        ofertas por uma unidade de cota, contra seis posts de imagem única. Os
+        containers filhos não consomem a cota; só o publish do pai.
+
+        Mesma disciplina do story: NUNCA levanta. Qualquer erro — hospedagem,
+        filho recusado, pai recusado, container morto, publish negado — vira um
+        `PublishResult` falho com a mensagem da Meta. E o polling do container
+        pai é o mesmo do story (`InstagramBase._aguarda_container`)."""
+        if not imagens:
+            return PublishResult(False, error="carrossel sem imagem: nada a publicar")
+        if len(imagens) > MAX_ITENS_CARROSSEL:
+            return PublishResult(
+                False, error=f"carrossel com {len(imagens)} imagens: a Meta aceita "
+                             f"no máximo {MAX_ITENS_CARROSSEL}")
+
+        filhos: list[str] = []
+        for i, png in enumerate(imagens, start=1):
+            image_url = self._host_art(to_jpeg(png))
+            if image_url is None:
+                return PublishResult(
+                    False, error=f"falha ao hospedar temporariamente a imagem {i} "
+                                 "do carrossel")
+            resp = self._graph_post(f"{self.graph}/{self.ig_user_id}/media", {
+                "image_url": image_url,
+                "is_carousel_item": "true",
+                "access_token": self.access_token,
+            })
+            filho_id = resp.get("id") if isinstance(resp, dict) else None
+            if not filho_id:
+                # Sem os filhos todos não existe pai: sair aqui evita criar um
+                # álbum incompleto e gastar a cota com ele.
+                return PublishResult(
+                    False, error=f"imagem {i} do carrossel: {graph_error(resp)}")
+            filhos.append(str(filho_id))
+
+        pai_resp = self._graph_post(f"{self.graph}/{self.ig_user_id}/media", {
+            "media_type": "CAROUSEL",
+            "children": ",".join(filhos),
+            "caption": caption,
+            "access_token": self.access_token,
+        })
+        creation_id = pai_resp.get("id") if isinstance(pai_resp, dict) else None
+        if not creation_id:
+            return PublishResult(False, error=graph_error(pai_resp))
+
+        leitura = self._aguarda_container(str(creation_id))
+        if leitura.status_code in STATUS_TERMINAIS:
+            return PublishResult(
+                False, error=f"container {leitura.status_code}: {leitura.status}")
+        if not leitura.leu:
+            self._avisa_polling_cego()
+
+        publish_resp = self._graph_post(f"{self.graph}/{self.ig_user_id}/media_publish", {
+            "creation_id": creation_id,
+            "access_token": self.access_token,
+        })
+        post_id = publish_resp.get("id") if isinstance(publish_resp, dict) else None
+        if not post_id:
+            erro = graph_error(publish_resp)
+            detalhe = self._sobre_o_container(leitura)
+            return PublishResult(False, error=f"{erro} ({detalhe})" if detalhe else erro)
+        return PublishResult(True, str(post_id))
+
+    # Nome antigo, mantido porque é assim que o canal o chama desde a 2A. A
+    # implementação virou função de módulo na 5D: a legenda do carrossel
+    # (`cli.legenda_do_carrossel`) precisa da mesma limpeza, e ir buscar um
+    # método privado de outro módulo é pior que ter a função pública.
+    _sanitize_title = staticmethod(sanitiza_titulo)
 
     def _build_caption(self, post: Post) -> str:
         offer, copy = post.offer, post.copy
-        titulo = self._sanitize_title(offer.title)
+        titulo = sanitiza_titulo(offer.title)
         # Mesmo veredito do texto do Telegram e da arte: linha de preço,
         # prova social e selo vêm de `post.verdict` (ver afiliado.pricing).
         linha_preco, prova_social = pricing.price_line(offer, post.verdict)
@@ -91,5 +205,8 @@ class InstagramFeedChannel(InstagramBase):
             f"{titulo}\n"
             f"{bloco_preco}\n\n"
             f"{copy.cta}\n"
-            "🔗 Link na bio e no canal do Telegram"
+            "🔗 Link na bio e no canal do Telegram\n\n"
+            # Fase 5D: a legenda fecha com o bloco indexável — o Google lê esta
+            # página desde 10/07/2025.
+            f"{bloco_indexavel(titulo, offer, post.verdict)}"
         )

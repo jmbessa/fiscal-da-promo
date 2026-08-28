@@ -68,7 +68,8 @@ Sempre presente: aviso de link de afiliado na bio/descrição do canal.
 - **Story (2a + selo do 1a)** — 1080×1920, padding 72: cabeçalho (mascote ⌀68 +
   nome), card branco 936×790 r28 com foto por contain e badge `-N%` navy,
   título 2 linhas, pill dourada de preço (original riscado + atual), meta mono
-  (`30 mil vendidos · Shopee`), selo azul quando verificado, CTA em pill
+  (`45 mil vendidos no último mês · Shopee`, `+250 mil vendidos · Mercado
+  Livre` — o texto diz a janela que o número mede), selo azul quando verificado, CTA em pill
   `→ LINK NA SHOPEE` e handle mono no rodapé. O sticker de link vai sobre o CTA.
 - **Feed (3a)** — 1080×1350, padding 64: cabeçalho com nome + handle, card
   952×600 r26, título, pill de preço, meta, selo, rodapé "Link na bio · Shopee"

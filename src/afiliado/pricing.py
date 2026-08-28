@@ -35,11 +35,21 @@ DEFAULT_REF_MIN_OBSERVATIONS = 14
 DEFAULT_MIN_REAL_DISCOUNT_PCT = 10
 MIN_WINDOW_DAYS = 14
 
+# Fase 5D — a régua do PICO INFLADO, que vale para o gráfico (creative) e para
+# o detector de flagrante. Fica aqui, com o resto da régua, porque é uma regra
+# de preço e não de desenho: um preço acima de `mediana × PICO_FATOR` que dure
+# até `PICO_MAX_DIAS` é a etiqueta que o vendedor pendura para justificar o
+# "de" — não é preço. O caso real que deu origem a ela: 89 dias a R$ 26,00 e
+# UM dia a R$ 68,90, anunciado como "62% OFF".
+PICO_FATOR = 1.5
+PICO_MAX_DIAS = 2
+
 __all__ = ["Verdict", "NO_CLAIM", "verdict", "price_line", "price_line_html",
            "enrich_offers", "record_observations", "median_cents", "p25_cents",
-           "window_text", "format_sales", "setting", "MIN_WINDOW_DAYS",
+           "window_text", "format_sales", "sales_window_text", "setting",
+           "MIN_WINDOW_DAYS",
            "DEFAULT_REF_WINDOW_DAYS", "DEFAULT_REF_MIN_OBSERVATIONS",
-           "DEFAULT_MIN_REAL_DISCOUNT_PCT"]
+           "DEFAULT_MIN_REAL_DISCOUNT_PCT", "PICO_FATOR", "PICO_MAX_DIAS"]
 
 
 def setting(section: dict, key: str, default):
@@ -113,21 +123,46 @@ def verdict(offer: Offer, min_real_discount_pct: int) -> Verdict:
     return Verdict("B", 0, seal, seal_days)
 
 
-def format_sales(sales: int, faixa: bool = False) -> str:
+def sales_window_text(window_days: int) -> str:
+    """O complemento que diz QUE JANELA o número de vendas mede — "" para o
+    contador vitalício (janela 0), que é o que o anúncio já exibe.
+
+    30 dias vira "no último mês" e não "nos últimos 30 dias": foi a forma que
+    o dono definiu quando o bug do ML apareceu ("5 mil vendidos no ultimo mes
+    ou mais de 250 mil unidades vendidas"). Qualquer outra janela sai por
+    extenso — o texto nunca chama de "mês" uma janela que não é."""
+    if window_days <= 0:
+        return ""
+    if window_days == 30:
+        return " no último mês"
+    return f" nos últimos {window_text(window_days)}"
+
+
+def format_sales(sales: int, faixa: bool = False, window_days: int = 0) -> str:
     """>= 1000 -> '30 mil vendidos'; >= 1 -> '850 vendidos'; 0 -> ''.
 
     `faixa=True` quando o número é um BALDE e não uma contagem: o Mercado Livre
     publica só a faixa e o anúncio escreve "+250 mil vendidos". Aí o texto sai
-    com o "+", porque o que sabemos é "pelo menos isso"."""
+    com o "+", porque o que sabemos é "pelo menos isso".
+
+    `window_days` é o que o número MEDE (`Offer.sales_window_days`): 0 = o
+    contador vitalício do anúncio, 30 = o último mês -> "45 mil vendidos no
+    último mês". Fase 5H: o `sales` da Shopee sempre foi a janela de ~30 dias
+    (medido em 2026-08-28: 45.950 nossos contra os 2.000.000 que o anúncio
+    exibe), e o texto o apresentava como se fosse o total. Os dois flags são
+    independentes: um balde de 30 dias sairia "+45 mil vendidos no último
+    mês"."""
     prefixo = "+" if faixa else ""
+    sufixo = sales_window_text(window_days)
     if sales >= 1_000_000:
         milhoes = sales / 1_000_000
         inteiro = f"{milhoes:.0f}" if milhoes == int(milhoes) else f"{milhoes:.1f}".replace(".", ",")
-        return f"{prefixo}{inteiro} milhão vendidos" if inteiro == "1" else                f"{prefixo}{inteiro} milhões vendidos"
+        unidade = "milhão" if inteiro == "1" else "milhões"
+        return f"{prefixo}{inteiro} {unidade} vendidos{sufixo}"
     if sales >= 1000:
-        return f"{prefixo}{sales // 1000} mil vendidos"
+        return f"{prefixo}{sales // 1000} mil vendidos{sufixo}"
     if sales >= 1:
-        return f"{prefixo}{sales} vendidos"
+        return f"{prefixo}{sales} vendidos{sufixo}"
     return ""
 
 
@@ -136,7 +171,7 @@ def _social_proof(offer: Offer) -> str:
     partes = []
     if offer.rating > 0:
         partes.append("⭐ " + f"{offer.rating:.1f}".replace(".", ","))
-    vendas = format_sales(offer.sales, offer.sales_e_faixa)
+    vendas = format_sales(offer.sales, offer.sales_e_faixa, offer.sales_window_days)
     if vendas:
         partes.append(vendas)
     return " · ".join(partes)

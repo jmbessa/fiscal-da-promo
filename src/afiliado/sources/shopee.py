@@ -63,6 +63,25 @@ DEFAULT_KEYWORDS_PER_RUN = 1
 DEFAULT_SUBCATEGORY_FIRST_PAGE = 2
 DEFAULT_KEYWORD_PAGES = 2          # p1 rende 19 inéditos/chamada, p2 ~21–42 (calls 132–133)
 
+# O que `productOfferV2.sales` MEDE: unidades dos últimos ~30 dias, NÃO o
+# contador vitalício que o anúncio exibe. Medido em 2026-08-28 contra o cubo
+# `ShbMartItem` do JoomPulse, cuja documentação define `sold1y` como o
+# "cumulative lifetime sold counter as displayed by Shopee" e `sold30Days`
+# como a estimativa do último mês:
+#
+#   item                            nosso `sales`   sold1y (o anúncio)  sold30Days
+#   16692338189 Lençol Micropercal         45.950           2.000.000      50.000
+#   22893738408 Lençol Extra Macio         77.344           1.000.000      70.000
+#   58256439593 Percarbonato               73.175             100.000      70.000
+#   9212570285  Creatina Soldiers          31.077             100.000      30.000
+#
+# Nos quatro o nosso número bate com a janela de 30 dias e fica 13× a 43×
+# abaixo do que o comprador vê no anúncio. Buscar o `sold1y` para enriquecer
+# não fecha: a cota do JoomPulse é de ~9 consultas/dia e o pool tem centenas de
+# candidatas girando a cada 3 dias. Então o número fica, e o TEXTO passa a
+# dizer a janela (`pricing.format_sales`).
+SALES_WINDOW_DAYS = 30
+
 
 @dataclass
 class DiscoveryStats:
@@ -102,6 +121,7 @@ class _CursorEmMemoria:
 
 class ShopeeSource:
     name = "shopee"
+    sales_window_days = SALES_WINDOW_DAYS
 
     def __init__(self, app_id: str, app_secret: str, client: httpx.Client | None = None,
                  sleep: Callable[[float], None] = time.sleep, db=None):
@@ -429,6 +449,9 @@ def _parse_node(node: dict) -> Offer | None:
         offer_link=str(node.get("offerLink") or ""),
         category=str(cats[0]) if cats else "",
         sales=int(node.get("sales") or 0),
+        # Janela de ~30 dias, não o total do anúncio (ver SALES_WINDOW_DAYS).
+        # `sales_e_faixa` fica falso: o número é fino, não um balde.
+        sales_window_days=SALES_WINDOW_DAYS,
         rating=_parse_rating(node.get("ratingStar")),
         price_min_cents=_cents_or_zero(node.get("priceMin")),
         price_max_cents=_cents_or_zero(node.get("priceMax")),

@@ -181,7 +181,12 @@ do anúncio que vence o buy box. Formato:
   E, no run, o piso curado ainda cede ao nosso próprio price_log quando ele
   viu mais barato (a observação própria só baixa o piso).
 - `buy_box_item_id` — o anúncio cujo preço o pipeline publica.
-- `sales` é **estimativa** do JoomPulse (`catalogOrderCount1m`).
+- `sales` é o contador **VITALÍCIO** do próprio Mercado Livre (`catalogSales`) —
+  o "+250 mil vendidos" do anúncio, e por isso `Offer.sales_e_faixa` é verdadeiro
+  e `Offer.sales_window_days` é 0. NÃO é `catalogOrderCount1m` (a estimativa
+  mensal do JoomPulse): ela já esteve neste campo e pôs "5 mil vendidos" num
+  story de um produto com 250 mil. A Shopee é o contrário — o `sales` dela mede
+  ~30 dias, e o texto diz isso. Ver `.claude/skills/meli-pool-refresh/SKILL.md`.
 
 ### Validação na carga (o que o leitor rejeita, e diz por quê)
 

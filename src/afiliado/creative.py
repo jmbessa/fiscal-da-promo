@@ -17,6 +17,7 @@ import functools
 import importlib.resources
 import io
 import math
+from datetime import date
 
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -24,7 +25,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from afiliado import pricing
 from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
-from afiliado.models import CopyParts, Offer, Verdict, format_brl
+from afiliado.models import CopyParts, Offer, Post, Verdict, format_brl
 
 # --- Paleta -----------------------------------------------------------------
 
@@ -45,6 +46,9 @@ WHITE = (255, 255, 255)
 
 GLOW_COLOR = (74, 117, 232)
 PRICE_DIM_INK = (94, 69, 35)  # INK a ~65% de opacidade sobre GOLD
+# Fase 5D: a única cor de ACUSAÇÃO da paleta. Só o pico inflado a usa — se ela
+# aparecer em mais um lugar, ela deixa de significar "olha isto aqui".
+RED = (232, 84, 74)          # #E8544A
 
 # --- Dimensões ----------------------------------------------------------------
 
@@ -76,6 +80,15 @@ FEED_SELO_GAP = 24
 DOWNLOAD_TIMEOUT = 20
 
 DEFAULT_BRAND_NAME = "Fiscal da Promo"
+DEFAULT_HANDLE = "@ofiscaldapromo"
+
+# Fase 5D — a frase-assinatura. É uma CTA de IDENTIDADE, não um pedido de
+# engajamento: pedir curtida, comentário ou compartilhamento é rebaixado pela
+# Meta (regra oficial de engagement bait), e o padrão que funciona sem pedir
+# nada é a frase fixa repetida em toda peça (o caso Erika Kullberg, em
+# `docs/superpowers/reviews/2026-08-28-pesquisa-feed.md`). Constante, nunca
+# gerada: é ela que constrói o reconhecimento.
+ASSINATURA = "Quem conferiu? O Fiscal."
 
 
 # --- Fontes -------------------------------------------------------------------
@@ -305,12 +318,17 @@ def _wrap_title(
     return [_hard_truncate(draw, line, font, max_width) for line in lines]
 
 
+def _texto_dims(draw: ImageDraw.ImageDraw, text: str, size: int, width: int,
+                max_lines: int, weight: int = 700, altura_linha: float = 1.04) -> dict:
+    font = _font("sans", size, weight)
+    lines = _wrap_title(draw, text, font, width, max_lines)
+    line_h = round(size * altura_linha)
+    return {"font": font, "lines": lines, "line_h": line_h, "height": line_h * len(lines)}
+
+
 def _title_dims(draw: ImageDraw.ImageDraw, offer: Offer, size: int, width: int, max_lines: int,
                  weight: int = 700) -> dict:
-    font = _font("sans", size, weight)
-    lines = _wrap_title(draw, offer.title, font, width, max_lines)
-    line_h = round(size * 1.04)
-    return {"font": font, "lines": lines, "line_h": line_h, "height": line_h * len(lines)}
+    return _texto_dims(draw, offer.title, size, width, max_lines, weight)
 
 
 def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: dict) -> float:
@@ -418,11 +436,17 @@ def _source_label(source: str) -> str:
 
 def _meta_parts(offer: Offer) -> tuple[str, str]:
     """Linha mono abaixo do preço, em dois segmentos ao redor da estrela:
-    (texto até a nota, o resto). Com nota: ("4,9 ", " · 30 mil vendidos ·
-    Shopee") — a estrela entra entre os dois, desenhada como vetor
-    (`_draw_star`). Sem nota (rating == 0): ("", "30 mil vendidos · Shopee") —
-    nada de estrela, o texto começa em vendas (ou na loja)."""
-    resto = " · ".join(p for p in (pricing.format_sales(offer.sales, offer.sales_e_faixa),
+    (texto até a nota, o resto). Com nota: ("4,9 ", " · 45 mil vendidos no
+    último mês · Shopee") — a estrela entra entre os dois, desenhada como vetor
+    (`_draw_star`). Sem nota (rating == 0): ("", "45 mil vendidos no último mês
+    · Shopee") — nada de estrela, o texto começa em vendas (ou na loja).
+
+    O texto de vendas diz a JANELA que o número mede (fase 5H): a Shopee conta
+    30 dias, o ML publica o contador vitalício ("+250 mil vendidos"). A linha
+    não quebra — ela é centrada e única —, e a folga medida está em
+    `tests/test_creative.py`."""
+    resto = " · ".join(p for p in (pricing.format_sales(offer.sales, offer.sales_e_faixa,
+                                                        offer.sales_window_days),
                                     _source_label(offer.source)) if p)
     if offer.rating > 0:
         nota = f"{offer.rating:.1f}".replace(".", ",")
@@ -900,3 +924,731 @@ def render_feed(
 ) -> bytes:
     del copy  # reservado para fases futuras; não usado no template atual
     return _render_feed(offer, verdict, client, handle, brand_name)
+
+
+# =============================================================================
+# Fase 5D — GRÁFICO DE HISTÓRICO DE PREÇO
+#
+# Esta é a única peça do projeto que NÃO reposta nada: ela é desenhada inteira
+# a partir do nosso `price_log`. Desde 2026-04-30 o Instagram estendeu a regra
+# de originalidade a fotos e carrosséis — perfil que posta majoritariamente
+# conteúdo que não criou perde elegibilidade para recomendação a
+# não-seguidores, e "foto do vendedor com etiqueta de preço por cima" é
+# exatamente o formato punido. O gráfico é o que transforma repostagem em
+# conteúdo original: sem ele a automação torna a conta invisível
+# (`docs/feed.md` e a pesquisa que ele cita).
+#
+# Como todo o resto do design system, ele NÃO recalcula veredito: modo e selo
+# vêm de `pricing.verdict` e entram por cima do desenho.
+# =============================================================================
+
+GRAFICO_SIZE = (1080, 1080)
+GRAFICO_PAD = 64
+GRAFICO_TITLE_SIZE = 46
+GRAFICO_KICKER_Y = 156
+# Espaço reservado abaixo do gráfico: rótulos do eixo x + divisória + rodapé.
+GRAFICO_RODAPE_ALTURA = 250
+
+# A régua do pico inflado mora em `pricing` (é regra de preço, não de desenho)
+# e é a MESMA que o `flagrante` usa. Reexportada aqui só para quem já lê este
+# módulo como o design system.
+PICO_FATOR = pricing.PICO_FATOR
+PICO_MAX_DIAS = pricing.PICO_MAX_DIAS
+
+ROTULO_MEDIANA = "preço de sempre"
+ROTULO_P25 = "promoção de verdade"
+
+# Folga vertical da escala, em PIXELS (não em fração do valor): o círculo do
+# pico e o rótulo "1 dia" ocupam sempre os mesmos ~80 px, independentemente de
+# a amplitude da série ser de R$ 3 ou de R$ 300. Em fração do valor, uma série
+# com um pico de 2,6× reservava R$ 11 de respiro e empurrava o resto da linha
+# para o rodapé.
+GRAFICO_FOLGA_TOPO_PX = 84
+GRAFICO_FOLGA_TOPO_LIMPA_PX = 34    # série sem pico: nada a circular lá em cima
+GRAFICO_FOLGA_BASE_PX = 44
+
+
+def _serie_normalizada(historico: list[tuple[date, int]]) -> list[tuple[date, int]]:
+    """A série pronta para desenhar: um ponto por DIA, do mais antigo ao mais
+    novo, sem preço não-positivo.
+
+    Dia repetido fica com o MENOR preço — a mesma regra conservadora de
+    `StateDB.record_price`. A ordem de entrada não importa: quem chama monta a
+    lista, e o desenho não pode depender disso."""
+    por_dia: dict[date, int] = {}
+    for dia, cents in historico:
+        valor = int(cents)
+        if valor <= 0:
+            continue
+        anterior = por_dia.get(dia)
+        por_dia[dia] = valor if anterior is None else min(anterior, valor)
+    return sorted(por_dia.items())
+
+
+def _picos_inflados(serie: list[tuple[date, int]], mediana: int) -> list[dict]:
+    """Os trechos acima de `mediana × PICO_FATOR` que duraram <= PICO_MAX_DIAS.
+
+    Um trecho é uma sequência de pontos consecutivos da série acima do limiar,
+    e a duração é medida em DIAS DE CALENDÁRIO (não em número de pontos): dois
+    pontos separados por uma semana no price_log não são "dois dias".
+    Sem mediana (`ref` desconhecida) não há limiar e não há pico — a acusação
+    só existe contra a nossa referência."""
+    if mediana <= 0:
+        return []
+    limiar = mediana * PICO_FATOR
+    picos: list[dict] = []
+    i = 0
+    while i < len(serie):
+        if serie[i][1] <= limiar:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(serie) and serie[j + 1][1] > limiar:
+            j += 1
+        dias = (serie[j][0] - serie[i][0]).days + 1
+        if dias <= PICO_MAX_DIAS:
+            topo = max(range(i, j + 1), key=lambda k: serie[k][1])
+            picos.append({
+                "inicio": i, "fim": j, "topo": topo, "dias": dias,
+                "cents": serie[topo][1],
+                "rotulo": f"{dias} dia" if dias == 1 else f"{dias} dias",
+            })
+        i = j + 1
+    return picos
+
+
+def _grafico_chips(draw: ImageDraw.ImageDraw, verdict: Verdict) -> list[dict]:
+    """O VEREDITO por cima do gráfico, como chips: a porcentagem verificada
+    (só no modo A) e o selo de menor preço (só quando o veredito o traz).
+    Nada é recalculado aqui — `pricing.verdict` já decidiu."""
+    chips: list[dict] = []
+    if verdict.mode == "A" and verdict.discount_pct > 0:
+        texto = f"-{verdict.discount_pct}% VERIFICADO"
+        font = _font("sans", 32, 800)
+        bbox = draw.textbbox((0, 0), texto, font=font)
+        chips.append({"tipo": "badge", "text": texto, "font": font, "bbox": bbox,
+                      "width": (bbox[2] - bbox[0]) + 2 * 26,
+                      "height": (bbox[3] - bbox[1]) + 2 * 16})
+    if verdict.seal:
+        dims = _selo_dims(draw, verdict, 24, 16, 24, 14)
+        dims["tipo"] = "selo"
+        chips.append(dims)
+    return chips
+
+
+def _grafico_plan(draw: ImageDraw.ImageDraw, offer: Offer,
+                  historico: list[tuple[date, int]], verdict: Verdict,
+                  largura: int, altura: int, handle: str | None,
+                  brand_name: str) -> dict:
+    serie = _serie_normalizada(historico)
+    if len(serie) < 2:
+        raise SourceError(
+            f"histórico insuficiente para o gráfico: {len(serie)} ponto(s) com "
+            "preço válido — são necessários pelo menos 2")
+
+    janela_dias = (serie[-1][0] - serie[0][0]).days + 1
+    kicker = f"HISTÓRICO DE PREÇO · ÚLTIMOS {janela_dias} DIAS"
+    title = _title_dims(draw, offer, GRAFICO_TITLE_SIZE, largura - 2 * GRAFICO_PAD,
+                        TITLE_MAX_LINES, 700)
+    title_top = GRAFICO_KICKER_Y + 46
+    abaixo = title_top + title["height"]
+
+    chips = _grafico_chips(draw, verdict)
+    chips_top = abaixo + 26
+    if chips:
+        abaixo = chips_top + max(c["height"] for c in chips)
+
+    x0, x1 = GRAFICO_PAD, largura - GRAFICO_PAD
+    y0, y1 = abaixo + 48, altura - GRAFICO_RODAPE_ALTURA
+
+    ref = max(0, offer.price_ref_cents)
+    p25 = max(0, offer.price_p25_cents)
+    picos = _picos_inflados(serie, ref)
+    valores = [c for _, c in serie] + [v for v in (ref, p25) if v > 0]
+    vmin, vmax = min(valores), max(valores)
+    if vmax <= vmin:
+        # Série constante: sem amplitude não há escala. Abre uma janela de 20%
+        # ao redor do valor único, em vez de dividir por zero.
+        folga_plana = max(1, round(vmax * 0.1))
+        vmin, vmax = vmax - folga_plana, vmax + folga_plana
+    # O respiro do topo existe para o círculo do pico e o rótulo "1 dia". Sem
+    # pico ele é só ar entre o veredito e a linha.
+    topo = y0 + (GRAFICO_FOLGA_TOPO_PX if picos else GRAFICO_FOLGA_TOPO_LIMPA_PX)
+    base = y1 - GRAFICO_FOLGA_BASE_PX
+
+    def y_de(cents: float) -> float:
+        return base - (cents - vmin) / (vmax - vmin) * (base - topo)
+
+    d0, dn = serie[0][0], serie[-1][0]
+    extensao = (dn - d0).days
+
+    def x_de(i: int, dia: date) -> float:
+        if extensao <= 0:                      # tudo no mesmo dia: espaça por índice
+            return x0 + (x1 - x0) * (i / (len(serie) - 1))
+        return x0 + (x1 - x0) * ((dia - d0).days / extensao)
+
+    pontos = [(x_de(i, dia), y_de(cents)) for i, (dia, cents) in enumerate(serie)]
+    for pico in picos:
+        pico["x"], pico["y"] = pontos[pico["topo"]]
+
+    hoje_cents = serie[-1][1]
+    hoje_texto = format_brl(hoje_cents)
+    hoje_font = _font("sans", 54, 800)
+    hoje_bbox = draw.textbbox((0, 0), hoje_texto, font=hoje_font)
+    pill_w = (hoje_bbox[2] - hoje_bbox[0]) + 2 * 28
+    pill_h = (hoje_bbox[3] - hoje_bbox[1]) + 2 * 20
+    hx, hy = pontos[-1]
+    # A pill fica À ESQUERDA do ponto e na ALTURA dele: o ponto de hoje é
+    # sempre o último da série, colado na borda direita, e uma pill acima ou
+    # abaixo dele cobria o trecho final da linha (medido nos previews).
+    pill_x1 = max(x0 + pill_w, hx - 26)
+    pill_y0 = min(max(y0, hy - pill_h / 2), y1 - pill_h)
+    pill = (pill_x1 - pill_w, pill_y0, pill_x1, pill_y0 + pill_h)
+
+    return {
+        "serie": serie, "pontos_xy": pontos, "pontos": len(serie),
+        "plot": (x0, y0, x1, y1),
+        "y_mediana": y_de(ref) if ref > 0 else None,
+        "y_p25": y_de(p25) if p25 > 0 else None,
+        "faixa_p25": (x0, y_de(p25), x1, y1) if p25 > 0 else None,
+        "picos": picos,
+        "hoje_cents": hoje_cents, "x_hoje": hx, "y_hoje": hy,
+        "pill_hoje": pill, "hoje_font": hoje_font, "hoje_bbox": hoje_bbox,
+        "kicker": kicker, "title": title, "title_top": title_top,
+        "chips": chips, "chips_top": chips_top,
+        "janela_dias": janela_dias,
+        "eixo_x": (d0.strftime("%d/%m"), "hoje"),
+        "selo": selo_label(verdict), "badge_pct": verdict.discount_pct,
+        "rotulos": {
+            "mediana": format_brl(ref) if ref > 0 else "",
+            "sempre": ROTULO_MEDIANA if ref > 0 else "",
+            # Um rótulo só para a linha da mediana: o valor E o nome. Em dois
+            # (valor à esquerda, nome à direita) o da direita caía atrás da
+            # pill do preço de hoje — visto no preview de 2026-08-27.
+            "mediana_linha": f"{format_brl(ref)} · {ROTULO_MEDIANA}" if ref > 0 else "",
+            "p25": ROTULO_P25 if p25 > 0 else "",
+            "hoje": hoje_texto,
+            "assinatura": ASSINATURA,
+            "handle": handle or DEFAULT_HANDLE,
+            "picos": [p["rotulo"] for p in picos],
+        },
+        "divisoria_y": altura - 128, "rodape_y": altura - 94,
+        "brand_name": brand_name,
+    }
+
+
+def _resumo_grafico(plan: dict) -> dict:
+    return {
+        "pontos": plan["pontos"], "plot": plan["plot"],
+        "y_mediana": plan["y_mediana"], "y_p25": plan["y_p25"],
+        "faixa_p25": plan["faixa_p25"],
+        "picos": [{k: p[k] for k in ("dias", "rotulo", "cents", "x", "y")}
+                  for p in plan["picos"]],
+        "hoje_cents": plan["hoje_cents"], "x_hoje": plan["x_hoje"],
+        "y_hoje": plan["y_hoje"], "janela_dias": plan["janela_dias"],
+        "eixo_x": plan["eixo_x"], "selo": plan["selo"],
+        "badge_pct": plan["badge_pct"], "rotulos": plan["rotulos"],
+    }
+
+
+def grafico_plan(offer: Offer, historico: list[tuple[date, int]], verdict: Verdict,
+                 largura: int = GRAFICO_SIZE[0], altura: int = GRAFICO_SIZE[1],
+                 handle: str | None = None) -> dict:
+    """O que `render_grafico_preco` vai desenhar — sem pintar nada.
+
+    Mesmo papel de `story_plan`/`feed_plan`: os testes afirmam sobre ISTO, não
+    sobre pixels. Traz o nº de pontos, a caixa do gráfico, o y da mediana e o
+    do p25 (com a faixa "promoção de verdade"), os picos detectados (duração,
+    valor e onde), o preço de hoje e todos os rótulos — inclusive o selo e a
+    porcentagem, que vêm do `Verdict` e não são recalculados aqui.
+
+    Levanta `SourceError` com menos de 2 pontos válidos: quem chama decide o
+    que fazer com um produto sem histórico."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    return _resumo_grafico(_grafico_plan(draw, offer, historico, verdict,
+                                         largura, altura, handle, DEFAULT_BRAND_NAME))
+
+
+def _draw_dashed_line(draw: ImageDraw.ImageDraw, x_ini: float, y: float, x_fim: float,
+                      fill: tuple[int, int, int], width: int = 3,
+                      traco: int = 18, vao: int = 14) -> None:
+    x = x_ini
+    while x < x_fim:
+        draw.line([(x, y), (min(x + traco, x_fim), y)], fill=fill, width=width)
+        x += traco + vao
+
+
+def _draw_centered(draw: ImageDraw.ImageDraw, largura: int, y: float, text: str,
+                   font: ImageFont.FreeTypeFont, fill: tuple[int, int, int]) -> None:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    x = (largura - (bbox[2] - bbox[0])) / 2
+    draw.text((x - bbox[0], y - bbox[1]), text, font=font, fill=fill)
+
+
+def _draw_grafico_chips(draw: ImageDraw.ImageDraw, largura: int, plan: dict) -> None:
+    chips, gap = plan["chips"], 20
+    if not chips:
+        return
+    total = sum(c["width"] for c in chips) + gap * (len(chips) - 1)
+    x = (largura - total) / 2
+    for chip in chips:
+        y = plan["chips_top"] + (max(c["height"] for c in chips) - chip["height"]) / 2
+        if chip["tipo"] == "selo":
+            _draw_selo(draw, x, y, chip, radius=14)
+        else:
+            draw.rounded_rectangle([x, y, x + chip["width"], y + chip["height"]],
+                                   radius=14, fill=GOLD)
+            bbox = chip["bbox"]
+            draw.text((x + 26 - bbox[0], y + 16 - bbox[1]), chip["text"],
+                      font=chip["font"], fill=INK)
+        x += chip["width"] + gap
+
+
+def _draw_chip_texto(draw: ImageDraw.ImageDraw, x: float, y: float, text: str,
+                     font: ImageFont.FreeTypeFont, fill: tuple[int, int, int],
+                     fundo: tuple[int, int, int] = NAVY) -> None:
+    """Rótulo com placa NAVY por baixo. Um rótulo de gráfico cai em cima da
+    linha de preço em algum momento — sem a placa, a mediana ficava ilegível
+    exatamente na série que mais interessa (a que encosta na mediana)."""
+    asc, desc = font.getmetrics()
+    largura = draw.textlength(text, font=font)
+    # Arredondada e com contorno: uma placa retangular seca lia como um BURACO
+    # na linha de preço; com a borda, lê como rótulo (preview de 2026-08-27).
+    draw.rounded_rectangle([x - 10, y - 5, x + largura + 10, y + asc + desc + 5],
+                           radius=9, fill=fundo, outline=BORDER, width=1)
+    draw.text((x, y), text, font=font, fill=fill)
+
+
+def _draw_grafico_reguas(draw: ImageDraw.ImageDraw, plan: dict) -> None:
+    """As LINHAS da régua da casa: a tracejada da mediana e a borda de cima da
+    faixa do p25. Vão ANTES da linha de preço; os rótulos vão depois
+    (`_draw_grafico_rotulos_regua`), senão a linha passa por cima deles."""
+    x0, _, x1, _ = plan["plot"]
+    if plan["faixa_p25"] is not None:
+        draw.line([(x0, plan["faixa_p25"][1]), (x1, plan["faixa_p25"][1])],
+                  fill=SELO_BORDER, width=2)
+    if plan["y_mediana"] is not None:
+        _draw_dashed_line(draw, x0, plan["y_mediana"], x1, MUTED, width=3)
+
+
+def _draw_grafico_rotulos_regua(draw: ImageDraw.ImageDraw, plan: dict) -> None:
+    """"preço de sempre" (com o valor) e "promoção de verdade" — depois da
+    linha de preço, cada um sobre a sua placa."""
+    x0, _, _, y1 = plan["plot"]
+    font = _font("mono", 26, 500)
+    linha_h = sum(font.getmetrics())
+    if plan["faixa_p25"] is not None:
+        yp = plan["faixa_p25"][1]
+        # Colado no FUNDO da faixa: é lá que ela é mais larga, e é o lugar que
+        # nunca disputa espaço com a linha da mediana logo acima.
+        ty = max(y1 - linha_h - 12, yp + 8)
+        _draw_chip_texto(draw, x0 + 10, ty, plan["rotulos"]["p25"], font, SELO_TEXT,
+                         fundo=SELO_BG)
+    if plan["y_mediana"] is not None:
+        _draw_chip_texto(draw, x0 + 10, plan["y_mediana"] - 12 - linha_h,
+                         plan["rotulos"]["mediana_linha"], font, MUTED)
+
+
+def _draw_grafico_picos(draw: ImageDraw.ImageDraw, plan: dict) -> None:
+    x0, y0, x1, _ = plan["plot"]
+    font = _font("mono", 26, 600)
+    linha_h = sum(font.getmetrics())
+    raio = 26
+    for pico in plan["picos"]:
+        px, py = pico["x"], pico["y"]
+        draw.ellipse([px - raio, py - raio, px + raio, py + raio], outline=RED, width=5)
+        largura_rotulo = draw.textlength(pico["rotulo"], font=font)
+        tx = min(max(x0, px - largura_rotulo / 2), x1 - largura_rotulo)
+        ty = py - raio - 12 - linha_h
+        if ty < y0:                       # sem espaço acima: o rótulo desce
+            ty = py + raio + 10
+        draw.text((tx, ty), pico["rotulo"], font=font, fill=RED)
+
+
+def _draw_grafico_hoje(draw: ImageDraw.ImageDraw, plan: dict) -> None:
+    hx, hy = plan["x_hoje"], plan["y_hoje"]
+    px0, py0, px1, py1 = plan["pill_hoje"]
+    draw.rounded_rectangle([px0, py0, px1, py1], radius=16, fill=GOLD)
+    bbox = plan["hoje_bbox"]
+    draw.text((px0 + 28 - bbox[0], py0 + 20 - bbox[1]), plan["rotulos"]["hoje"],
+              font=plan["hoje_font"], fill=INK)
+    draw.ellipse([hx - 17, hy - 17, hx + 17, hy + 17], fill=NAVY, outline=GOLD, width=5)
+    draw.ellipse([hx - 7, hy - 7, hx + 7, hy + 7], fill=GOLD)
+
+
+def _draw_grafico_rodape(draw: ImageDraw.ImageDraw, largura: int, plan: dict) -> None:
+    dy = plan["divisoria_y"]
+    draw.line([(GRAFICO_PAD, dy), (largura - GRAFICO_PAD, dy)], fill=BORDER, width=1)
+    assinatura_font = _font("sans", 38, 700)
+    a_asc, a_desc = assinatura_font.getmetrics()
+    handle_font = _font("mono", 28, 500)
+    h_asc, h_desc = handle_font.getmetrics()
+    base = plan["rodape_y"] + max(a_asc, h_asc)
+    texto = plan["rotulos"]["assinatura"]
+    bbox = draw.textbbox((0, 0), texto, font=assinatura_font)
+    draw.text((GRAFICO_PAD - bbox[0], base - a_asc - bbox[1]), texto,
+              font=assinatura_font, fill=TEXT)
+    handle = plan["rotulos"]["handle"].upper()
+    hbbox = draw.textbbox((0, 0), handle, font=handle_font)
+    hx = largura - GRAFICO_PAD - (hbbox[2] - hbbox[0])
+    draw.text((hx - hbbox[0], base - h_asc - hbbox[1]), handle,
+              font=handle_font, fill=GOLD)
+
+
+def render_grafico_preco(offer: Offer, historico: list[tuple[date, int]],
+                         verdict: Verdict, largura: int = GRAFICO_SIZE[0],
+                         altura: int = GRAFICO_SIZE[1], handle: str | None = None,
+                         brand_name: str = DEFAULT_BRAND_NAME) -> bytes:
+    """A série de preços de um produto, com o veredito por cima (PNG).
+
+    Linha dourada sobre navy, sem grade: só a linha tracejada da mediana
+    (`offer.price_ref_cents`, "preço de sempre"), a faixa abaixo do p25
+    (`offer.price_p25_cents`, "promoção de verdade") e o preço de hoje
+    destacado. Cada pico inflado — acima de `mediana × 1,5` por até 2 dias —
+    ganha o círculo vermelho e a duração ("1 dia"), que é a prova de que o
+    "de" do vendedor não se sustenta.
+
+    NÃO baixa a foto do produto: é justamente por ser 100% nosso que este
+    desenho conta como conteúdo original para o Instagram. Modo e selo vêm do
+    `Verdict` já decidido; nada é recalculado aqui.
+
+    Série vazia ou com menos de 2 pontos válidos -> `SourceError`."""
+    medida = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    plan = _grafico_plan(medida, offer, historico, verdict, largura, altura,
+                         handle, brand_name)
+    x0, y0, x1, y1 = plan["plot"]
+
+    canvas = _glow_background(largura, altura, largura / 2, 120,
+                              largura * 0.58, 340).convert("RGBA")
+    # A ÚNICA camada translúcida do desenho é a faixa do p25 — e é de
+    # propósito: enquanto havia também um preenchimento dourado sob a linha,
+    # os dois se somavam e a faixa virava uma barra marrom sem significado
+    # (preview de 2026-08-27). Com uma sombra só, ela lê como "a zona boa".
+    overlay = Image.new("RGBA", (largura, altura), (0, 0, 0, 0))
+    if plan["faixa_p25"] is not None:
+        ImageDraw.Draw(overlay).rectangle(
+            [x0, plan["faixa_p25"][1], x1, y1], fill=(*GLOW_COLOR, 46))
+    canvas = Image.alpha_composite(canvas, overlay).convert("RGB")
+    pontos = plan["pontos_xy"]
+
+    draw = ImageDraw.Draw(canvas)
+    _draw_header_feed(draw, canvas, GRAFICO_PAD, 58, 62, brand_name, None)
+    _draw_centered(draw, largura, GRAFICO_KICKER_Y, plan["kicker"],
+                   _font("mono", 26, 500), MUTED)
+    _draw_title(draw, largura, plan["title_top"], plan["title"])
+    _draw_grafico_chips(draw, largura, plan)
+
+    draw.line([(x0, y1), (x1, y1)], fill=BORDER, width=1)
+    _draw_grafico_reguas(draw, plan)
+    draw.line(pontos, fill=GOLD, width=5, joint="curve")
+    _draw_grafico_rotulos_regua(draw, plan)
+    _draw_grafico_picos(draw, plan)
+    _draw_grafico_hoje(draw, plan)
+
+    eixo_font = _font("mono", 24, 400)
+    esquerda, direita = plan["eixo_x"]
+    draw.text((x0, y1 + 18), esquerda, font=eixo_font, fill=MUTED)
+    draw.text((x1 - draw.textlength(direita, font=eixo_font), y1 + 18), direita,
+              font=eixo_font, fill=MUTED)
+    _draw_grafico_rodape(draw, largura, plan)
+
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+# =============================================================================
+# Fase 5D — CARROSSEL
+#
+# O carrossel é o motor de RETENÇÃO: maior save rate do Instagram (0,05%, 9x a
+# imagem única) e o único formato que pode reaparecer no feed de quem não
+# engajou. A imagem única — foto do produto com preço por cima — perdeu 45,98%
+# de engajamento no ano e saiu da grade. Ver `docs/feed.md`.
+#
+# A capa vende o CONCEITO ("3 ofertas, 1 é real"), não um preço: é ela que dá
+# motivo para deslizar. Os slides de oferta são a arte de feed que já existe,
+# com um contador; o fecho é a frase-assinatura. Nada de pedido de curtida,
+# comentário ou compartilhamento em lugar nenhum — a Meta rebaixa.
+# =============================================================================
+
+CARROSSEL_SIZE = FEED_SIZE
+# A Meta aceita 10; a pesquisa só sustenta "6 a 8" fracamente (nenhum estudo
+# com método), e menos slide é mais barato de gerar e de revisar. Capa e fecho
+# ocupam dois: sobram seis ofertas.
+CARROSSEL_MAX_SLIDES = 8
+CTA_CARROSSEL = "LINK NA BIO"
+
+CAPA_TITLE_SIZE = 92
+CAPA_SUB_SIZE = 42
+FECHO_TITLE_SIZE = 76
+
+
+# Abaixo disto o carrossel não sai. Um "termômetro da semana" com uma oferta só
+# não é o post que a capa promete ("6 ofertas, 4 passaram"), e a Meta pediria
+# uma legenda que fala de seis para um álbum de três slides.
+CARROSSEL_MIN_OFERTAS = 2
+
+
+def _slides_de_oferta(posts: list[Post]) -> list[Post]:
+    if not posts:
+        raise SourceError("carrossel sem oferta nenhuma: capa e fecho não são post")
+    return list(posts[:CARROSSEL_MAX_SLIDES - 2])
+
+
+def _avisa(avisos: list[str] | None, texto: str) -> None:
+    if avisos is not None:
+        avisos.append(texto)
+
+
+def carrossel_fotos(posts: list[Post], client: httpx.Client | None = None,
+                    avisos: list[str] | None = None) -> list[tuple[Post, Image.Image]]:
+    """As ofertas que REALMENTE entram no carrossel, com a foto já aberta.
+
+    O carrossel era tudo-ou-nada, como o `render_feed`: uma foto que não baixa
+    derrubava o post inteiro. Só que com SEIS fotos a chance de perder é seis
+    vezes a de um post único, e o que se perde é o post com seis ofertas — não
+    um slide. Produto cuja foto falha é PULADO, com aviso, e o carrossel sai
+    com os que sobraram.
+
+    O piso é `CARROSSEL_MIN_OFERTAS`, e ele vale contra a DEGRADAÇÃO: pedir
+    seis e ficar com uma vira `SourceError` (com todos os motivos no texto),
+    porque aí a peça não é mais a que a capa promete. Pedir uma e receber uma é
+    decisão de quem chama, e o desenho não a desfaz.
+
+    É uma etapa SEPARADA de `render_carrossel` porque quem sobreviveu decide o
+    texto da capa ("6 OFERTAS. 4 PASSARAM.") e a legenda do álbum: gerar esses
+    dois antes de saber quem entrou faria a peça anunciar um produto que não
+    está lá. Quem chama resolve as fotos, monta os textos com os
+    sobreviventes e só então desenha."""
+    escolhidos = _slides_de_oferta(posts)
+    vivos: list[tuple[Post, Image.Image]] = []
+    perdidos: list[str] = []
+    for post in escolhidos:
+        try:
+            vivos.append((post, _open_product_image(_get_image_bytes(post.offer, client))))
+        except SourceError as exc:
+            perdidos.append(f"{post.offer.item_id}: {exc}")
+            _avisa(avisos, f"⚠️ carrossel: {post.offer.item_id} ficou de fora — {exc}")
+    if perdidos and len(vivos) < CARROSSEL_MIN_OFERTAS:
+        raise SourceError(
+            f"carrossel com {len(vivos)} oferta(s) depois de {len(perdidos)} foto(s) "
+            f"que não baixaram (mínimo {CARROSSEL_MIN_OFERTAS}) — " + "; ".join(perdidos))
+    return vivos
+
+
+# Capa e fecho centram o BLOCO inteiro (mascote + textos) nesta faixa da tela,
+# em vez de ancorar cada peça num y fixo: com um título de 1, 2 ou 3 linhas os
+# y fixos deixavam 300 px de vazio embaixo (preview de 2026-08-27).
+CARROSSEL_MIOLO = (120, 1200)
+
+
+def _centro_do_bloco(alturas: list[float], espacos: list[float]) -> list[float]:
+    """Os topos de cada peça de um bloco centrado verticalmente em
+    `CARROSSEL_MIOLO`. `espacos[i]` é o respiro DEPOIS da peça i."""
+    topo_faixa, base_faixa = CARROSSEL_MIOLO
+    total = sum(alturas) + sum(espacos[:len(alturas) - 1])
+    y = topo_faixa + ((base_faixa - topo_faixa) - total) / 2
+    topos = []
+    for i, h in enumerate(alturas):
+        topos.append(y)
+        y += h + (espacos[i] if i < len(espacos) else 0)
+    return topos
+
+
+def _capa_plan(draw: ImageDraw.ImageDraw, titulo: str, subtitulo: str,
+               handle: str | None) -> dict:
+    largura, altura = CARROSSEL_SIZE
+    disponivel = largura - 2 * FEED_PAD
+    titulo_dims = _texto_dims(draw, titulo, CAPA_TITLE_SIZE, disponivel, 3, 800, 1.06)
+    sub_dims = _texto_dims(draw, subtitulo, CAPA_SUB_SIZE, disponivel, 2, 500, 1.2)
+    mascote_d = 280
+    mascote_top, titulo_top, sub_top = _centro_do_bloco(
+        [mascote_d, titulo_dims["height"], sub_dims["height"]], [64, 30])
+    return {
+        "tipo": "capa", "titulo": titulo, "subtitulo": subtitulo,
+        "titulo_linhas": list(titulo_dims["lines"]),
+        "subtitulo_linhas": list(sub_dims["lines"]),
+        "titulo_dims": titulo_dims, "sub_dims": sub_dims,
+        "titulo_top": titulo_top, "sub_top": sub_top,
+        "mascote": (largura / 2, mascote_top + mascote_d / 2, mascote_d),
+        "handle": handle or DEFAULT_HANDLE, "handle_y": altura - 118,
+    }
+
+
+def _fecho_plan(draw: ImageDraw.ImageDraw, handle: str | None) -> dict:
+    largura, _ = CARROSSEL_SIZE
+    assinatura = _texto_dims(draw, ASSINATURA, FECHO_TITLE_SIZE,
+                             largura - 2 * FEED_PAD, 2, 800, 1.1)
+    handle_font = _font("mono", 34, 500)
+    cta_font = _font("sans", 46, 800)
+    cta_bbox = draw.textbbox((0, 0), CTA_CARROSSEL, font=cta_font)
+    cta_h = (cta_bbox[3] - cta_bbox[1]) + 2 * 26
+    mascote_d = 240
+    mascote_top, assinatura_top, handle_y, cta_top = _centro_do_bloco(
+        [mascote_d, assinatura["height"], sum(handle_font.getmetrics()), cta_h],
+        [60, 40, 60])
+    return {
+        "tipo": "fecho", "assinatura": ASSINATURA, "cta": CTA_CARROSSEL,
+        "assinatura_dims": assinatura, "assinatura_top": assinatura_top,
+        "handle": handle or DEFAULT_HANDLE, "handle_y": handle_y,
+        "handle_font": handle_font,
+        "mascote": (largura / 2, mascote_top + mascote_d / 2, mascote_d),
+        "cta_font": cta_font, "cta_bbox": cta_bbox,
+        "cta_size": ((cta_bbox[2] - cta_bbox[0]) + 2 * 44, cta_h),
+        "cta_top": cta_top,
+    }
+
+
+def _oferta_plan(draw: ImageDraw.ImageDraw, post: Post, indice: int, total: int,
+                 handle: str | None) -> dict:
+    plan = _feed_plan(draw, post.offer, post.verdict, handle)
+    return {
+        "tipo": "oferta", "indice": indice, "total": total,
+        "item_id": post.offer.item_id, "source": post.offer.source,
+        "preco": format_brl(post.offer.price_current_cents),
+        **_resumo(plan),
+    }
+
+
+def carrossel_plan(posts: list[Post], titulo: str, subtitulo: str,
+                   handle: str | None = None) -> list[dict]:
+    """O que cada slide vai ser, na ordem — capa, uma oferta por slide, fecho.
+
+    Mesmo papel de `story_plan`/`feed_plan`/`grafico_plan`: os testes afirmam
+    sobre ISTO. Cada slide de oferta traz o que o veredito do post autoriza
+    (`selo`, `riscado`, `badge_pct`), lido de `post.verdict` e não recalculado.
+    Sem oferta nenhuma levanta `SourceError`: capa e fecho não são post.
+
+    Continua OFFLINE (nenhum teste de composição toca a rede) e continua
+    concordando com o desenho, porque quem decide o elenco é `carrossel_fotos`,
+    antes dos dois: passe a esta função os mesmos posts que foram desenhados
+    (`[post for post, _ in fotos]`) e o plano é a peça."""
+    escolhidos = _slides_de_oferta(posts)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    capa = _capa_plan(draw, titulo, subtitulo, handle)
+    fecho = _fecho_plan(draw, handle)
+    slides = [{k: v for k, v in capa.items() if not k.endswith("_dims")}]
+    slides += [_oferta_plan(draw, post, i, len(escolhidos), handle)
+               for i, post in enumerate(escolhidos, start=1)]
+    slides.append({k: v for k, v in fecho.items()
+                   if k not in ("assinatura_dims", "cta_font", "cta_bbox",
+                                "handle_font")})
+    return slides
+
+
+def _draw_mascote_em_disco(canvas: Image.Image, draw: ImageDraw.ImageDraw,
+                           cx: float, cy: float, d: float) -> None:
+    draw.ellipse([cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2], fill=GOLD)
+    draw_mascot(canvas, cx, cy, d * 0.98, ink=NAVY, skin=CREAM, cap=NAVY)
+
+
+def _draw_bloco_centralizado(draw: ImageDraw.ImageDraw, largura: int, top: float,
+                             dims: dict, fill: tuple[int, int, int]) -> float:
+    y = top
+    for line in dims["lines"]:
+        bbox = draw.textbbox((0, 0), line, font=dims["font"])
+        x = (largura - (bbox[2] - bbox[0])) / 2
+        draw.text((x - bbox[0], y - bbox[1]), line, font=dims["font"], fill=fill)
+        y += dims["line_h"]
+    return y
+
+
+def _render_capa(titulo: str, subtitulo: str, handle: str | None) -> bytes:
+    largura, altura = CARROSSEL_SIZE
+    canvas = _glow_background(largura, altura, largura / 2, 300, largura * 0.62, 420)
+    draw = ImageDraw.Draw(canvas)
+    plan = _capa_plan(draw, titulo, subtitulo, handle)
+    _draw_mascote_em_disco(canvas, draw, *plan["mascote"])
+    _draw_bloco_centralizado(draw, largura, plan["titulo_top"], plan["titulo_dims"], TEXT)
+    _draw_bloco_centralizado(draw, largura, plan["sub_top"], plan["sub_dims"], MUTED)
+    _draw_centered(draw, largura, plan["handle_y"], plan["handle"].upper(),
+                   _font("mono", 30, 500), GOLD)
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _render_fecho(handle: str | None) -> bytes:
+    largura, altura = CARROSSEL_SIZE
+    canvas = _glow_background(largura, altura, largura / 2, 300, largura * 0.62, 420)
+    draw = ImageDraw.Draw(canvas)
+    plan = _fecho_plan(draw, handle)
+    _draw_mascote_em_disco(canvas, draw, *plan["mascote"])
+    _draw_bloco_centralizado(draw, largura, plan["assinatura_top"],
+                             plan["assinatura_dims"], TEXT)
+    _draw_centered(draw, largura, plan["handle_y"], plan["handle"].upper(),
+                   plan["handle_font"], MUTED)
+    cta_w, cta_h = plan["cta_size"]
+    x0, y0 = (largura - cta_w) / 2, plan["cta_top"]
+    # `radius` é METADE DA ALTURA, não 999: com um raio maior que o lado curto
+    # o Pillow devolve uma elipse, e a pill do fecho saía oval (preview de
+    # 2026-08-27). Nas pills largas do story isso nunca apareceu.
+    draw.rounded_rectangle([x0, y0, x0 + cta_w, y0 + cta_h], radius=cta_h / 2, fill=GOLD)
+    bbox = plan["cta_bbox"]
+    draw.text((x0 + 44 - bbox[0], y0 + 26 - bbox[1]), CTA_CARROSSEL,
+              font=plan["cta_font"], fill=INK)
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _draw_contador(draw: ImageDraw.ImageDraw, largura: int, indice: int, total: int) -> None:
+    texto = f"{indice}/{total}"
+    font = _font("mono", 26, 500)
+    bbox = draw.textbbox((0, 0), texto, font=font)
+    w = (bbox[2] - bbox[0]) + 2 * 20
+    h = (bbox[3] - bbox[1]) + 2 * 14
+    x0 = largura - FEED_PAD - w
+    y0 = 64 + (62 - h) / 2                     # centrado no avatar do cabeçalho
+    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=999,
+                           fill=SURFACE, outline=PILL_BORDER, width=2)
+    draw.text((x0 + 20 - bbox[0], y0 + 14 - bbox[1]), texto, font=font, fill=MUTED)
+
+
+def _render_slide_oferta(post: Post, product: Image.Image, indice: int, total: int,
+                         handle: str | None, brand_name: str) -> bytes:
+    """A arte de feed que já existe, com o contador do carrossel — `_draw_card`,
+    `_draw_price_pill` e `selo_label` são os mesmos; nada é reimplementado.
+
+    A foto chega PRONTA (`_ofertas_com_foto`): é lá que se decide quem entra no
+    carrossel, e baixá-la de novo aqui seria uma segunda chance de falhar
+    depois de o plano já estar fechado."""
+    width, height = CARROSSEL_SIZE
+    canvas = _glow_background(width, height, 540, 81, 594, 338)
+    draw = ImageDraw.Draw(canvas)
+    plan = _feed_plan(draw, post.offer, post.verdict, handle)
+    _draw_header_feed(draw, canvas, FEED_PAD, 64, 62, brand_name, handle)
+    _draw_contador(draw, width, indice, total)
+    _draw_card(canvas, draw, product, 64, 158, 952, 600, 26, 20,
+               plan["badge_pct"], 42, 12, 20, 26)
+    _draw_feed_body(draw, width, post.offer, plan["title"], plan["price"],
+                    plan["meta"], plan["selo"])
+    _draw_feed_footer(draw, width, FEED_PAD, post.offer, plan["footer"])
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def render_carrossel(fotos: list[tuple[Post, Image.Image]], titulo: str, subtitulo: str,
+                     handle: str | None = None,
+                     brand_name: str = DEFAULT_BRAND_NAME) -> list[bytes]:
+    """Os PNGs do carrossel, na ordem: capa, um slide por oferta, fecho.
+
+    `fotos` é o que `carrossel_fotos` devolveu — o elenco já decidido, com a
+    foto de cada produto aberta. Esta função não baixa nada e não descarta
+    ninguém: quem chega aqui vira slide, e é por isso que `titulo`/`subtitulo`
+    (montados pelo chamador a partir desse mesmo elenco) podem falar de "6
+    ofertas" com segurança.
+
+    Capa: `titulo` grande, `subtitulo` e o mascote — nenhum preço, porque ela
+    vende o CONCEITO ("3 ofertas, 1 é real"), que é o que faz alguém deslizar.
+    Ofertas: a arte de feed com um contador (foto, título, pill de preço e o
+    veredito, tudo pelas mesmas funções). Fecho: a frase-assinatura, o handle e
+    "link na bio" — nunca um pedido de curtida ou comentário."""
+    if not fotos:
+        raise SourceError("carrossel sem oferta nenhuma: capa e fecho não são post")
+    imagens = [_render_capa(titulo, subtitulo, handle)]
+    imagens += [_render_slide_oferta(post, foto, i, len(fotos), handle, brand_name)
+                for i, (post, foto) in enumerate(fotos, start=1)]
+    imagens.append(_render_fecho(handle))
+    return imagens

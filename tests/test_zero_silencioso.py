@@ -42,24 +42,59 @@ def _sem_rede(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"nenhuma chamada de rede é esperada aqui: {request.url}")
 
 
+def _dia_do_pool(raw: dict) -> date:
+    """O "hoje" em que este pool é contemporâneo: a MAIS RECENTE entre a
+    geração e as datas de verificação do buy box.
+
+    Congelar só em `generated_at` parecia bastar até o passo semanal do buy box
+    rodar: ele carimba `buy_box_checked_at` de hoje sem regerar o arquivo (é o
+    procedimento documentado — o vencedor do buy box muda mais rápido que
+    título e histórico). Com o relógio parado na geração, essas datas ficam no
+    FUTURO e o leitor rejeita a entrada por data inválida — a suíte acusava um
+    pool saudável. A régua é o que este teste protege; a idade do arquivo,
+    não."""
+    datas = [date.fromisoformat(raw["generated_at"])]
+    datas += [date.fromisoformat(o["buy_box_checked_at"]) for o in raw["offers"]
+              if o.get("buy_box_checked_at")]
+    return max(datas)
+
+
+def test_o_dia_do_pool_acompanha_a_checagem_semanal_do_buy_box():
+    """O passo semanal carimba `buy_box_checked_at` sem regerar o arquivo.
+
+    Aconteceu de verdade em 2026-08-28: 31 entradas renovadas contra um
+    `generated_at` de 2026-08-26 fizeram o leitor recusar TODAS por "data do
+    buy box inválida", e a suíte apontou para o dado quando o errado era o
+    relógio do teste."""
+    raw = {"generated_at": "2026-08-26",
+           "offers": [{"buy_box_checked_at": "2026-08-28"},
+                      {"buy_box_checked_at": "2026-08-27"},
+                      {}]}
+    assert _dia_do_pool(raw) == date(2026, 8, 28)
+    # Sem checagem posterior, o dia continua sendo o da geração.
+    assert _dia_do_pool({"generated_at": "2026-08-26", "offers": [{}]}) == date(2026, 8, 26)
+
+
+def _congela(monkeypatch, dia: date) -> date:
+    class _DataCongelada(date):
+        @classmethod
+        def today(cls) -> date:
+            return dia
+
+    monkeypatch.setattr(meli_mod, "date", _DataCongelada)
+    return dia
+
+
 @pytest.fixture
 def pool_no_prazo(monkeypatch) -> date:
-    """Congela "hoje" na data de geração do pool.
+    """Congela "hoje" no dia em que o pool de fixture é contemporâneo.
 
     `fetch_offers` descarta pool vencido; sem isso este teste passaria a
     falhar sozinho `valid_days` dias depois do último refresh do pool, e a
     rede contra o zero silencioso viraria ruído. O que ele protege é a régua,
     não a validade do arquivo."""
-    gerado = date.fromisoformat(
-        json.loads(POOL.read_text(encoding="utf-8"))["generated_at"])
-
-    class _DataCongelada(date):
-        @classmethod
-        def today(cls) -> date:
-            return gerado
-
-    monkeypatch.setattr(meli_mod, "date", _DataCongelada)
-    return gerado
+    return _congela(monkeypatch,
+                    _dia_do_pool(json.loads(POOL.read_text(encoding="utf-8"))))
 
 
 def _cfg() -> dict:
@@ -132,14 +167,7 @@ def test_pool_real_produz_candidatas_com_o_config_real(tmp_path, monkeypatch):
     if not real.is_file():
         pytest.skip("sem data/meli_offers.json neste checkout")
     raw = json.loads(real.read_text(encoding="utf-8"))
-    gerado = date.fromisoformat(raw["generated_at"])
-
-    class _D(date):
-        @classmethod
-        def today(cls) -> date:
-            return gerado
-
-    monkeypatch.setattr(meli_mod, "date", _D)
+    _congela(monkeypatch, _dia_do_pool(raw))
     cfg = load_config(CONFIG_REAL)
     cfg["meli"]["offers_path"] = str(real)
     src = _meli_source(tmp_path)

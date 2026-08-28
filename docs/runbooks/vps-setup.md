@@ -15,7 +15,7 @@ tempo checar**. Duas opções, ambas sem custo:
 |---|---|---|
 | Custo | R$ 0 dentro da cota (2.000 min/mês em repo privado) | R$ 0 (Oracle Always Free) |
 | Cadência | de hora em hora, `--posts-per-run 5` | a cada 5 min, 1 por vez |
-| Pontualidade | atrasos de 5–30 min são normais | exata |
+| Pontualidade | atrasos de 5–30 min são normais, e **disparo pode não acontecer** (medição de 2026-08-28, abaixo) | exata |
 | Ritmo no canal | o `pacing_budget` da fase 5A espaça os 60/dia nos dois casos | idem |
 | Estoque de candidatas | 16 fatias de descoberta/dia | 192 fatias/dia (mais fresco) |
 | Setup | nenhum (já pronto) | ~20 min, pede cartão só para verificação |
@@ -31,7 +31,41 @@ workflow*).
 ## Opção A — GitHub Actions (produção, já configurada)
 
 Não é preciso editar nada: `.github/workflows/publish.yml` já roda **de hora em
-hora entre 08:00 e 23:00 BRT** (16 jobs/dia) com `--posts-per-run 5`.
+hora entre 08:07 e 23:07 BRT** (16 jobs/dia) com `--posts-per-run 5`.
+
+### O agendador não entrega o que o cron promete — a medição
+
+Consulta à API do GitHub em **2026-08-28**, sobre o workflow `publish`:
+
+| o que | número |
+|---|---|
+| runs em toda a história do repositório | **1** (`33115325845`, `schedule`, `success`) |
+| disparos esperados desde a elegibilidade na `main` (2026-08-27T02:55Z) | ~16 em ~25 h |
+| atraso do único run que aconteceu | **51 min** (cron de minuto 0, run às 20:51Z) |
+
+Não era billing nem permissão: o workflow estava `active` e o `tests.yml` rodou
+normalmente por push no mesmo período. É o **agendador**. O GitHub documenta
+que o evento `schedule` atrasa em períodos de carga alta, que **o começo de
+cada hora é justamente o pico** e que um disparo atrasado além do intervalo é
+**descartado**. Consequência prática: quase tudo que o canal publicou até aquele
+dia veio de **um único run**, enquanto o dono achava que a cadência era de hora
+em hora.
+
+O que a fase 5G fez com isso:
+
+1. **Minuto 7** no cron, para sair do pico do minuto 0. O 7 tem teto: com
+   `schedule.window_end` em **23:15**, um minuto ≥ 15 jogaria o último disparo
+   (23:xx BRT) para fora da janela do ritmo — `pacing_budget` devolveria 0 e o
+   último run do dia não publicaria nada. Testes travam a regra (minuto ≠ 0 e
+   < o minuto de `window_end`), não a string.
+2. **Nada mais depende de um disparo específico.** O passo do feed perdeu o
+   `if: github.event.schedule == '0 11 * * *'`; o freio virou código.
+3. **O buraco vira mensagem.** `schedule.max_gap_minutes` (150) faz o resumo do
+   ops dizer, em horas, quando a cadência falhou e quantos disparos se perderam.
+
+**A eficácia do minuto 7 só se comprova observando os próximos disparos.** Se a
+taxa continuar perto de 1 em 16, a causa não era congestionamento e a próxima
+hipótese a testar é outra (ver "O que ainda não se sabe", abaixo).
 
 ### A cota de minutos — a conta, refeita
 
@@ -53,6 +87,12 @@ tem de caber no pior caso plausível: **16 jobs/dia é a única linha que
 sobrevive até 4 min/job**, e ainda deixa ~500 min/mês para o `tests.yml` (que
 roda a cada push e também consome a mesma cota; o commit de estado leva
 `[skip ci]` e não conta).
+
+A tabela pressupõe que **todos** os disparos acontecem. Depois da medição
+acima, saiba que isso é um **teto, não uma previsão**: com 1 de ~16 disparos
+entregues, o consumo real ficou uma ordem de grandeza abaixo destas linhas. A
+conta continua valendo como limite de segurança — é para isso que ela existe —,
+mas não use a célula como estimativa de fatura.
 
 Por que 1 h e não "45 min no pico": o campo de minuto do cron se repete a cada
 hora, então `*/45` dispara aos minutos 0 e 45 — intervalos de 45 e **15** min,
@@ -93,15 +133,59 @@ nas raízes, contra 1.800 posts/mês), não do número de varreduras.
 - **Desligar:** GitHub → Actions → publish → `...` → *Disable workflow*. O
   GitHub também desativa workflows agendados após 60 dias sem atividade no
   repositório — o heartbeat diário no chat de operações é o que denuncia isso.
+- **Conteúdo de feed (fase 5D, revisto na 5G):** o passo "Conteúdo do feed"
+  roda em **todos** os disparos e entrega, no máximo, **um carrossel** do
+  termômetro no Instagram e **um flagrante** despachado ao chat de operações
+  **por dia**. Quem garante o "por dia" é o código, não o cron: o carrossel
+  passa por `_carrossel_pode_sair` (ritmo + teto de
+  `channels.instagram_carrossel`) e o flagrante por `_flagrante_pode_sair`
+  (marca em `day_flags`, gravada só depois do despacho bem-sucedido). Ambos
+  conferidos ANTES da descoberta, então o disparo que já gastou a cota sai sem
+  tocar em rede. Até a 5G o passo se prendia ao cron das 08:00 — com ~15 de 16
+  disparos descartados, isso era feed que quase nunca saía, em silêncio
+  (`continue-on-error`). O ganho da troca: **um disparo que falha é repetido
+  pelo seguinte e a peça ainda sai no mesmo dia**. Custo: dois comandos a mais
+  por disparo (~1–2 s de startup do Python cada quando a cota já foi gasta).
+  **Não há passo de feed na VPS** — mesmo com o timer systemd ligado, quem
+  publica o feed é o Actions (ou o dono, à mão, com `afiliado feed`).
 - **Disparo manual:** aba Actions → publish → Run workflow (com opção
-  dry-run).
+  dry-run). Desde a 5G ele **também** roda o passo do feed (antes não rodava,
+  porque o passo dependia de `github.event.schedule`, que não existe num
+  `workflow_dispatch`) — se a cota do dia já foi gasta, o passo sai calado.
+- **Buraco na cadência (fase 5G):** o resumo que vai ao chat de operações
+  acusa, em horas, quando o intervalo desde o run anterior passa de
+  `schedule.max_gap_minutes` (**150**, com a cadência de 60 min: tolera um
+  disparo perdido e acusa a partir do segundo). Só entre runs do **mesmo dia
+  local** — das 23:07 às 08:07 há 9 h por desenho — e nunca no primeiro run.
+  Se este aviso aparecer todo dia, o agendador continua descartando disparos.
+
+### O que ainda não se sabe sobre o agendador
+
+Uma medição, uma hipótese e nenhuma prova — anote aqui o que os próximos dias
+mostrarem:
+
+- **O minuto 7 resolve?** Só os próximos disparos dizem. Confira em
+  Actions → publish quantos runs houve nas últimas 24 h: com o cron atual,
+  16 é o esperado. Se continuar perto de 1, **o congestionamento do minuto 0
+  não era a causa** — e as hipóteses seguintes são o repositório privado (fila
+  de agendados com prioridade menor), a inatividade que o GitHub usa para
+  suspender workflows agendados após 60 dias, ou um limite de conta.
+- **Quanto o agendador atrasa quando entrega?** O único run medido atrasou
+  51 min. Se o atraso típico passar de 60 min, o disparo seguinte cai em cima
+  do anterior e o `concurrency: publish` enfileira — a cadência efetiva cai
+  pela metade sem nenhum erro aparecer.
+- **O aviso de buraco na cadência é o termômetro disso.** Ele chega ao chat de
+  operações e não depende de ninguém abrir a aba Actions.
 
 ### O `state.db` commitado — o que a medição disse
 
 A fase 5C deixou isto como "risco aberto: alguns GB por mês, o GitHub reclama
 em semanas". A revisão **mediu**, com o volume real da descoberta nova, e o
-susto era ~10× exagerado. **Veredito: o Actions serve como produção; observe o
-tamanho.**
+susto era ~10× exagerado. **Veredito: o tamanho do `state.db` nunca foi motivo
+para tirar a produção do Actions** — quem a tirou foi o agendador (fase 5I,
+`docs/runbooks/producao-windows.md`). Com o `schedule:` desligado, esta entrada
+praticamente parou: o que cresce agora é o banco LOCAL da máquina do dono, que
+não é commitado.
 
 | cenário | `candidates` | `price_log` | total |
 |---|---:|---:|---:|

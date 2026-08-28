@@ -120,6 +120,8 @@ def test_feed_dry_run_nao_escreve_no_banco_nem_chama_a_graph_api(
     db = StateDB(tmp_path / "s.db")
     assert db.conn.execute("SELECT COUNT(*) FROM posted").fetchone()[0] == 0
     assert db.conn.execute("SELECT COUNT(*) FROM price_log").fetchone()[0] == 0
+    # F2: o estoque de candidatas é gravado no run de verdade, nunca aqui.
+    assert db.conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 0
     db.close()
 
     # capa + 3 ofertas + fecho, gravados em .claude/previews/
@@ -390,3 +392,91 @@ def test_feed_capa_quando_nenhuma_passa(tmp_path, monkeypatch, rede, previews, c
     _fontes(monkeypatch, _ofertas(3))
     assert cli.main(["feed", "--dry-run", "--config", _cfg(tmp_path)]) == 0
     assert "NENHUMA DAS 3 PASSOU." in capsys.readouterr().out
+
+
+# --- Rodada de fechamento (F2): a fatia descoberta não é jogada fora ----------
+
+def test_feed_alimenta_o_estoque_de_candidatas(tmp_path, monkeypatch, rede, capsys):
+    """O comando LÊ o estoque e paga uma fatia nova de descoberta (8 chamadas à
+    Shopee) — e a fatia sumia quando o processo morria. Ela é gravada, como o
+    `pipeline.run` faz: a descoberta é do projeto, não do comando."""
+    _fontes(monkeypatch, _ofertas(3))
+    monkeypatch.setattr(cli, "send_photo_bytes", lambda *a, **k: {"ok": True})
+    assert cli.main(["feed", "--tipo", "flagrante", "--config", _cfg(tmp_path)]) == 0
+
+    db = StateDB(tmp_path / "s.db")
+    assert {r[0] for r in db.conn.execute(
+        "SELECT item_id FROM candidates WHERE source='shopee'")} == {"i1", "i2", "i3"}
+    db.close()
+
+
+def test_feed_nao_grava_estoque_de_fonte_sem_validade_de_candidata(
+        tmp_path, monkeypatch, rede, capsys):
+    """`<fonte>.candidate_max_age_days` ausente/0 = a fonte não usa o estoque
+    (o pool do ML é relido inteiro a cada run). Gravar as ofertas dela no
+    `candidates` só encheria o `state.db` que o Actions commita."""
+    _fontes(monkeypatch, _ofertas(2), nome="meli")
+    monkeypatch.setattr(cli, "send_photo_bytes", lambda *a, **k: {"ok": True})
+    assert cli.main(["feed", "--tipo", "flagrante", "--config", _cfg(tmp_path)]) == 0
+
+    db = StateDB(tmp_path / "s.db")
+    assert db.conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 0
+    db.close()
+
+
+# --- Rodada de fechamento (F3): o aviso do canal chega ao ops -----------------
+
+class _CanalQueAvisa:
+    """O canal do carrossel acumula avisos em `self.warnings` (o "polling cego"
+    da 5E, quando a Meta não devolve `status_code` do container). Quem os drena
+    é o laço do `pipeline.run` — que este comando não usa."""
+    name = "instagram_feed"
+    AVISO = "⚠️ instagram_carrossel: polling cego (a Meta não devolveu status)"
+
+    def __init__(self, ok: bool = True):
+        self.warnings: list[str] = []
+        self._ok = ok
+
+    def publish_carrossel(self, imagens, caption):
+        from afiliado.channels.base import PublishResult
+        self.warnings.append(self.AVISO)
+        return (PublishResult(True, "post123") if self._ok
+                else PublishResult(False, error="children inválido"))
+
+
+def _canal_e_ops(monkeypatch, canal):
+    ops: list[str] = []
+    monkeypatch.setattr(cli, "_canal_do_carrossel", lambda cfg, avisos: canal)
+    monkeypatch.setattr(cli, "send_text",
+                        lambda token, chat, texto, **kw: ops.append(texto) or True)
+    monkeypatch.setattr(
+        cli, "_cliente_http",
+        lambda: httpx.Client(transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, content=_product_png(),
+                                     headers={"content-type": "image/png"}))))
+    return ops
+
+
+def test_o_aviso_do_canal_do_carrossel_chega_ao_chat_de_operacoes(
+        tmp_path, monkeypatch, capsys):
+    _fontes(monkeypatch, _ofertas(3))
+    _liga_instagram(monkeypatch)
+    canal = _CanalQueAvisa()
+    ops = _canal_e_ops(monkeypatch, canal)
+
+    assert cli.main(["feed", "--config", _cfg_com_canal(tmp_path)]) == 0
+    assert any(_CanalQueAvisa.AVISO in texto for texto in ops)
+    assert canal.warnings == []            # drenado, não copiado
+
+
+def test_o_aviso_do_canal_sai_mesmo_quando_a_publicacao_falha(
+        tmp_path, monkeypatch, capsys):
+    """O aviso nasce DURANTE a publicação: se ele só saísse no caminho feliz,
+    o run que mais precisa de diagnóstico seria justamente o mudo."""
+    _fontes(monkeypatch, _ofertas(3))
+    _liga_instagram(monkeypatch)
+    ops = _canal_e_ops(monkeypatch, _CanalQueAvisa(ok=False))
+
+    assert cli.main(["feed", "--config", _cfg_com_canal(tmp_path)]) == 1
+    assert any(_CanalQueAvisa.AVISO in texto for texto in ops)
+    assert any("children inválido" in texto for texto in ops)

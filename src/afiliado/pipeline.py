@@ -159,11 +159,16 @@ class _Warner:
         return True
 
 
-def _drena_avisos(ch) -> list[str]:
+def drena_avisos(ch) -> list[str]:
     """Tira do canal os avisos que ele juntou publicando e esvazia a lista.
 
-    `warnings` é OPCIONAL (só o `instagram_story` tem hoje): canal sem a lista
-    — ou com outra coisa no lugar — não pode quebrar o run."""
+    `warnings` é OPCIONAL (o `instagram_story` e o carrossel do
+    `instagram_feed` têm hoje): canal sem a lista — ou com outra coisa no
+    lugar — não pode quebrar o run.
+
+    Pública desde a rodada de fechamento da 5D: o `afiliado feed` publica fora
+    deste laço e precisa do MESMO dreno, senão o aviso de polling cego do
+    carrossel morre no objeto do canal."""
     avisos = getattr(ch, "warnings", None)
     if not isinstance(avisos, list) or not avisos:
         return []
@@ -492,7 +497,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
             # GETs e 4 s de espera em todo story). Os avisos de MONTAGEM já
             # tinham caminho (`warnings_iniciais`); este não tinha nenhum e
             # morria dentro do canal. Sai pelo mesmo `warn`: uma vez por dia.
-            for aviso in _drena_avisos(ch):
+            for aviso in drena_avisos(ch):
                 warn(aviso)
             # Fase 5F (C2): um post que FOI ao ar conta para o teto do canal e
             # para o dedupe mesmo quando o canal reprovou o resultado (story

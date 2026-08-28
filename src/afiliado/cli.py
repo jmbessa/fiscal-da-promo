@@ -789,13 +789,22 @@ def _watchlist(cfg: dict):
         return None
 
 
-def _ofertas_do_feed(cfg: dict, db: StateDB, avisos: list[str]) -> tuple[list, dict]:
+def _ofertas_do_feed(cfg: dict, db: StateDB, avisos: list[str],
+                     dry_run: bool = False) -> tuple[list, dict]:
     """As ofertas candidatas à peça de feed, com a régua já carimbada.
 
     Estoque de candidatas (o que os runs do pipeline acumularam) UNIÃO a fatia
     que as fontes devolvem agora — a mesma união do `pipeline`, sem o laço de
     publicação. A fatia fresca sobrescreve o estoque: preço mais novo vence.
-    Fonte que falha vira aviso e não derruba o comando."""
+    Fonte que falha vira aviso e não derruba o comando.
+
+    A fatia fresca também ENTRA no estoque (rodada de fechamento, F2). Este
+    comando paga a mesma descoberta que o `run` paga — 8 chamadas à Shopee por
+    execução — e antes jogava fora o que ela achou: o que não coubesse no
+    carrossel de hoje sumia com o processo. A descoberta é do projeto, não do
+    comando. Em `--dry-run` nada é gravado (A10), e fonte sem
+    `candidate_max_age_days` não usa o estoque (o pool do ML é relido inteiro a
+    cada run) — gravá-la só engordaria o `state.db` que o Actions commita."""
     sources, avisos_fontes = _build_sources(cfg, db)
     avisos.extend(avisos_fontes)
     por_chave: dict[tuple[str, str], object] = {}
@@ -806,10 +815,16 @@ def _ofertas_do_feed(cfg: dict, db: StateDB, avisos: list[str]) -> tuple[list, d
                 por_chave[(o.source, o.item_id)] = o
     for src in sources:
         try:
-            for o in src.fetch_offers(cfg):
-                por_chave[(o.source, o.item_id)] = o
+            lote = list(src.fetch_offers(cfg))
         except Exception as exc:     # noqa: BLE001 - fonte isolada, como no pipeline
             _aviso(avisos, f"⚠️ fonte {src.name} falhou: {exc}")
+            continue
+        for o in lote:
+            por_chave[(o.source, o.item_id)] = o
+        idade = pipeline.candidate_max_age_days(cfg, src.name)
+        if lote and idade > 0 and not dry_run:
+            db.upsert_candidates(lote)
+            db.prune_candidates(idade, source=src.name)
     ofertas = pricing.enrich_offers(list(por_chave.values()), db, _watchlist(cfg), cfg)
     return ofertas, {s.name: s for s in sources}
 
@@ -947,7 +962,7 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
                   "(ver docs/runbooks/meta-setup.md)")
             return 1
 
-    ofertas, by_name = _ofertas_do_feed(cfg, db, avisos)
+    ofertas, by_name = _ofertas_do_feed(cfg, db, avisos, args.dry_run)
     candidatas = selection.filter_offers(ofertas, db, cfg)
     if not candidatas:
         print(f"ℹ️ carrossel: {len(ofertas)} oferta(s), nenhuma candidata — nada a montar")
@@ -985,9 +1000,20 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
         return 0
 
     resultado = canal.publish_carrossel(imagens, legenda)
+    # F3: há aviso que só EXISTE depois de publicar — o "polling cego" da 5E,
+    # quando a Meta não devolve `status_code` do container. Quem o drena é o
+    # laço do `pipeline.run`, que este comando não usa: sem isto ele morria
+    # dentro do objeto do canal. Aqui não há `_Warner` (não há run nem
+    # deduplicação por dia), então as linhas vão ao resumo que o comando já
+    # manda — e vão nos DOIS caminhos: o run que mais precisa de diagnóstico é
+    # justamente o que falhou.
+    avisos.extend(pipeline.drena_avisos(canal))
+    for aviso in avisos:
+        print(aviso)
     if not resultado.ok:
         print(f"❌ carrossel: publicação falhou — {resultado.error}")
-        _notifica_ops(cfg, f"❌ Carrossel do feed falhou: {resultado.error}")
+        _notifica_ops(cfg, "\n".join(
+            [f"❌ Carrossel do feed falhou: {resultado.error}", *avisos]))
         return 1
 
     # UMA linha no canal que conta para o teto (um carrossel é um post) e uma
@@ -1053,7 +1079,7 @@ def serie_ate_hoje(historico: list, offer, hoje) -> list:
 
 def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
     avisos: list[str] = []
-    ofertas, _ = _ofertas_do_feed(cfg, db, avisos)
+    ofertas, _ = _ofertas_do_feed(cfg, db, avisos, args.dry_run)
     achados = flagrante.encontra(ofertas, db, cfg)
     if not achados:
         print(f"ℹ️ nenhum flagrante entre {len(ofertas)} oferta(s) — "

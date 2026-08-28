@@ -1,4 +1,4 @@
-# O preço da Shopee: o que a API entrega, e o que ela nunca vai entregar
+# O preço da Shopee: o que a API entrega, e o que só o navegador entrega
 
 Investigação de **2026-08-28**, provocada por um caso real: o story publicou
 **R$ 689,99** e o dono abriu o anúncio e viu **R$ 611,80**.
@@ -17,7 +17,10 @@ O problema não é de exatidão, é de leitura: a Shopee põe os R$ 611,80 em
 vermelho grande e os R$ 689,99 em cinza pequeno. Quem clica bate o olho no
 número menor e conclui que o nosso está velho.
 
-## O preço com cupom NÃO é obtível — seis caminhos fechados
+## O preço com cupom não vem por SERVIDOR — seis caminhos fechados
+
+(Pelo navegador ele vem: ver "A sétima rota FUNCIONA", logo abaixo desta lista.
+Estas seis continuam valendo como o que NÃO adianta tentar por HTTP puro.)
 
 Cinco pela API de afiliados, todos medidos nesta data:
 
@@ -48,10 +51,47 @@ E a sexta, medida em **2026-08-28** antes de aceitar a decisão da fase 5N:
    tem **nenhum** campo de preço. Os "611" e "689" que aparecem no HTML são
    hashes de build e flags, não preços.
 
-**Conclusão: é estrutural.** Desconto de meio de pagamento e cupom acontece no
-checkout e não existe no catálogo de afiliados. Nenhuma engenharia nossa
-resolve isso; só a Shopee, expondo o campo. **Não tente de novo** — são seis
-rotas fechadas, e o rótulo não pode ser substituído por um número melhor.
+**Conclusão sobre a API: é estrutural.** Desconto de meio de pagamento e cupom
+acontece no checkout e não existe no catálogo de afiliados. Nenhuma das seis
+rotas acima resolve, e nenhuma vai resolver: só a Shopee, expondo o campo.
+
+## A sétima rota FUNCIONA — e ela derruba a conclusão acima
+
+As seis rotas eram todas de **servidor**. O dono insistiu na pergunta e estava
+certo: **num navegador de verdade, que executa o JavaScript, o preço aparece.**
+Medido em 2026-08-28 lendo o DOM da página do item 16892189215:
+
+```
+R$611,80
+ou R$689,99 sem cupom em outros métodos de pagamento
+Até R$40,00 de desconto no frete com cupom
+```
+
+Parseável, com o número E a condição. O bloco de preço chega VAZIO no primeiro
+render e leva de 10 a 14 s para preencher — exige laço de espera, não um
+`get` só.
+
+**O que isso muda no enquadramento**, e é a parte que importa: o rótulo nunca
+foi o problema. O nosso era a versão NEGATIVA do mesmo fato.
+
+| o que dizemos | como soa |
+|---|---|
+| "R$ 689,99 sem cupom" | limitação — afasta |
+| "R$ 611,80 no Pix com cupom" | oferta — atrai |
+
+Mesma honestidade, força oposta. E o segundo é literalmente a frase da página.
+
+**O que custa, e por que ainda não foi feito:**
+
+- as tarefas rodam em sessão NÃO interativa desde a fase 5I (para tirar a
+  janela da tela do dono) — sessão sem desktop não roda Chrome normal;
+- o navegador da máquina está **logado** como o dono. Carregar 60 páginas
+  automatizadas por dia de um perfil logado é o padrão que a Shopee caça, e
+  perder a conta encerra o lado Shopee inteiro — que hoje é 100% do que
+  publicamos. Perfil separado e deslogado é requisito, não detalhe;
+- ler `innerText` procurando "ou R$ X sem cupom" depende da redação da Shopee:
+  se ela mudar, tem de **falhar fechado** (publicar o preço da API, como hoje)
+  e nunca adivinhar.
 
 ## O que fazer, então
 

@@ -12,7 +12,7 @@ ESPERADO_MODO_A = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> sem cupom (50% OFF)
+De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> (50% OFF)
 
 Corre que acaba rápido 👇
 👉 https://shope.ee/abc123"""
@@ -23,7 +23,7 @@ ESPERADO_MODO_B = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-<b>R$ 249,99</b> sem cupom
+<b>R$ 249,99</b>
 ⭐ 4,8 · 12 mil vendidos
 
 Corre que acaba rápido 👇
@@ -33,7 +33,7 @@ ESPERADO_COM_SELO = """🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
-De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> sem cupom (50% OFF)
+De: <s>R$ 499,98</s> | Por: <b>R$ 249,99</b> (50% OFF)
 🏷️ Menor preço dos últimos 12 meses (verificado)
 
 Corre que acaba rápido 👇
@@ -83,7 +83,7 @@ def test_build_message_usa_a_nossa_referencia_nunca_o_de_do_vendedor():
     offer = make_offer_ref(2600, title=TITULO, price_original_cents=35000,
                            price_current_cents=1890)
     texto = _texto(offer)
-    assert "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> sem cupom (27% OFF)" in texto
+    assert "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)" in texto
     assert "R$ 350,00" not in texto
 
 
@@ -146,18 +146,21 @@ def test_build_message_obedece_ao_veredito_e_nao_recalcula():
     assert build_message(offer, _copy(), LINK, v) == ESPERADO_COM_SELO
 
 
-def test_build_message_da_shopee_diz_que_o_preco_e_sem_cupom():
-    """Fase 5K: arte e texto não podem discordar. A pill desenha "SEM CUPOM"
-    ao lado do preço; o texto do Telegram diz o mesmo, colado no mesmo número,
-    e o rótulo fica FORA do negrito (o herói é o preço)."""
+def test_build_message_acompanha_o_rotulo_da_shopee(rotulo):
+    """Fase 5K/5N: arte e texto não podem discordar. Enquanto a pill desenha
+    "SEM CUPOM", o texto do Telegram diz o mesmo, colado no mesmo número e FORA
+    do negrito (o herói é o preço); quando o rótulo está desligado, ele some
+    dos dois. O texto não decide nada — importa de `pricing`."""
+    sufixo = f" {rotulo}" if rotulo else ""
     modo_b = make_offer(title=TITULO, price_current_cents=68999)
-    assert "<b>R$ 689,99</b> sem cupom" in _texto(modo_b)
+    assert f"<b>R$ 689,99</b>{sufixo}\n" in _texto(modo_b)
     modo_a = make_offer_ref(79900, title=TITULO, price_current_cents=68999)
-    assert "Por: <b>R$ 689,99</b> sem cupom (13% OFF)" in _texto(modo_a)
+    assert f"Por: <b>R$ 689,99</b>{sufixo} (13% OFF)" in _texto(modo_a)
 
 
-def test_build_message_do_ml_nao_leva_o_rotulo():
-    """O preço do ML é o do anúncio do buy box — o mesmo que a página mostra."""
+def test_build_message_do_ml_nao_leva_o_rotulo(rotulo):
+    """O preço do ML é o do anúncio do buy box — o mesmo que a página mostra.
+    Vale nos dois estados do interruptor: a fixture roda os dois."""
     offer = make_offer(title=TITULO, source="meli", price_current_cents=68999)
     texto = _texto(offer)
     assert "<b>R$ 689,99</b>" in texto

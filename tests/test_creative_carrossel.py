@@ -80,13 +80,14 @@ def test_carrossel_plan_capa_ofertas_e_fecho_nessa_ordem():
     assert all(s["total"] == 3 for s in slides if s["tipo"] == "oferta")
 
 
-def test_o_slide_de_oferta_leva_o_sem_cupom_da_shopee():
+def test_o_slide_de_oferta_acompanha_o_rotulo_da_shopee(rotulo):
     """O slide de oferta É a arte de feed (`_feed_plan`/`_draw_feed_body`), então
     o rótulo da fase 5K viaja junto — e a legenda do álbum
-    (`cli.legenda_do_carrossel`) diz o mesmo, item a item."""
+    (`cli.legenda_do_carrossel`) diz o mesmo, item a item. Nos dois estados: o
+    slide nunca inventa nem esconde o que `pricing` decidiu."""
     slides = carrossel_plan([_post(1), _post(2, source="meli")], TITULO, SUBTITULO)
     ofertas = [s for s in slides if s["tipo"] == "oferta"]
-    assert [s["sem_cupom"] for s in ofertas] == ["SEM CUPOM", ""]
+    assert [s["sem_cupom"] for s in ofertas] == [rotulo.upper(), ""]
 
 
 def test_carrossel_nunca_passa_de_oito_slides():

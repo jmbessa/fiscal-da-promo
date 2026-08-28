@@ -5,11 +5,11 @@ Gera a arte de story (1080×1920) e de feed (1080×1350) a partir de um `Offer`
 e do `Verdict` já decidido (`pricing.verdict`): fundo navy com brilho
 radial, cabeçalho com mascote (ver `afiliado.brand`), card branco com a foto
 do produto (badge "-N%" só em modo A), título, pill de preço (referência
-riscada só em modo A; "SEM CUPOM" à direita do preço só na Shopee, fase 5K —
-ver `_pill_nota`), meta (vendas/fonte) e — quando o veredito traz o
-selo — o selo "menor preço verificado" com a mesma janela do texto. A arte
-NÃO recalcula modo nem selo: é o que faz Telegram, story e feed concordarem
-(C9). `story_plan`/`feed_plan` expõem o que será desenhado, para teste.
+riscada só em modo A; "SEM CUPOM" à direita do preço só na Shopee — fase 5K,
+DESLIGADO desde a 5N, ver `_pill_nota`), meta (vendas/fonte) e — quando o
+veredito traz o selo — o selo "menor preço verificado" com a mesma janela do
+texto. A arte NÃO recalcula modo nem selo: é o que faz Telegram, story e feed
+concordarem (C9). `story_plan`/`feed_plan` expõem o que será desenhado, para teste.
 `copy` faz parte da interface pública para uso futuro (o texto do post é
 montado à parte, em message.py) — esta fase não desenha `CopyParts` na arte.
 """
@@ -81,7 +81,8 @@ FEED_SELO_GAP = 24
 # Fase 5K — o corpo do rótulo "SEM CUPOM" dentro da pill do preço. Mesmo
 # tamanho da linha de meta de cada formato, porque é a mesma VOZ: mono, caixa
 # alta, letra miúda que qualifica o número (a sans é a voz humana — título,
-# preço, CTA; a mono é a voz do sistema — meta, selo, handle).
+# preço, CTA; a mono é a voz do sistema — meta, selo, handle). Continuam aqui
+# com o rótulo desligado (5N): eles medem o rótulo, não decidem se ele sai.
 STORY_NOTA_SIZE = 30
 FEED_NOTA_SIZE = 27
 
@@ -356,11 +357,17 @@ def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: 
 
 def _pill_nota(offer: Offer) -> str:
     """O rótulo à DIREITA do preço na pill: "SEM CUPOM" nas ofertas da Shopee,
-    "" no resto (fase 5K).
+    "" no resto (fase 5K) — e "" em tudo enquanto `pricing.MOSTRAR_SEM_CUPOM`
+    estiver desligado, que é o estado desde a fase 5N.
+
+    Com ele vazio o slot da direita não existe: `nota_bloco` é 0 e a pill volta
+    a medir preço + padding, exatamente como antes da 5K (verificado nos
+    previews da 5N). Nada aqui reserva espaço para um rótulo que não vem.
 
     Quem decide é `pricing.sem_cupom`, junto do resto da régua — aqui só a
     forma (caixa alta, como o selo). A colocação foi escolhida olhando os
-    previews de 2026-08-28, e as três alternativas caíram na imagem:
+    previews de 2026-08-28 e continua valendo para quem religar o rótulo; as
+    três alternativas caíram na imagem:
 
     - na LINHA DE META ("· sem cupom"): ela não tem guarda horizontal (fase
       5H) e passou a encostar na margem; no pior caso o texto era cortado pela
@@ -406,6 +413,8 @@ def _price_pill_dims(
 
     # Slot da direita: o rótulo "SEM CUPOM" (fase 5K). `nota_size == 0` é quem
     # não tem slot nenhum — o carrossel e o story usam os tamanhos do formato.
+    # Rótulo vazio (`_pill_nota` -> "", o padrão desde a 5N) tem o MESMO efeito
+    # de `nota_size == 0`: `nota_bloco` = 0 e a pill não guarda espaço nenhum.
     nota_text = _pill_nota(offer) if nota_size > 0 else ""
     nota_font = _font("mono", nota_size, 500) if nota_text else None
     nota_bbox = draw.textbbox((0, 0), nota_text, font=nota_font) if nota_text else (0, 0, 0, 0)

@@ -67,7 +67,7 @@ def test_caption_do_despacho_traz_preco_e_selo_do_veredito():
     post = make_post(verdict=v, price_ref_cents=2600, price_current_cents=1890)
     caption = StoryDispatchChannel._build_caption(post)
     assert "STORY PRONTO" in caption and "Tênis Nike SB" in caption
-    assert "De: R$ 26,00 | Por: R$ 18,90 sem cupom (27% OFF)" in caption
+    assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)" in caption
     assert "🏷️ Menor preço dos últimos 3 meses (verificado)" in caption
     neutra = StoryDispatchChannel._build_caption(make_post(price_current_cents=1890, rating=4.9))
     assert "R$ 18,90" in neutra and "⭐ 4,9" in neutra

@@ -17,7 +17,9 @@ O desconto deixou de ser um PORTÃO (decidir se publicamos) e virou um RÓTULO
 - o TEXTO (`price_line`): modo A com "De/Por", modo B com preço + prova
   social — sempre a partir de um `Verdict` já decidido;
 - o RÓTULO do preço (`sem_cupom`/`preco_publicado`, fase 5K): o número que
-  publicamos da Shopee é o preço SEM CUPOM, e a peça passa a dizê-lo.
+  publicamos da Shopee é o preço SEM CUPOM, e a peça podia dizê-lo. Ele existe
+  e está DESLIGADO desde a fase 5N — ver `MOSTRAR_SEM_CUPOM`, que é o único
+  lugar a mexer para religá-lo.
 
 `verdict` é o ÚNICO lugar que decide o que o post alega. message.py,
 creative.py, channels/instagram_feed.py, channels/story_dispatch.py e
@@ -56,6 +58,24 @@ PICO_MAX_DIAS = 2
 # A frase é verdadeira mesmo quando não há cupom nenhum disponível: o preço
 # sem cupom é aquele. Ela NÃO afirma que existe cupom.
 SEM_CUPOM = "sem cupom"
+
+# DESLIGADO em 2026-08-28, decisão do dono, com o motivo dele: "o que importa
+# para o usuário é se o produto está com o desconto, e ver isso atrai
+# automaticamente; produto classificado como 'sem cupom' não atrai em nada".
+#
+# O que ele custa e o que ele compra, para quem for reavaliar:
+#  - COMPRA: o seguidor que abre o anúncio e vê um preço MENOR entende por quê,
+#    em vez de concluir que o nosso número está velho (foi o que aconteceu).
+#  - CUSTA: é uma ressalva colada ao preço, e ela pesa mais justamente na peça
+#    mais fraca — a de modo B, que não tem desconto para mostrar.
+#
+# Desligá-lo NÃO torna o post desonesto: R$ 689,99 é o preço que qualquer um
+# paga sem cupom, e nunca afirmamos ser o menor jeito de pagar. É diferente do
+# caso do ML, onde publicávamos o preço de um vendedor que não vence o buy box
+# — lá o número não era o de ninguém.
+# O risco que fica: o seguidor pode achar o produto mais barato do que o post
+# diz. Erro para o lado que não frustra.
+MOSTRAR_SEM_CUPOM = False
 
 __all__ = ["Verdict", "NO_CLAIM", "verdict", "price_line", "price_line_html",
            "enrich_offers", "record_observations", "median_cents", "p25_cents",
@@ -191,13 +211,19 @@ def _social_proof(offer: Offer) -> str:
     return " · ".join(partes)
 
 
-def sem_cupom(offer: Offer) -> str:
-    """`SEM_CUPOM` para a Shopee, "" para o resto.
+def sem_cupom(offer: Offer, mostrar: bool | None = None) -> str:
+    """`SEM_CUPOM` para a Shopee, "" para o resto — e "" para todos enquanto
+    `MOSTRAR_SEM_CUPOM` estiver desligado (ver o porquê lá em cima).
 
     SÓ a Shopee: o preço que publicamos do Mercado Livre é o do anúncio que
     vence o buy box, que é exatamente o que a página mostra — rotular lá seria
     ruído sobre um preço que ninguém vai contestar. Este é o ÚNICO lugar que
-    decide isso; arte (`creative`) e textos importam daqui."""
+    decide isso; arte (`creative`) e textos importam daqui.
+
+    `mostrar` existe para o teste exercitar os DOIS estados sem mexer no
+    módulo: quem chama em produção não passa nada."""
+    if not (MOSTRAR_SEM_CUPOM if mostrar is None else mostrar):
+        return ""
     return SEM_CUPOM if offer.source == "shopee" else ""
 
 
@@ -209,9 +235,9 @@ def _com_rotulo(offer: Offer, preco: str) -> str:
 
 
 def preco_publicado(offer: Offer) -> str:
-    """O preço atual como ele vai ao público: o número e, na Shopee, o rótulo
-    que diz que ele é o preço sem cupom. É o que a legenda do carrossel usa —
-    e é por existir aqui que ela não reimplementa a regra."""
+    """O preço atual como ele vai ao público: o número e — enquanto o rótulo
+    estiver ligado — o "sem cupom" das ofertas da Shopee. É o que a legenda do
+    carrossel usa, e é por existir aqui que ela não reimplementa a regra."""
     return _com_rotulo(offer, format_brl(offer.price_current_cents))
 
 
@@ -219,13 +245,14 @@ def price_line(offer: Offer, verdict: Verdict) -> tuple[str, str]:
     """Devolve (linha_de_preco, linha_de_prova_social) em texto puro, a
     partir do veredito JÁ decidido.
 
-    Modo A:  ("De: R$ 26,00 | Por: R$ 18,90 sem cupom (27% OFF)", "")
-    Modo B:  ("R$ 33,90 sem cupom", "⭐ 4,9 · 30 mil vendidos")
+    Modo A:  ("De: R$ 26,00 | Por: R$ 18,90 (27% OFF)", "")
+    Modo B:  ("R$ 33,90", "⭐ 4,9 · 30 mil vendidos")
     A prova social só inclui o que é conhecido (rating > 0, sales > 0).
 
-    O rótulo cola no preço ATUAL (nunca na referência riscada, que é uma
-    mediana nossa e não um preço de checkout) e some fora da Shopee — a mesma
-    colocação que a pill da arte usa, para que arte e texto não discordem."""
+    Com `MOSTRAR_SEM_CUPOM` ligado sai "R$ 18,90 sem cupom": o rótulo cola no
+    preço ATUAL (nunca na referência riscada, que é uma mediana nossa e não um
+    preço de checkout) e some fora da Shopee — a mesma colocação que a pill da
+    arte usa, para que arte e texto não discordem."""
     if verdict.mode == "A":
         return (f"De: {format_brl(offer.price_ref_cents)} | "
                 f"Por: {preco_publicado(offer)} ({verdict.discount_pct}% OFF)", "")
@@ -235,9 +262,10 @@ def price_line(offer: Offer, verdict: Verdict) -> tuple[str, str]:
 def price_line_html(offer: Offer, verdict: Verdict) -> tuple[str, str]:
     """`price_line` com a marcação HTML do Telegram — mesmo veredito.
 
-    Modo A: ("De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> sem cupom (27% OFF)", "")
-    Modo B: ("<b>R$ 33,90</b> sem cupom", "⭐ 4,9 · 30 mil vendidos") — o preço
-    é o herói, e o rótulo fica FORA do negrito.
+    Modo A: ("De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)", "")
+    Modo B: ("<b>R$ 33,90</b>", "⭐ 4,9 · 30 mil vendidos")
+    Com o rótulo ligado ele entra depois do preço e FORA do negrito — o herói
+    do bloco é o número.
     `format_brl` não produz caractere especial de HTML: nada precisa de escape."""
     preco = _com_rotulo(offer, f"<b>{format_brl(offer.price_current_cents)}</b>")
     if verdict.mode == "A":

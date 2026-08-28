@@ -707,11 +707,12 @@ def test_a_legenda_e_a_capa_so_falam_das_ofertas_que_entraram(
     db.close()
 
 
-def test_legenda_do_carrossel_diz_sem_cupom_so_nos_itens_da_shopee():
-    """Fase 5K: cada slide do carrossel é a arte de feed, e ela desenha
-    "SEM CUPOM" na pill dos itens da Shopee. A legenda é pública e lista o
-    preço item a item — se ela calasse, a peça discordaria de si mesma.
-    O rótulo vem de `pricing.preco_publicado`; a legenda não decide nada."""
+def test_legenda_do_carrossel_acompanha_o_rotulo_dos_itens_da_shopee(rotulo):
+    """Fase 5K/5N: cada slide do carrossel é a arte de feed, e a legenda é
+    pública e lista o preço item a item — se as duas discordassem, a peça
+    discordaria de si mesma. Com o rótulo ligado, ele sai SÓ no item da Shopee;
+    desligado, não sai em nenhum. O rótulo vem de `pricing.preco_publicado`;
+    a legenda não decide nada."""
     from afiliado.models import CopyParts, Post
 
     copy = CopyParts(headline="h", description="d", cta="c")
@@ -724,9 +725,9 @@ def test_legenda_do_carrossel_diz_sem_cupom_so_nos_itens_da_shopee():
              copy=copy, affiliate_link="https://mercadolivre.com/b"),
     ]
     legenda = cli.legenda_do_carrossel(posts, "TITULO", "sub")
-    assert "1. Lencol Queen — R$ 689,99 sem cupom" in legenda
+    assert f"1. Lencol Queen — R$ 689,99 {rotulo}".rstrip() in legenda
     assert "2. Fone Bluetooth — R$ 199,00" in legenda
-    assert legenda.count("sem cupom") == 1
+    assert legenda.count("sem cupom") == (1 if rotulo else 0)
 
 
 def test_carrossel_que_nem_chega_a_existir_avisa_o_ops(tmp_path, monkeypatch, capsys):

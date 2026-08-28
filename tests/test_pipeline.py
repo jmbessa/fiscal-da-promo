@@ -1172,7 +1172,7 @@ def test_run_watchlist_vencida_mantem_referencias_e_pisos(tmp_path, monkeypatch)
         db.close()
         textos[nome] = ch.sent[0].message_text
     assert textos["fresca"] == textos["vencida"]
-    assert "De: <s>R$ 30,00</s> | Por: <b>R$ 21,90</b> sem cupom (27% OFF)" in textos["vencida"]
+    assert "De: <s>R$ 30,00</s> | Por: <b>R$ 21,90</b> (27% OFF)" in textos["vencida"]
     assert "🏷️ Menor preço dos últimos 6 meses (verificado)" in textos["vencida"]
 
 

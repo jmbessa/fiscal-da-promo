@@ -166,7 +166,7 @@ def test_cenario_c_54_dias_caros_36_baratos_e_modo_b(tmp_path):
     # topo do quartil barato, não abaixo dele -> modo B (com `<=` seria A).
     v, out = _veredito_apos_historico(tmp_path, [6890] * 54 + [2600] * 35, 2600)
     assert v == MODO_B
-    assert pricing.price_line(out, pricing.verdict(out, 10)) == ("R$ 26,00 sem cupom", "")
+    assert pricing.price_line(out, pricing.verdict(out, 10)) == ("R$ 26,00", "")
 
 
 def test_cenario_d_docstring_89_dias_baratos_um_caro_e_modo_b(tmp_path):
@@ -193,7 +193,7 @@ def test_promocao_genuina_10pct_dos_dias_a_menos_20_e_modo_a(tmp_path):
     assert v == ("A", 20)
     veredito = pricing.verdict(out, 10)
     assert pricing.price_line(out, veredito) == (
-        "De: R$ 50,00 | Por: R$ 40,00 sem cupom (20% OFF)", "")
+        "De: R$ 50,00 | Por: R$ 40,00 (20% OFF)", "")
     # hoje é a mínima dos 30 dias observados: o selo diz exatamente isso
     assert veredito.seal == "🏷️ Menor preço dos últimos 30 dias (verificado)"
 
@@ -257,35 +257,58 @@ def test_selo_e_modo_a_convivem():
         "A", 27, "🏷️ Menor preço dos últimos 3 meses (verificado)", 90)
 
 
-# -- "sem cupom" (fase 5K) -----------------------------------------------------
+# -- "sem cupom" (rótulo da fase 5K, desligado na 5N) --------------------------
+#
+# A REGRA tem dois estados e os testes afirmam os dois: LIGADO, só a Shopee
+# leva o rótulo; DESLIGADO (o padrão desde a fase 5N, decisão do dono), ninguém
+# leva — nem a Shopee. Ver a fixture `rotulo` em `tests/conftest.py`.
+# O que a peça publica HOJE está nos testes de `price_line`/`price_line_html`
+# logo abaixo, que mostram o texto inteiro sem rótulo nenhum.
 
-def test_sem_cupom_e_so_da_shopee():
+
+def test_sem_cupom_e_so_da_shopee_e_so_quando_ligado():
     """O rótulo qualifica o preço da Shopee, onde o desconto de Pix+cupom é de
     CHECKOUT e nenhuma superfície da API o expõe (`docs/runbooks/shopee-preco.md`).
-    O preço do ML é o do anúncio do buy box — o mesmo que a página mostra."""
-    assert pricing.sem_cupom(make_offer()) == "sem cupom"
+    O preço do ML é o do anúncio do buy box — o mesmo que a página mostra.
+
+    `mostrar=` exercita os dois estados sem tocar no módulo; é o único ponto de
+    todo o programa que decide isto."""
+    assert pricing.sem_cupom(make_offer(), mostrar=True) == "sem cupom"
+    assert pricing.sem_cupom(make_offer(source="meli"), mostrar=True) == ""
+    assert pricing.sem_cupom(make_offer(), mostrar=False) == ""
+    assert pricing.sem_cupom(make_offer(source="meli"), mostrar=False) == ""
+
+
+def test_sem_cupom_sem_parametro_obedece_a_constante(rotulo):
+    """Quem chama em produção não passa `mostrar` — e recebe o que o
+    interruptor mandar. É este teste que liga o parâmetro à constante."""
+    assert pricing.sem_cupom(make_offer()) == rotulo
     assert pricing.sem_cupom(make_offer(source="meli")) == ""
 
 
-def test_preco_publicado_cola_o_rotulo_no_numero():
-    assert pricing.preco_publicado(make_offer(price_current_cents=68999)) == (
-        "R$ 689,99 sem cupom")
+def test_preco_publicado_cola_o_rotulo_no_numero(rotulo):
+    shopee = pricing.preco_publicado(make_offer(price_current_cents=68999))
+    assert shopee == f"R$ 689,99 {rotulo}".rstrip()
     assert pricing.preco_publicado(
         make_offer(price_current_cents=68999, source="meli")) == "R$ 689,99"
 
 
-def test_price_line_da_shopee_diz_que_o_preco_e_sem_cupom():
+def test_price_line_da_shopee_leva_o_rotulo_so_com_ele_ligado(rotulo):
     """O caso real de 2026-08-28: o story publicou R$ 689,99 e o dono viu
     R$ 611,80 no anúncio — a página cobra 611,80 no Pix COM cupom e 689,99 sem.
-    O rótulo cola no preço, nos dois modos, como na arte."""
+    Ligado, o rótulo cola no preço nos dois modos, como na arte; desligado,
+    some dos dois — e o número publicado não muda."""
+    sufixo = f" {rotulo}" if rotulo else ""
     modo_a = make_offer_ref(79900, price_current_cents=68999)
     assert pricing.price_line(modo_a, pricing.verdict(modo_a, 10))[0] == (
-        "De: R$ 799,00 | Por: R$ 689,99 sem cupom (13% OFF)")
+        f"De: R$ 799,00 | Por: R$ 689,99{sufixo} (13% OFF)")
     modo_b = make_offer(price_current_cents=68999, rating=4.9, sales=45950)
-    assert pricing.price_line(modo_b, NO_CLAIM)[0] == "R$ 689,99 sem cupom"
+    assert pricing.price_line(modo_b, NO_CLAIM)[0] == f"R$ 689,99{sufixo}"
 
 
-def test_price_line_do_ml_nao_leva_rotulo():
+def test_price_line_do_ml_nao_leva_rotulo(rotulo):
+    """Nem com o interruptor ligado: a fixture roda os dois estados e o texto
+    do ML é o mesmo nos dois."""
     modo_a = make_offer_ref(79900, price_current_cents=68999, source="meli")
     assert pricing.price_line(modo_a, pricing.verdict(modo_a, 10))[0] == (
         "De: R$ 799,00 | Por: R$ 689,99 (13% OFF)")
@@ -293,14 +316,16 @@ def test_price_line_do_ml_nao_leva_rotulo():
     assert pricing.price_line(modo_b, NO_CLAIM)[0] == "R$ 689,99"
 
 
-def test_price_line_html_poe_o_rotulo_fora_do_negrito():
+def test_price_line_html_poe_o_rotulo_fora_do_negrito(rotulo):
     """O negrito é do NÚMERO: o rótulo é letra miúda e não pode disputar com o
-    preço, que é o herói do bloco."""
+    preço, que é o herói do bloco. Desligado, o `<b>` fica exatamente onde
+    estava — tirar o rótulo não mexe na marcação."""
+    sufixo = f" {rotulo}" if rotulo else ""
     modo_b = make_offer(price_current_cents=68999)
-    assert pricing.price_line_html(modo_b, NO_CLAIM)[0] == "<b>R$ 689,99</b> sem cupom"
+    assert pricing.price_line_html(modo_b, NO_CLAIM)[0] == f"<b>R$ 689,99</b>{sufixo}"
     modo_a = make_offer_ref(79900, price_current_cents=68999)
     assert pricing.price_line_html(modo_a, pricing.verdict(modo_a, 10))[0] == (
-        "De: <s>R$ 799,00</s> | Por: <b>R$ 689,99</b> sem cupom (13% OFF)")
+        f"De: <s>R$ 799,00</s> | Por: <b>R$ 689,99</b>{sufixo} (13% OFF)")
 
 
 # -- price_line --------------------------------------------------------------
@@ -308,7 +333,7 @@ def test_price_line_html_poe_o_rotulo_fora_do_negrito():
 def test_price_line_modo_a_desconto_verificado():
     offer = make_offer_ref(2600, price_current_cents=1890)
     preco, prova = pricing.price_line(offer, pricing.verdict(offer, 10))
-    assert preco == "De: R$ 26,00 | Por: R$ 18,90 sem cupom (27% OFF)"
+    assert preco == "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)"
     assert prova == ""
 
 
@@ -323,7 +348,7 @@ def test_price_line_modo_a_ignora_o_de_do_vendedor():
 def test_price_line_modo_b_sem_referencia():
     offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)
     preco, prova = pricing.price_line(offer, pricing.verdict(offer, 10))
-    assert preco == "R$ 33,90 sem cupom"
+    assert preco == "R$ 33,90"
     assert prova == "⭐ 4,9 · 30 mil vendidos"
 
 
@@ -331,14 +356,14 @@ def test_price_line_modo_b_quando_o_desconto_fica_abaixo_do_minimo():
     # 2600 -> 2500 = 3% verificado, abaixo do mínimo de 10: não alega desconto.
     offer = make_offer_ref(2600, price_current_cents=2500, rating=0.0, sales=850)
     preco, prova = pricing.price_line(offer, pricing.verdict(offer, 10))
-    assert preco == "R$ 25,00 sem cupom"
+    assert preco == "R$ 25,00"
     assert "OFF" not in preco
     assert prova == "850 vendidos"
 
 
 def test_price_line_modo_b_sem_prova_social_conhecida():
     offer = make_offer(price_current_cents=3390, rating=0.0, sales=0)
-    assert pricing.price_line(offer, NO_CLAIM) == ("R$ 33,90 sem cupom", "")
+    assert pricing.price_line(offer, NO_CLAIM) == ("R$ 33,90", "")
 
 
 def test_price_line_modo_b_so_com_nota():
@@ -349,9 +374,9 @@ def test_price_line_modo_b_so_com_nota():
 def test_price_line_obedece_ao_veredito_e_nao_recalcula():
     # A oferta tem 27% verificável, mas quem manda é o veredito recebido.
     offer = make_offer_ref(2600, price_current_cents=1890)
-    assert pricing.price_line(offer, NO_CLAIM)[0] == "R$ 18,90 sem cupom"
+    assert pricing.price_line(offer, NO_CLAIM)[0] == "R$ 18,90"
     assert pricing.price_line(offer, Verdict("A", 27, ""))[0] == (
-        "De: R$ 26,00 | Por: R$ 18,90 sem cupom (27% OFF)")
+        "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)")
 
 
 # -- price_line_html (Telegram) ------------------------------------------------
@@ -359,13 +384,13 @@ def test_price_line_obedece_ao_veredito_e_nao_recalcula():
 def test_price_line_html_modo_a_risca_a_referencia_e_destaca_o_preco():
     offer = make_offer_ref(2600, price_current_cents=1890)
     assert pricing.price_line_html(offer, pricing.verdict(offer, 10)) == (
-        "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> sem cupom (27% OFF)", "")
+        "De: <s>R$ 26,00</s> | Por: <b>R$ 18,90</b> (27% OFF)", "")
 
 
 def test_price_line_html_modo_b_o_preco_e_o_heroi_e_a_prova_social_e_texto_puro():
     offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)
     assert pricing.price_line_html(offer, NO_CLAIM) == (
-        "<b>R$ 33,90</b> sem cupom", "⭐ 4,9 · 30 mil vendidos")
+        "<b>R$ 33,90</b>", "⭐ 4,9 · 30 mil vendidos")
 
 
 def test_price_line_html_toma_a_mesma_decisao_que_price_line():

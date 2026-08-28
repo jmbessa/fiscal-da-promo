@@ -1,74 +1,60 @@
-# Fase 5C (M8): o Actions é a PRODUÇÃO. Decisão do dono — não depender de uma
-# VPS que a Oracle Always Free recolhe quando fica ociosa. A VPS vira opcional,
-# para quem quiser a cadência de 5 min (ver docs/runbooks/vps-setup.md).
+# ESTE WORKFLOW NÃO É MAIS A PRODUÇÃO (fase 5I, 2026-08-28).
 #
-# Cadência: DE HORA EM HORA entre 08:07 e 23:07 BRT = 16 jobs/dia. Com o ritmo
-# da fase 5A (`pacing_budget`), cada run publica só o orçamento acumulado desde
-# o anterior: com 60/dia e esta janela o maior salto entre dois runs é 4, e
-# `--posts-per-run 5` o cobre com uma vaga de folga para recuperar um disparo
-# perdido (atraso de cron é rotina no Actions).
+# Quem publica agora é a MÁQUINA DO DONO, pelo Agendador de Tarefas do Windows
+# (deploy/agendar-windows.ps1; runbook em docs/runbooks/producao-windows.md).
+# Aqui sobrou só o `workflow_dispatch`: FALLBACK MANUAL, para o dia em que a
+# máquina cair. O `schedule:` foi REMOVIDO — não comentado, removido.
 #
-# O conteúdo de FEED (fase 5D) tem cadência própria — um carrossel publicado e
-# um flagrante despachado ao chat de operações POR DIA. Quem garante o "por
-# dia" é o CÓDIGO (teto do `instagram_carrossel` + `day_flags` do flagrante),
-# não o cron: o passo "Conteúdo do feed" roda em TODOS os disparos e sai calado
-# nos que já gastaram a cota (fase 5G, G2). Ele não pode derrubar o commit de
-# estado (`continue-on-error`).
+# Os três fatos MEDIDOS que forçaram a mudança:
 #
-# Custo — a conta REFEITA (o GitHub cobra cada JOB arredondado para o minuto
-# SEGUINTE; runner Linux = 1×; plano grátis de repo privado = 2.000 min/mês):
+#  1. O agendador do GitHub não entrega. Consulta à API do GitHub em
+#     2026-08-28: em ~25 h de elegibilidade na branch padrão e ~16 disparos
+#     esperados, este workflow teve UM run em toda a história do repositório
+#     (`33115325845`, 2026-08-27T20:51Z) — e ele saiu 51 min atrasado. O
+#     `tests.yml` rodava normalmente no mesmo período: não é billing nem
+#     permissão, é o agendador. O GitHub documenta que o evento `schedule`
+#     atrasa em carga alta e que disparo atrasado além do intervalo é
+#     DESCARTADO. A fase 5G moveu o cron do minuto 0 para o 7 como mitigação —
+#     mitigação DOCUMENTADA, nunca COMPROVADA.
+#  2. Story com figurinha de link não pode rodar aqui. IP de datacenter que
+#     muda a cada execução é o padrão que mais dispara `challenge_required`, e
+#     não existe figurinha pela API oficial (a Graph API não suporta sticker em
+#     story). O próprio código recusa: `AVISO_STORY_LINK_FORA_DO_RUN`.
+#  3. A máquina do dono é um host viável, e isso foi MEDIDO em 2026-08-28:
+#     48,7 h de uptime contínuo, plano de energia "Ultimate Performance" e
+#     suspensão em corrente alternada = 0 (nunca suspende).
 #
-#   jobs/dia │ B=2 min/job │ B=3 min/job │ B=4 min/job   (× 31 dias)
-#   ─────────┼─────────────┼─────────────┼──────────────
-#     32     │ 1.984 (99%) │ 2.976 (149%)│ 3.968 (198%)   ← a cadência da 5C
-#     18     │ 1.116 (56%) │ 1.674 (84%) │ 2.232 (112%)
-#     16     │   992 (50%) │ 1.488 (74%) │ 1.984 (99%)    ← esta
+# POSTO DUPLO — por que o gatilho automático teve de MORRER, e não só "ficar de
+# reserva": os dois hosts têm `state.db` SEPARADOS, e é o `state.db` que guarda
+# o dedupe. Com a máquina publicando, um disparo agendado daqui publicaria a
+# MESMA oferta uma segunda vez.
 #
-# A tabela parte de "todos os disparos acontecem". Isso é um
-# teto, não uma previsão: medido em 2026-08-28, o agendador entregou 1 de ~16
-# disparos em ~25 h, e o único saiu 51 min atrasado. Enquanto a taxa real não
-# for reconstruída em regime, o consumo tende a ficar MUITO abaixo destas
-# linhas — use a célula como limite de segurança, nunca como estimativa de
-# fatura.
+# A ORDEM DA VIRADA (está no runbook, e importa): primeiro criar as tarefas e
+# ver um run REAL acontecer; só então desligar este `schedule:`. Invertido,
+# fica um intervalo sem ninguém publicando.
 #
-# A duração do job NUNCA foi medida (o "1,5 min" da 5C era chute), então a
-# cadência tem de caber no pior caso plausível: 16 jobs/dia é a única que
-# sobrevive até a 4 min/job e ainda deixa ~500 min/mês para o `tests.yml`.
-# O passo "Duração do job" imprime a primeira medição real — com ela no
-# runbook, dá para subir a cadência com número, não com esperança.
+# QUEM VIGIA A MÁQUINA agora: o aviso de cadência da 5G
+# (`schedule.max_gap_minutes`, hoje 40 min para a cadência de 15) no resumo que
+# já vai ao chat de operações, e o `afiliado doctor`, que passou a conferir se
+# as duas tarefas do Agendador existem e estão habilitadas.
 #
-# Tamanho do state.db commitado — MEDIDO (a 5C tinha estimado 10× a mais).
-# Veredito: **o Actions serve como produção; observe o tamanho.** Com o volume
-# real da descoberta, o arquivo em regime fica em ~78 MB a 32 runs/dia (29,8 de
-# `candidates` + 47,7 de `price_log`) e ~174 MB na cadência de 5 min da VPS.
-# Nesta cadência de 16 jobs/dia a entrada é metade da medida: espere ~40 MB
-# (extrapolação, não medição). E o histórico do git cresce só
-# **0,375 MB por commit** — o git não guarda o binário inteiro a cada vez —,
-# ou seja ~6 MB/dia ≈ 0,18 GB/mês: o limite de 5 GB do GitHub fica a mais de
-# dois anos, não a semanas. O motivo real para encolher é checkout/RAM, não o
-# limite do GitHub. Alavancas, ranqueadas pelo efeito MEDIDO — documentadas, e
-# nenhuma aplicada: (1) `selection.ref_window_days` 90 → 30 tira ~32 MB, mas 90
-# dias é o que sustenta a régua honesta; (2) `shopee.candidate_max_age_days`
-# 3 → 1 tira ~20 MB; (3) reescrever o histórico do state.db (branch órfã,
-# force-push) ou passar o estado para a VPS, onde ele nem é commitado.
-# Acompanhe em Settings → Repository. Contas em docs/runbooks/vps-setup.md.
+# USAR O FALLBACK: aba Actions → publish → Run workflow (com opção dry-run).
+# Ele publica de verdade e COMMITA o `data/state.db` do runner — que diverge do
+# banco da máquina do dono. Antes de devolver a produção à máquina, leia
+# "Como voltar para o Actions" em docs/runbooks/producao-windows.md.
+# `--posts-per-run 5` continua aqui de propósito: um disparo de emergência
+# precisa publicar o orçamento ACUMULADO, não a fatia de 15 min da máquina.
+#
+# Tamanho do state.db commitado — MEDIDO na 5G e ainda válido para os disparos
+# manuais. Com o volume real da descoberta, o arquivo em regime ficava em
+# ~78 MB a 32 runs/dia (29,8 de `candidates` + 47,7 de `price_log`) e ~174 MB
+# na cadência de 5 min da VPS; e o histórico do git cresce só
+# **0,375 MB por commit** — o git não guarda o binário inteiro a cada vez.
+# Como o agendamento morreu, esta entrada praticamente parou: o que cresce
+# agora é o banco LOCAL da máquina do dono, que não é commitado. Alavancas e
+# contas em docs/runbooks/vps-setup.md.
 name: publish
 on:
-  schedule:
-    # MINUTO 7, e não 0 (fase 5G). Medido na API do GitHub em 2026-08-28: em
-    # ~25 h de elegibilidade na branch padrão e ~16 disparos esperados, este
-    # workflow teve UM run — e ele saiu 51 min atrasado. O `tests.yml` rodava
-    # normalmente no mesmo período, então não é billing nem permissão: é o
-    # agendador. O GitHub documenta que o evento `schedule` atrasa em carga
-    # alta, que o COMEÇO DE CADA HORA é o pico e que disparo atrasado além do
-    # intervalo é DESCARTADO — minuto 0 é o pior slot possível.
-    # O 7 tem teto: `schedule.window_end` é 23:15, e um minuto ≥ 15 jogaria o
-    # último disparo para fora da janela do ritmo (`pacing_budget` = 0, último
-    # run do dia sem publicar nada). Travado em tests/test_workflow_yaml.py.
-    # Voltaram a ser DUAS entradas: o corte em três só existia para o `if:` do
-    # passo do feed, que morreu junto com a dependência de um disparo único.
-    - cron: "7 11-23 * * *"      # 08:07–20:07 BRT
-    - cron: "7 0-2 * * *"        # 21:07–23:07 BRT
   workflow_dispatch:
     inputs:
       dry_run:
@@ -136,6 +122,13 @@ jobs:
       # Fase 5D (F1): o `afiliado feed` existia e ninguém o executava — o
       # carrossel do termômetro era gesto manual do dono. Ele é DIÁRIO (o teto
       # de `channels.instagram_carrossel` é 1/dia).
+      #
+      # Fase 5I: este passo era o ÚNICO lugar que chamava `afiliado feed`.
+      # Desligar o `schedule:` sem mais nada mataria o carrossel e o flagrante
+      # em silêncio — por isso as duas peças ganharam tarefa PRÓPRIA no
+      # Agendador do Windows (FiscalDaPromo-Feed e FiscalDaPromo-Flagrante, em
+      # deploy/agendar-windows.ps1). Aqui elas ficam por completude do fallback
+      # manual: um disparo à mão continua entregando o dia inteiro.
       #
       # Fase 5G (G2): o passo era `if: github.event.schedule == '0 11 * * *'`.
       # Com ~15 dos 16 disparos DESCARTADOS pelo agendador (medição no
@@ -234,10 +227,12 @@ jobs:
         # "~1,5 min" chutado. Isto imprime a medição real e a joga no resumo do
         # run (aba Actions → o run → Summary). "Set up job" e "Complete job"
         # ficam fora dos passos e somam ~15 s: a estimativa já os inclui.
-        # Registre a PRIMEIRA medição em docs/runbooks/vps-setup.md.
+        # Sem `schedule:` a cota mensal deixou de ser um risco (só há disparo à
+        # mão), mas o número continua valendo: é ele que diz quanto custaria
+        # RELIGAR o agendamento, se um dia alguém quiser.
+        # Registre a PRIMEIRA medição em docs/runbooks/producao-windows.md.
         run: |
           segundos=$(( $(date +%s) - JOB_START ))
           cobrados=$(( (segundos + 15 + 59) / 60 ))
-          mensal=$(( cobrados * 16 * 31 ))
           echo "duração dos passos: ${segundos}s · ~${cobrados} min cobrados"
-          echo "job: ${segundos}s de passos → ~${cobrados} min cobrados · ${mensal} min/mês a 16 jobs/dia (cota 2000)" >> "$GITHUB_STEP_SUMMARY"
+          echo "job: ${segundos}s de passos → ~${cobrados} min cobrados (fallback manual; a produção roda na máquina do dono)" >> "$GITHUB_STEP_SUMMARY"

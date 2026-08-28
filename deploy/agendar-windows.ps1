@@ -17,10 +17,21 @@
          uptime contínuo, plano de energia "Ultimate Performance" e suspensão
          em corrente alternada = 0 (nunca suspende).
 
-    Duas tarefas, as duas idempotentes (rodar de novo ATUALIZA, não duplica):
+    Quatro tarefas, todas idempotentes (rodar de novo ATUALIZA, não duplica):
 
-      FiscalDaPromo-Run      -> afiliado run --posts-per-run N
-      FiscalDaPromo-Stories  -> afiliado stories --posts N
+      FiscalDaPromo-Run        -> afiliado run --posts-per-run N
+      FiscalDaPromo-Stories    -> afiliado stories --posts N
+      FiscalDaPromo-Feed       -> afiliado feed --tipo termometro
+      FiscalDaPromo-Flagrante  -> afiliado feed --tipo flagrante
+
+    As duas de FEED existem porque o único lugar que chamava `afiliado feed`
+    era o passo "Conteúdo do feed" do publish.yml — desligar o `schedule:` de
+    lá sem isto mataria o carrossel do termômetro e o flagrante EM SILÊNCIO.
+    Elas são duas, e não um comando só encadeado por `cmd /c`, para que uma
+    falha não derrube a outra e para que o `doctor` consiga nomear qual das
+    peças ficou sem agendador. Quem garante "uma por dia" é o CÓDIGO
+    (`_carrossel_pode_sair` e `_flagrante_pode_sair`), não a cadência: um
+    disparo que falha é repetido pelo seguinte e a peça ainda sai no MESMO dia.
 
     Nenhuma credencial é gravada aqui. As tarefas rodam como o usuário
     interativo (`LogonType Interactive`), que é o único modo que o Agendador
@@ -55,16 +66,26 @@ param(
     [string]$AfiliadoExe = "",
     [string]$TarefaRun = "FiscalDaPromo-Run",
     [string]$TarefaStories = "FiscalDaPromo-Stories",
+    [string]$TarefaFeed = "FiscalDaPromo-Feed",
+    [string]$TarefaFlagrante = "FiscalDaPromo-Flagrante",
     # A cadência. 60 ofertas/dia distribuídas em ~15 h pedem uma a cada ~15 min,
     # e é isso que o `pacing_budget` já assume (config.yaml, channels.telegram).
     # Ao mudar este número, mude `schedule.max_gap_minutes` no config.yaml e
     # $PostsPorRun aqui — tests/test_agendador_windows.py trava os três juntos.
     [int]$CadenciaMinutos = 15,
-    # Minuto de início IRREGULAR, e diferente entre as duas tarefas: 60 posts no
+    # As peças de FEED são UMA POR DIA por construção (o teto vive no código).
+    # A cadência aqui é só a chance de RETENTATIVA: um disparo que falha é
+    # repetido pelo seguinte e a peça ainda sai no mesmo dia. 2 h dá oito
+    # chances e custa ~1-2 s de startup do Python nas que já acharam a cota
+    # gasta — elas saem antes de qualquer rede.
+    [int]$CadenciaFeedMinutos = 120,
+    # Minuto de início IRREGULAR, e diferente em cada tarefa: 60 posts no
     # minuto zero de cada hora parece robô, e duas tarefas no mesmo instante são
     # dois processos Python disputando a máquina e as mesmas APIs.
     [string]$InicioRun = "08:03",
     [string]$InicioStories = "08:08",
+    [string]$InicioFeed = "08:11",
+    [string]$InicioFlagrante = "08:16",
     # O fim da janela é o `schedule.window_end` do config.yaml. Um disparo
     # depois dele teria orçamento 0 (o ritmo não libera nada fora da janela).
     [string]$FimDaJanela = "23:15",
@@ -77,7 +98,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$TAREFAS = @($TarefaRun, $TarefaStories)
+$TAREFAS = @($TarefaRun, $TarefaStories, $TarefaFeed, $TarefaFlagrante)
 
 # -- desfazer ------------------------------------------------------------------
 
@@ -148,22 +169,22 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjetoDir ".env") -PathType Leaf))
 
 function New-GatilhoRepetido {
     <#
-        Um gatilho DIÁRIO que se repete a cada $CadenciaMinutos até o fim da
+        Um gatilho DIÁRIO que se repete a cada $Cadencia minutos até o fim da
         janela. O Agendador não tem "diário com repetição" numa chamada só: a
         receita é criar o gatilho diário e enxertar nele a `Repetition` de um
         gatilho `-Once`.
     #>
-    param([string]$Inicio)
+    param([string]$Inicio, [int]$Cadencia)
 
     $comeco = [datetime]::ParseExact($Inicio, "HH:mm", $null)
     $fim = [datetime]::ParseExact($FimDaJanela, "HH:mm", $null)
     $duracao = $fim - $comeco
-    if ($duracao.TotalMinutes -lt $CadenciaMinutos) {
-        throw "janela inválida: $Inicio até $FimDaJanela não cabe um intervalo de $CadenciaMinutos min."
+    if ($duracao.TotalMinutes -lt $Cadencia) {
+        throw "janela inválida: $Inicio até $FimDaJanela não cabe um intervalo de $Cadencia min."
     }
     $gatilho = New-ScheduledTaskTrigger -Daily -At $comeco
     $gatilho.Repetition = (New-ScheduledTaskTrigger -Once -At $comeco `
-            -RepetitionInterval (New-TimeSpan -Minutes $CadenciaMinutos) `
+            -RepetitionInterval (New-TimeSpan -Minutes $Cadencia) `
             -RepetitionDuration $duracao).Repetition
     return $gatilho
 }
@@ -187,27 +208,39 @@ $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
 function Register-TarefaDoFiscal {
-    param([string]$Nome, [string]$Argumentos, [string]$Inicio, [string]$Descricao)
+    param([string]$Nome, [string]$Argumentos, [string]$Inicio, [int]$Cadencia,
+          [string]$Descricao)
 
     $acao = New-ScheduledTaskAction -Execute $AfiliadoExe -Argument $Argumentos `
         -WorkingDirectory $ProjetoDir
+    $gatilho = New-GatilhoRepetido -Inicio $Inicio -Cadencia $Cadencia
     # `-Force` é o que torna o script idempotente: mesma tarefa, atualizada.
-    Register-ScheduledTask -TaskName $Nome -Action $acao -Trigger (New-GatilhoRepetido $Inicio) `
+    Register-ScheduledTask -TaskName $Nome -Action $acao -Trigger $gatilho `
         -Settings $configuracao -Principal $principal -Description $Descricao -Force | Out-Null
-    Write-Host "ok: $Nome — $Inicio, a cada $CadenciaMinutos min até $FimDaJanela"
+    Write-Host "ok: $Nome — $Inicio, a cada $Cadencia min até $FimDaJanela"
     Write-Host "    $AfiliadoExe $Argumentos"
     Write-Host "    iniciar em: $ProjetoDir"
 }
 
-Register-TarefaDoFiscal -Nome $TarefaRun -Inicio $InicioRun `
+Register-TarefaDoFiscal -Nome $TarefaRun -Inicio $InicioRun -Cadencia $CadenciaMinutos `
     -Argumentos "run --posts-per-run $PostsPorRun" `
     -Descricao ("Fiscal da Promo: publica as ofertas do dia (Telegram + feed do Instagram). " +
                 "Criado por deploy/agendar-windows.ps1 — nao edite a mao.")
 
-Register-TarefaDoFiscal -Nome $TarefaStories -Inicio $InicioStories `
+Register-TarefaDoFiscal -Nome $TarefaStories -Inicio $InicioStories -Cadencia $CadenciaMinutos `
     -Argumentos "stories --posts $PostsPorRun" `
     -Descricao ("Fiscal da Promo: story com figurinha de link (instagrapi). NAO roda no " +
                 "GitHub Actions. Criado por deploy/agendar-windows.ps1 — nao edite a mao.")
+
+Register-TarefaDoFiscal -Nome $TarefaFeed -Inicio $InicioFeed -Cadencia $CadenciaFeedMinutos `
+    -Argumentos "feed --tipo termometro" `
+    -Descricao ("Fiscal da Promo: carrossel do termometro no Instagram, UM por dia (o teto " +
+                "vive no codigo). Criado por deploy/agendar-windows.ps1 — nao edite a mao.")
+
+Register-TarefaDoFiscal -Nome $TarefaFlagrante -Inicio $InicioFlagrante `
+    -Cadencia $CadenciaFeedMinutos -Argumentos "feed --tipo flagrante" `
+    -Descricao ("Fiscal da Promo: flagrante do 'de' que nao se sustenta, despachado ao chat " +
+                "de operacoes (NAO publica). Criado por deploy/agendar-windows.ps1.")
 
 Write-Host ""
 Write-Host "Confira com: afiliado doctor   (ele agora checa estas duas tarefas)"

@@ -1,9 +1,10 @@
-"""O `publish.yml` é a PRODUÇÃO desde a fase 5C (M8) — o que ele promete
-(cadência, cota de minutos, estado que não se perde, segredos) precisa bater
+"""O `publish.yml` FOI a produção entre as fases 5C e 5I. Desde 2026-08-28 ele
+é o FALLBACK MANUAL: a produção roda na máquina do dono, pelo Agendador de
+Tarefas do Windows (tests/test_agendador_windows.py). O que sobrou aqui — o
+disparo à mão, o estado que não se perde, os segredos — continua tendo de bater
 com o que o código e os runbooks dizem."""
 
 import re
-from datetime import datetime
 
 import yaml
 
@@ -11,17 +12,15 @@ from afiliado import cli, pipeline
 
 WORKFLOW = ".github/workflows/publish.yml"
 
-# Cota do plano grátis para repositório PRIVADO, e a regra de cobrança que a
-# revisão da 5C encontrou: o GitHub arredonda a duração de CADA JOB para o
-# minuto seguinte (runner Linux, multiplicador 1×).
-COTA_MENSAL_MIN = 2000
-MINUTOS_COBRADOS_POR_JOB = 3      # pessimista, enquanto não há medição real
-DIAS_DO_MES_MAIS_LONGO = 31
-
 
 def _workflow() -> dict:
     with open(WORKFLOW, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _texto() -> str:
+    with open(WORKFLOW, encoding="utf-8") as f:
+        return f.read()
 
 
 def _config() -> dict:
@@ -34,79 +33,51 @@ def _passo(nome: str) -> dict:
     return next(s for s in steps if s.get("name") == nome)
 
 
-def _crons() -> list[str]:
-    on_section = _workflow().get("on", _workflow().get(True))  # PyYAML: "on:" é True
-    return [entry["cron"] for entry in on_section["schedule"]]
-
-
-def _horas_brt(cron: str) -> list[int]:
-    """As horas BRT em que UM cron dispara (UTC−3, sem horário de verão no
-    Brasil desde 2019)."""
-    horas = cron.split()[1]
-    inicio, _, fim = horas.partition("-")
-    return [(h - 3) % 24 for h in range(int(inicio), int(fim or inicio) + 1)]
-
-
-def _disparos_brt() -> list[datetime]:
-    """Todos os horários de disparo do cron, convertidos de UTC para BRT."""
-    horarios: list[datetime] = []
-    for cron in _crons():
-        minutos = cron.split()[0]
-        for h in _horas_brt(cron):
-            for m in (int(x) for x in minutos.split(",")):
-                horarios.append(datetime(2026, 8, 26, h, m))
-    return sorted(horarios)
+def _on() -> dict:
+    return _workflow().get("on", _workflow().get(True))  # PyYAML: "on:" é True
 
 
 def _posts_per_run() -> int:
     return int(re.search(r"--posts-per-run (\d+)", _passo("Executar pipeline")["run"]).group(1))
 
 
-def test_publish_roda_de_hora_em_hora_das_08_as_23_brt():
-    # 16 jobs/dia: minuto 7 de 11h a 23h UTC (08:07–20:07 BRT) + 0h a 2h UTC
-    # (21:07–23:07 BRT). Eram 32 (de 30 em 30 min) até a revisão da 5C mostrar
-    # que o GitHub cobra cada job arredondado para cima — ver
-    # test_a_cadencia_cabe_na_cota_mensal_de_minutos.
-    #
-    # A primeira hora teve um cron SÓ DELA entre a 5D e a 5G, para que o passo
-    # do feed pudesse se reconhecer por `github.event.schedule`. A fase 5G
-    # mediu que ~15 dos 16 disparos são DESCARTADOS pelo agendador: prender o
-    # feed a um slug único era feed que nunca sai. O freio dele foi para o
-    # código (teto diário em `day_flags`) e os crons voltaram a ser dois.
-    assert _crons() == ["7 11-23 * * *", "7 0-2 * * *"]
-    assert len(_disparos_brt()) == 16
-    assert _disparos_brt()[0].hour == 8 and _disparos_brt()[-1].hour == 23
+def _param_do_agendador(nome: str) -> str:
+    with open(cli.SCRIPT_DO_AGENDADOR, encoding="utf-8-sig") as f:
+        return re.search(rf"\${nome}\s*=\s*\"?([^\"\r\n,)]+)\"?", f.read()).group(1).strip()
 
 
-def test_o_cron_foge_do_minuto_zero_e_cabe_na_janela_do_ritmo():
-    """Fase 5G, a medição que motivou tudo: em ~25 h e ~16 disparos esperados,
-    o workflow `publish` teve **1** run — e ele saiu 51 min atrasado. O GitHub
-    documenta que o evento `schedule` atrasa em períodos de carga alta, que o
-    COMEÇO DE CADA HORA é o pico, e que um disparo atrasado além do intervalo é
-    descartado. Minuto 0 é o pior slot possível.
+# -- fase 5I: o agendamento morreu, o disparo à mão ficou ----------------------
 
-    A regra tem duas metades, e a segunda é o que impede a "correção" ingênua
-    de escolher o minuto 30: `schedule.window_end` é 23:15, e o último disparo
-    (23:xx BRT) precisa cair DENTRO da janela — senão `pacing_budget` devolve 0
-    e o último run do dia não publica nada."""
-    minutos = {int(m) for cron in _crons() for m in cron.split()[0].split(",")}
-    assert minutos and 0 not in minutos
-    fim = pipeline.schedule_settings(_config())["window_end"]
-    hora_do_fim, minuto_do_fim = (int(x) for x in fim.split(":"))
-    # A segunda metade só tem sentido porque o último disparo é na hora em que
-    # a janela fecha; se um dia não for, é a conta que muda, não a regra.
-    assert _disparos_brt()[-1].hour == hora_do_fim
-    assert max(minutos) < minuto_do_fim
+def test_o_publish_nao_dispara_mais_sozinho():
+    """POSTO DUPLO: os dois hosts têm `state.db` SEPARADOS, e é o `state.db`
+    que guarda o dedupe. Com a máquina do dono publicando, um disparo agendado
+    daqui publicaria a MESMA oferta uma segunda vez. Por isso o `schedule:` foi
+    REMOVIDO, e não deixado "de reserva"."""
+    assert "schedule" not in _on()
+    assert "workflow_dispatch" in _on()
+    assert "- cron:" not in _texto()
 
 
-def test_a_cadencia_cabe_na_cota_mensal_de_minutos():
-    """I-3 da revisão: o GitHub cobra cada JOB arredondado para o minuto
-    seguinte. 32 runs/dia × 30 dias = 960 jobs/mês; a 2 min cobrados dariam
-    1.920 de 2.000 (96%, sem folga) e a 3 min, 2.880 (44% acima). O número de
-    1,5 min/run nunca foi medido — enquanto não for, a cadência precisa caber
-    no pior caso plausível."""
-    jobs_por_mes = len(_disparos_brt()) * DIAS_DO_MES_MAIS_LONGO
-    assert jobs_por_mes * MINUTOS_COBRADOS_POR_JOB <= COTA_MENSAL_MIN * 0.8
+def test_o_cabecalho_diz_por_que_a_producao_mudou_de_lugar():
+    """Sem os três fatos escritos aqui, daqui a duas semanas alguém religa o
+    `schedule:` "porque o cron é mais simples" — e volta o posto duplo."""
+    texto = _texto()
+    assert "NÃO É MAIS A PRODUÇÃO" in texto
+    assert "2026-08-28" in texto and "51 min" in texto      # 1. o agendador
+    assert "challenge_required" in texto                    # 2. o story
+    assert "48,7 h" in texto and "nunca suspende" in texto   # 3. a máquina
+    assert "POSTO DUPLO" in texto
+    assert cli.RUNBOOK_DA_PRODUCAO in texto
+    assert cli.SCRIPT_DO_AGENDADOR in texto
+    # A ordem da virada — criar as tarefas, ver um run real, só então desligar.
+    assert "A ORDEM DA VIRADA" in texto
+
+
+def test_o_fallback_manual_publica_o_orcamento_acumulado():
+    """Um disparo de emergência acontece porque a máquina caiu: ele precisa
+    publicar o que o ritmo acumulou desde o último run, não a fatia de 15 min
+    de um disparo normal."""
+    assert _posts_per_run() >= int(_param_do_agendador("PostsPorRun"))
 
 
 def test_o_job_tem_timeout_curto():
@@ -120,15 +91,18 @@ def test_o_job_tem_timeout_curto():
 def test_o_veredito_do_tamanho_do_state_db_e_o_medido():
     """I-1/I-2: a fase 5C deixou "alguns GB por mês, o GitHub reclama em
     semanas" — estimativa, e 10× exagerada. A revisão mediu 77,9 MB de arquivo
-    a 32 runs/dia e **0,375 MB por commit** de crescimento do git. O runbook e
-    o workflow passam a dizer o número medido e o veredito que ele sustenta."""
+    a 32 runs/dia e **0,375 MB por commit** de crescimento do git. O número
+    medido continua escrito nos dois lugares; o que mudou na 5I foi o VEREDITO
+    que ele sustenta — o tamanho nunca foi o motivo de tirar a produção do
+    Actions, quem a tirou foi o agendador."""
     with open("docs/runbooks/vps-setup.md", encoding="utf-8") as f:
         runbook = f.read()
-    with open(WORKFLOW, encoding="utf-8") as f:
-        workflow = f.read()
+    workflow = _texto()
     for texto in (runbook, workflow):
         assert "0,375 MB por commit" in texto
-        assert "Actions serve como produção" in texto
+        assert "Actions serve como produção" not in texto
+    # A quebra de linha do markdown não conta.
+    assert "nunca foi motivo para tirar a produção do Actions" in " ".join(runbook.split())
     assert "77,9 MB" in runbook and "174,2 MB" in runbook
     # As duas alavancas ficam DOCUMENTADAS, não aplicadas: 90 dias é o que
     # sustenta a régua honesta.
@@ -136,19 +110,14 @@ def test_o_veredito_do_tamanho_do_state_db_e_o_medido():
     assert _config()["shopee"]["candidate_max_age_days"] == 3
 
 
-def test_a_medicao_do_agendador_fica_escrita(tmp_path):
+def test_a_medicao_do_agendador_fica_escrita():
     """G4: 1 de ~16 disparos em ~25 h, e o único com 51 min de atraso, medido
-    em 2026-08-28. É o tipo de número que, sem estar escrito, vira chute de
-    novo daqui a duas semanas — e faz a tabela de minutos voltar a ser lida
-    como previsão, quando ela sempre foi um TETO."""
+    em 2026-08-28. É o número que decidiu a mudança de host na 5I — sem estar
+    escrito, vira chute de novo daqui a duas semanas e alguém religa o cron."""
     with open("docs/runbooks/vps-setup.md", encoding="utf-8") as f:
         runbook = f.read()
-    with open(WORKFLOW, encoding="utf-8") as f:
-        workflow = f.read()
-    for texto in (runbook, workflow):
+    for texto in (runbook, _texto()):
         assert "2026-08-28" in texto and "51 min" in texto
-        assert "teto, não uma previsão" in texto
-    assert "minuto 7" in runbook.lower()
 
 
 def test_o_docs_do_feed_diz_quando_a_peca_sai_de_verdade():
@@ -165,34 +134,6 @@ def test_publish_nao_roda_dois_ao_mesmo_tempo():
     concurrency = _workflow()["concurrency"]
     assert concurrency["group"] == "publish"
     assert concurrency["cancel-in-progress"] is False
-
-
-def test_posts_per_run_cobre_o_maior_salto_do_ritmo():
-    """A VPS roda a cada 5 min com `posts_per_run: 1`; o Actions roda de hora
-    em hora e precisa publicar tudo que o ritmo (`pacing_budget`) liberou desde
-    o run anterior. Com 60/dia e 16 runs, o maior salto entre dois runs
-    consecutivos é 4 — `--posts-per-run` tem de cobri-lo, com folga para
-    recuperar um disparo perdido (atraso de cron é rotina no Actions)."""
-    cfg = _config()
-    teto = cfg["channels"]["telegram"]["max_per_day"]
-    horario = pipeline.schedule_settings(cfg)
-    orcamentos = [pipeline.pacing_budget(teto, t, horario["window_start"],
-                                         horario["window_end"])
-                  for t in _disparos_brt()]
-    maior_salto = max(b - a for a, b in zip(orcamentos, orcamentos[1:]))
-    assert maior_salto == 4
-    assert _posts_per_run() > maior_salto
-
-
-def test_o_ultimo_run_do_dia_alcanca_o_teto_diario():
-    """Menor da revisão: com o último cron às 23:30 e `window_end: 23:55`, o
-    orçamento do último run era 59 — a meta de 60/dia era inalcançável por
-    construção. A janela do config termina alinhada ao último disparo."""
-    cfg = _config()
-    teto = cfg["channels"]["telegram"]["max_per_day"]
-    horario = pipeline.schedule_settings(cfg)
-    assert pipeline.pacing_budget(teto, _disparos_brt()[-1], horario["window_start"],
-                                  horario["window_end"]) == teto
 
 
 def test_o_job_mede_a_propria_duracao():

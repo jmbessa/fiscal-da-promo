@@ -80,7 +80,13 @@ FLAGRANTE_DIA_FLAG = "feed_flagrante_do_dia"
 # CONTRATO entre os dois lados: tests/test_agendador_windows.py trava os dois.
 TAREFA_RUN = "FiscalDaPromo-Run"
 TAREFA_STORIES = "FiscalDaPromo-Stories"
-TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_STORIES)
+# As duas peças de FEED entram na lista porque o único lugar que chamava
+# `afiliado feed` era o passo "Conteúdo do feed" do publish.yml: desligar o
+# `schedule:` de lá sem agendá-las mataria o carrossel e o flagrante em
+# SILÊNCIO, que é o defeito que esta fase existe para acabar.
+TAREFA_FEED = "FiscalDaPromo-Feed"
+TAREFA_FLAGRANTE = "FiscalDaPromo-Flagrante"
+TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_STORIES, TAREFA_FEED, TAREFA_FLAGRANTE)
 SCRIPT_DO_AGENDADOR = "deploy/agendar-windows.ps1"
 RUNBOOK_DA_PRODUCAO = "docs/runbooks/producao-windows.md"
 

@@ -181,8 +181,11 @@ mostrarem:
 
 A fase 5C deixou isto como "risco aberto: alguns GB por mês, o GitHub reclama
 em semanas". A revisão **mediu**, com o volume real da descoberta nova, e o
-susto era ~10× exagerado. **Veredito: o Actions serve como produção; observe o
-tamanho.**
+susto era ~10× exagerado. **Veredito: o tamanho do `state.db` nunca foi motivo
+para tirar a produção do Actions** — quem a tirou foi o agendador (fase 5I,
+`docs/runbooks/producao-windows.md`). Com o `schedule:` desligado, esta entrada
+praticamente parou: o que cresce agora é o banco LOCAL da máquina do dono, que
+não é commitado.
 
 | cenário | `candidates` | `price_log` | total |
 |---|---:|---:|---:|

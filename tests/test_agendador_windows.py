@@ -45,16 +45,19 @@ def _hora(hhmm: str) -> datetime:
     return datetime(2026, 8, 26, h, m)
 
 
-def _disparos(inicio: str) -> list[datetime]:
+def _disparos(inicio: str, cadencia: str = "CadenciaMinutos") -> list[datetime]:
     """Todos os disparos de um dia: do minuto de início até o fim da janela,
-    de `CadenciaMinutos` em `CadenciaMinutos`."""
-    passo = timedelta(minutes=int(_param("CadenciaMinutos")))
+    de `cadencia` em `cadencia` minutos."""
+    passo = timedelta(minutes=int(_param(cadencia)))
     fim, agora = _hora(_param("FimDaJanela")), _hora(inicio)
     horarios = []
     while agora <= fim:
         horarios.append(agora)
         agora += passo
     return horarios
+
+
+INICIOS = ("InicioRun", "InicioStories", "InicioFeed", "InicioFlagrante")
 
 
 def _orcamentos(disparos: list[datetime]) -> list[int]:
@@ -67,15 +70,35 @@ def _orcamentos(disparos: list[datetime]) -> list[int]:
 
 # -- o que as tarefas são -----------------------------------------------------
 
-def test_o_script_cria_as_duas_tarefas_da_producao():
+def test_o_script_cria_as_tarefas_da_producao():
     """`afiliado run` (as 60 ofertas do dia) e `afiliado stories` (o story com
     figurinha, que NÃO pode rodar no Actions: IP de datacenter diferente a cada
     execução é o padrão que mais dispara `challenge_required`)."""
     texto = _script()
     assert _param("TarefaRun") == "FiscalDaPromo-Run"
     assert _param("TarefaStories") == "FiscalDaPromo-Stories"
-    assert "afiliado run --posts-per-run" in texto or "run --posts-per-run" in texto
+    assert "run --posts-per-run" in texto
     assert "stories --posts" in texto
+
+
+def test_as_pecas_de_feed_tambem_ganham_agendador():
+    """O ÚNICO lugar que chamava `afiliado feed` era o passo "Conteúdo do feed"
+    do publish.yml. Desligar o `schedule:` de lá sem agendar as duas peças
+    mataria o carrossel do termômetro e o flagrante EM SILÊNCIO — e silêncio é
+    exatamente o defeito que esta fase existe para acabar.
+
+    Duas tarefas, e não um `cmd /c` encadeado: uma falha não pode derrubar a
+    outra, e o `doctor` precisa poder nomear qual das peças ficou sem
+    agendador."""
+    texto = _script()
+    assert _param("TarefaFeed") == "FiscalDaPromo-Feed"
+    assert _param("TarefaFlagrante") == "FiscalDaPromo-Flagrante"
+    assert "feed --tipo termometro" in texto
+    assert "feed --tipo flagrante" in texto
+    # Uma por dia é garantia do CÓDIGO; a cadência aqui é só retentativa.
+    assert callable(cli._carrossel_pode_sair) and callable(cli._flagrante_pode_sair)
+    assert int(_param("CadenciaFeedMinutos")) >= int(_param("CadenciaMinutos"))
+    assert len(_disparos(_param("InicioFeed"), "CadenciaFeedMinutos")) >= 5
 
 
 def test_o_doctor_procura_exatamente_as_tarefas_que_o_script_cria():
@@ -84,7 +107,8 @@ def test_o_doctor_procura_exatamente_as_tarefas_que_o_script_cria():
     pior do que não checar nada."""
     for nome in cli.TAREFAS_DA_PRODUCAO:
         assert nome in _script()
-    assert set(cli.TAREFAS_DA_PRODUCAO) == {_param("TarefaRun"), _param("TarefaStories")}
+    assert set(cli.TAREFAS_DA_PRODUCAO) == {_param("TarefaRun"), _param("TarefaStories"),
+                                            _param("TarefaFeed"), _param("TarefaFlagrante")}
     assert cli.SCRIPT_DO_AGENDADOR == SCRIPT
 
 
@@ -130,22 +154,23 @@ def test_a_janela_do_agendador_e_a_janela_do_ritmo():
     irregular)."""
     horario = pipeline.schedule_settings(_config())
     assert _param("FimDaJanela") == horario["window_end"]
-    for inicio in (_param("InicioRun"), _param("InicioStories")):
-        assert _hora(inicio) >= _hora(horario["window_start"])
+    for nome in INICIOS:
+        inicio = _param(nome)
+        assert _hora(inicio) >= _hora(horario["window_start"]), nome
         assert pipeline.pacing_budget(60, _hora(inicio), horario["window_start"],
-                                      horario["window_end"]) > 0
+                                      horario["window_end"]) > 0, nome
 
 
-def test_o_minuto_de_inicio_e_irregular_e_as_duas_tarefas_nao_colidem():
+def test_o_minuto_de_inicio_e_irregular_e_as_tarefas_nao_colidem():
     """O runbook do instagrapi já pedia: 60 stories no minuto zero de cada hora
-    parece robô. E as duas tarefas não podem acordar no MESMO instante — são
-    dois processos Python disputando a mesma máquina e as mesmas APIs."""
-    minutos = {int(_param(p).split(":")[1]) for p in ("InicioRun", "InicioStories")}
+    parece robô. E duas tarefas não podem acordar no MESMO instante — são dois
+    processos Python disputando a mesma máquina e as mesmas APIs."""
+    minutos = {int(_param(p).split(":")[1]) for p in INICIOS}
     assert 0 not in minutos
-    assert len(minutos) == 2
+    assert len(minutos) == len(INICIOS)
     cadencia = int(_param("CadenciaMinutos"))
-    # E nem por acaso: a diferença entre os dois inícios não é múltipla da
-    # cadência, senão eles se encontrariam em todo disparo.
+    # E nem por acaso: a diferença entre os inícios das duas tarefas de mesma
+    # cadência não é múltipla dela, senão elas se encontrariam em todo disparo.
     diferenca = abs(_hora(_param("InicioRun")) - _hora(_param("InicioStories")))
     assert diferenca.total_seconds() // 60 % cadencia != 0
 

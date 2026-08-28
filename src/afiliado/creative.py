@@ -649,21 +649,32 @@ def _draw_feed_body(draw, canvas_width, offer, title, price, meta, selo) -> None
 
 # --- Rodapés --------------------------------------------------------------------
 
-# Fase 5F: quando o story leva figurinha de link (instagrapi), o rodapé deixa
-# de fingir um botão e passa a APONTAR para a figurinha de verdade, que o
-# Instagram desenha por cima da arte. O primeiro story real saiu com a
-# figurinha no CENTRO (padrão do instagrapi: y=0.517, altura 0.259 — de y=744
-# a y=1241 em 1920), cobrindo a foto do produto e o título; e o dono não
-# identificou o link de primeira. A figurinha passa a ficar na faixa livre
-# abaixo da meta, e o rodapé vira uma seta subindo até ela.
-CTA_FIGURINHA = "TOQUE NO LINK  ↑"
+# Fase 5F: quando o story leva figurinha de link (instagrapi), o rodapé vira o
+# PRÓPRIO botão — dourado, preenchido, dizendo o que fazer.
+#
+# Por quê: medido nos stories reais de 2026-08-27, a figurinha do instagrapi
+# **não é desenhada**. Ela entra como área tocável (o `story_info` devolve o
+# `story_link`, com `type: "gif"` e sem imagem) e nada aparece na tela. Ou
+# seja: o toque funciona, mas quem precisa mostrar ONDE tocar é a nossa arte.
+# Por isso a área tocável é posicionada EM CIMA desta pill (ver
+# `story_cta_tap_area`), e não numa faixa vazia com uma seta apontando para
+# lugar nenhum — que foi a primeira tentativa, e o dono não achou o link.
+CTA_FIGURINHA = "TOQUE AQUI PARA COMPRAR"
 
 
 def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,
                             handle: str | None, offer: Offer,
                             cta_figurinha: bool = False) -> dict:
-    pad_y, pad_x = 26, 40
-    font = _font("sans", 42, 700)
+    # No modo figurinha a pill É o botão: ela recebe a área tocável por cima
+    # (ver `story_cta_tap_area`) e é a única coisa na tela que diz onde tocar,
+    # já que a figurinha do Instagram não é desenhada. Por isso ela é maior —
+    # fonte e respiro — além de dourada e preenchida.
+    if cta_figurinha:
+        pad_y, pad_x = 40, 64
+        font = _font("sans", 54, 800)
+    else:
+        pad_y, pad_x = 26, 40
+        font = _font("sans", 42, 700)
     label = "MERCADO LIVRE" if offer.source == "meli" else "SHOPEE"
     text = CTA_FIGURINHA if cta_figurinha else f"→  LINK NA {label}"
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -691,6 +702,25 @@ def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,
         "handle_font": handle_font, "handle_top": handle_top,
         "cta_figurinha": cta_figurinha,
     }
+
+
+def story_cta_tap_area(offer: Offer, handle: str | None = None,
+                       folga: float = 1.6) -> dict:
+    """Onde a figurinha de link (invisível) deve ficar: EM CIMA da pill do
+    rodapé, com folga para o dedo.
+
+    Calculado a partir da geometria real do rodapé, não de números fixos: se a
+    pill mudar de tamanho — e ela muda, o texto varia com a loja —, a área
+    tocável acompanha. Devolve frações da tela, que é o que o instagrapi pede.
+    """
+    width, height = STORY_SIZE
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    geo = _story_footer_geometry(draw, width, height, handle, offer, True)
+    x0, y0, x1, y1 = geo["cta_box"]
+    largura = min(0.92, ((x1 - x0) / width) * folga)
+    altura = min(0.14, ((y1 - y0) / height) * folga)
+    return {"x": ((x0 + x1) / 2) / width, "y": ((y0 + y1) / 2) / height,
+            "width": largura, "height": altura}
 
 
 def _draw_story_footer(draw: ImageDraw.ImageDraw, width: int, handle: str | None, geo: dict) -> None:

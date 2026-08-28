@@ -42,9 +42,9 @@ class FakeLink:
     põe a figurinha no CENTRO (y=0.517, altura 0.259), em cima da foto do
     produto e do título — e mesmo assim o dono não achou o link de primeira."""
 
-    def __init__(self, webUri, x=None, y=None, width=None, height=None):  # noqa: N803
+    def __init__(self, webUri, area=None, **geo):  # noqa: N803
         self.webUri = webUri
-        self.x, self.y, self.width, self.height = x, y, width, height
+        self.area = area or geo or {}
 
 
 class FakeClient:

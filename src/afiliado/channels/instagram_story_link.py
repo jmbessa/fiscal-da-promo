@@ -236,27 +236,24 @@ def sem_segredos(texto: str, *segredos: str) -> str:
     return texto
 
 
-# Onde a figurinha fica, em fração da tela (1080x1920). O PADRÃO do instagrapi
-# é o centro (y=0.517, altura 0.259 = de y=744 a y=1241), que no primeiro story
-# real cobriu a foto do produto e o título — e mesmo assim o dono não
-# identificou o link de primeira. Aqui ela desce para a faixa livre entre a
-# linha de avaliações (~y=1490) e o rodapé (~y=1700), e o rodapé vira uma seta
-# dourada apontando para ela (ver `creative.CTA_FIGURINHA`).
-FIGURINHA_X = 0.5
-FIGURINHA_Y = 0.836      # centro em ~1605 de 1920
-FIGURINHA_LARGURA = 0.62
-FIGURINHA_ALTURA = 0.085  # ~163px: cabe entre a meta e o rodapé
+def story_link(web_uri: str, area: dict | None = None):
+    """`StoryLink(...)` — a figurinha, do jeito que o instagrapi a nomeia.
+    Fica numa função para o import continuar preguiçoso e para o teste poder
+    injetar um duplo.
 
+    A geometria é EXPLÍCITA e vem da arte (`creative.story_cta_tap_area`).
+    Dois motivos, os dois medidos nos stories reais de 2026-08-27:
 
-def story_link(web_uri: str):
-    """`StoryLink(webUri=...)` — a figurinha, do jeito que o instagrapi a
-    nomeia. Fica numa função para o import continuar preguiçoso e para o teste
-    poder injetar um duplo.
-
-    A geometria é EXPLÍCITA de propósito: o padrão da biblioteca joga a
-    figurinha no meio da arte."""
-    return _instagrapi()[1](webUri=web_uri, x=FIGURINHA_X, y=FIGURINHA_Y,
-                            width=FIGURINHA_LARGURA, height=FIGURINHA_ALTURA)
+    1. O padrão da biblioteca é o CENTRO da tela (y=0.517, altura 0.259 = de
+       y=744 a y=1241 em 1920) — em cima da foto do produto e do título.
+    2. A figurinha **não é desenhada**: ela entra como área tocável e nada
+       aparece na tela. Então ela tem de cair exatamente sobre a pill dourada
+       da arte, que é o único elemento que diz ao seguidor onde tocar.
+    """
+    area = area or {}
+    return _instagrapi()[1](webUri=web_uri, **{k: area[k] for k in
+                                               ("x", "y", "width", "height")
+                                               if k in area})
 
 
 # O Instagram REESCREVE o endereço da figurinha para o redirecionador dele.
@@ -437,7 +434,10 @@ class InstagramStoryLinkChannel:
         # O link é o de AFILIADO, curto — o mesmo que vai ao Telegram.
         try:
             media = cl.photo_upload_to_story(
-                caminho, links=[self.link_factory(post.affiliate_link)])
+                caminho,
+                links=[self.link_factory(
+                    post.affiliate_link,
+                    creative.story_cta_tap_area(post.offer, self.brand_handle))])
         except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta
             if e_erro_de_sessao(exc):
                 # O caso COMUM (a sessão carregada faz o `login()` passar

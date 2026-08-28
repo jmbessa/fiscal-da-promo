@@ -107,3 +107,59 @@ Compare com a descoberta de hoje: 8 chamadas por run dentro de janelas de 2.000
 itens por (categoria, ordenação). O feed é uma superfície muito maior e mais
 barata — vale uma fase própria, tanto para volume quanto para aliviar a pressão
 sobre a API de busca.
+
+### Feito (fase 5L, 2026-08-28)
+
+O feed entra **ao lado** da busca, em `ShopeeSource._fatia_do_feed`, com as
+mesmas disciplinas dela: `_post`, teto de chamadas por run
+(`shopee.feed_calls_per_run`), cursor de `offset` persistido e `SourceError`.
+
+**FULL, e não DELTA — o contrário do que parecia.** O DELTA oficial tem
+**170.217** linhas contra 100.000 do FULL (341 chamadas contra 200) e, numa
+janela de 500 dele, **229 linhas são `DELETE`** contra 264 `NEW` e 7 `UPDATE`.
+Ou seja: o DELTA custa 70% mais chamadas para entregar menos linha
+aproveitável. Não existe, nesta conta, o caminho barato de manter o estoque
+fresco pelo delta.
+
+**O `datafeedId` carrega a data** (`428536169534861312_FULL_2026-08-27`) e o
+arquivo é regerado todo dia, então ele é relistado a cada run (1 chamada, além
+da janela). O ciclo de 200 janelas é, por isso, uma **amostra rotativa** do
+catálogo — não uma partição dele.
+
+**O que o feed não traz: `commission` e `sales`.** As duas só existem depois do
+`refresh_price`, que roda imediatamente antes de publicar. Com o `min_ev_brl`
+do config real, o piso de EV leria a comissão ausente como "vale zero" e
+mataria 100% das candidatas do feed em silêncio — o mesmo defeito da 5J com
+outro campo. A rede é `selection.comissao_desconhecida` mais um lote inteiro de
+feed em `tests/test_zero_silencioso.py`.
+
+**O que rende, medido em 2026-08-28.** Pelas mesmas 200 chamadas:
+
+| superfície | itens varridos | elegíveis | por chamada |
+|---|---|---|---|
+| busca (5 raízes × 40 páginas × 50) | 10.000 | 5.460 (54,6%) | ~27 |
+| data feed oficial (200 × 500) | 100.000 | ~32.000 (32,2/32,4/32,6% em três janelas) | ~160 |
+
+E o que ele **não** rende: popularidade. Os itens do feed são a cauda longa do
+catálogo — mediana de **1 venda** em 30 dias no feed oficial e **9** no "Shopee
+Brasil" (25 itens sorteados de cada), contra os milhares do topo de categoria
+que a busca traz ordenada. O feed é **alcance e reserva**, não substituto: sem
+comissão e sem vendas ele entra no fim da fila e publica quando o topo se
+esgota, que é o papel dele.
+
+**Por curtidas, não por nota.** A nota do feed é 5,0 na mediana (165 de 172
+linhas acima de 4,5 — não separa nada). O `like` separa: numa janela de 500 do
+feed oficial, as 12 linhas mais curtidas somam **2.152** vendas de 30 dias
+(mediana 33) e as 12 menos curtidas somam **2** (mediana 0). No "Shopee Brasil"
+a coluna vem zerada em todas as linhas — é mais uma razão para o feed oficial.
+
+**O teto de `feed_keep_per_run` não é da API, é do `state.db`.** 32% das linhas
+passam nos portões; guardar tudo seriam ~9.800 candidatas/dia e, com
+`candidate_max_age_days: 3`, ~29 mil linhas de ~600 bytes num arquivo binário
+versionado — contra 60 posts/dia. Com 10, são ~610/dia.
+
+**O `product_short link` já é de afiliado** (`utm_medium=affiliates`, 500 de
+500 linhas) e vira o `offer_link` da oferta — a queda do `generateShortLink`.
+Ele **não** vira o link publicado: é uma URL de ~700 caracteres contra os ~30
+de um `shope.ee`, e trocar o gerador oficial por ela mexeria na atribuição de
+todo post da loja por 60 chamadas/dia.

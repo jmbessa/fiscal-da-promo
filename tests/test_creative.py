@@ -644,3 +644,45 @@ def test_respiro_do_feed_nao_derruba_a_meta_por_alguns_pixels():
         draw, offer, NO_CLAIM, 56, 700, 1, True, True, _pill_left(offer, NO_CLAIM))
     assert meta is not None
     assert bottom <= footer["divider_y"] - 36
+
+
+# --- Pill não pode virar elipse (2026-08-28) ----------------------------------
+
+def _largura_preenchida(img, y, cor, tol=40):
+    """Quantos pixels da linha `y` têm aproximadamente a cor dada."""
+    px = img.convert("RGB").load()
+    n = 0
+    for x in range(img.width):
+        r, g, b = px[x, y]
+        if abs(r - cor[0]) <= tol and abs(g - cor[1]) <= tol and abs(b - cor[2]) <= tol:
+            n += 1
+    return n
+
+
+def test_o_botao_dourado_do_story_e_uma_pill_e_nao_uma_elipse():
+    """`radius=999` num retângulo baixo faz o Pillow devolver uma ELIPSE.
+
+    O botão dourado é a ÚNICA instrução do story no modo figurinha e a área
+    que o dono pediu para tocar: oval, ele encolhe nas pontas e a área tocável
+    (calculada da geometria do rodapé) passa a apontar para fora do desenho.
+    Medido em 2026-08-28: 63 px preenchidos no topo com 999, 417 com o raio
+    certo. O teste afirma a REGRA — perto do topo, a pill ainda é larga."""
+    offer = make_offer(source="shopee", title="Bicicleta Aro 29", sales=4958, rating=4.7)
+    copy = CopyParts(headline="OLHA O PREÇO", description="Aro 29.", cta="Corre.")
+    png = render_story(offer, copy, NO_CLAIM, client=None, handle="@ofiscaldapromo",
+                       cta_figurinha=True)
+    img = Image.open(io.BytesIO(png))
+
+    from afiliado.creative import STORY_SIZE, _story_footer_geometry
+    medidor = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    geo = _story_footer_geometry(medidor, *STORY_SIZE, "@ofiscaldapromo", offer, True)
+    x0, y0, x1, y1 = geo["cta_box"]
+    altura, largura_caixa = y1 - y0, x1 - x0
+    # Uma linha logo abaixo da borda de cima — acima dos glifos, que são
+    # desenhados por cima do dourado e furariam a contagem no meio da pill.
+    # Com raio = altura/2 essa linha ainda é quase toda a largura; numa elipse
+    # ela é um toco (a meia-largura cai pelo seno do ângulo).
+    largura_topo = _largura_preenchida(img, int(y0 + altura * 0.08), GOLD)
+    assert largura_topo > 0.7 * largura_caixa, (
+        f"pill virou elipse: {largura_topo}px preenchidos a 8% do topo, "
+        f"contra uma caixa de {largura_caixa:.0f}px")

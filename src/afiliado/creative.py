@@ -811,11 +811,18 @@ def _draw_story_footer(draw: ImageDraw.ImageDraw, width: int, handle: str | None
     # única instrução do story — e o teste real mostrou que a versão discreta
     # (contorno sobre navy) some ao lado da figurinha azul do Instagram.
     figurinha = geo.get("cta_figurinha", False)
+    # METADE DA ALTURA, nunca 999: raio maior que o lado curto faz o Pillow
+    # devolver uma ELIPSE. O comentário do fecho do carrossel dizia que "nas
+    # pills largas do story isso nunca apareceu" — apareceu: o botão dourado,
+    # que é a ÚNICA instrução do story no modo figurinha e a área que o dono
+    # pediu para tocar, saía oval (medido no preview de 2026-08-28: 63 px de
+    # largura preenchida no topo, contra 417 com o raio certo).
+    raio = (y1 - y0) / 2
     if figurinha:
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=999, fill=GOLD)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=raio, fill=GOLD)
         cor_texto = INK
     else:
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=999, outline=PILL_BORDER,
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=raio, outline=PILL_BORDER,
                                width=2, fill=SURFACE)
         cor_texto = TEXT
     bbox = geo["cta_bbox"]
@@ -1642,7 +1649,8 @@ def _render_fecho(handle: str | None) -> bytes:
     x0, y0 = (largura - cta_w) / 2, plan["cta_top"]
     # `radius` é METADE DA ALTURA, não 999: com um raio maior que o lado curto
     # o Pillow devolve uma elipse, e a pill do fecho saía oval (preview de
-    # 2026-08-27). Nas pills largas do story isso nunca apareceu.
+    # 2026-08-27). O mesmo defeito estava no rodapé do story e no contador do
+    # carrossel, achados em 2026-08-28 — a regra vale para TODA pill.
     draw.rounded_rectangle([x0, y0, x0 + cta_w, y0 + cta_h], radius=cta_h / 2, fill=GOLD)
     bbox = plan["cta_bbox"]
     draw.text((x0 + 44 - bbox[0], y0 + 26 - bbox[1]), CTA_CARROSSEL,
@@ -1660,7 +1668,7 @@ def _draw_contador(draw: ImageDraw.ImageDraw, largura: int, indice: int, total: 
     h = (bbox[3] - bbox[1]) + 2 * 14
     x0 = largura - FEED_PAD - w
     y0 = 64 + (62 - h) / 2                     # centrado no avatar do cabeçalho
-    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=999,
+    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=h / 2,
                            fill=SURFACE, outline=PILL_BORDER, width=2)
     draw.text((x0 + 20 - bbox[0], y0 + 14 - bbox[1]), texto, font=font, fill=MUTED)
 

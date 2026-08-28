@@ -7,12 +7,15 @@ from PIL import Image, ImageChops, ImageDraw
 
 from afiliado import pricing
 from afiliado.creative import (
+    FEED_NOTA_SIZE,
     FEED_PAD,
     FEED_TITLE_SIZE,
     FEED_TITLE_WIDTH,
     GOLD,
     MUTED,
     NAVY,
+    PRICE_DIM_INK,
+    STORY_NOTA_SIZE,
     STORY_PAD,
     STORY_TITLE_SIZE,
     STORY_TITLE_WIDTH,
@@ -394,10 +397,11 @@ def test_price_pill_modo_b_encolhe_para_o_preco_e_fica_centralizada():
     offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)   # sem referência
     draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     dims = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, _pill_left(offer, NO_CLAIM),
-                            STORY_TITLE_WIDTH)
+                            STORY_TITLE_WIDTH, STORY_NOTA_SIZE)
     assert dims["orig_text"] == ""
     asc, desc = dims["cur_font"].getmetrics()
-    assert dims["width"] == dims["cur_w"] + 2 * 30          # só o preço + padding
+    # sem slot ESQUERDO: só o preço, o rótulo "SEM CUPOM" (fase 5K) e o padding
+    assert dims["width"] == dims["cur_w"] + 24 + dims["nota_w"] + 2 * 30
     assert dims["height"] == asc + desc + 2 * 20
 
     # Na arte: a única coisa dourada no corpo é a pill, CENTRALIZADA (como o
@@ -497,13 +501,129 @@ def test_price_pill_do_feed_tambem_e_centralizada():
     offer = make_offer(price_current_cents=3390, rating=4.9, sales=30000)
     draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     dims = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, _pill_left(offer, NO_CLAIM),
-                            FEED_TITLE_WIDTH)
+                            FEED_TITLE_WIDTH, FEED_NOTA_SIZE)
     png = render_feed(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
     largura = FEED_SIZE[0]
     left, _, right, _ = _gold_bbox(png, (0, 780, largura, 1160))
     esperado = (largura - dims["width"]) / 2
     assert abs(left - esperado) <= 2
     assert abs((largura - right) - esperado) <= 2
+
+
+# --- Fase 5K: a arte diz que o preço é SEM CUPOM ------------------------------
+#
+# A colocação foi escolhida OLHANDO os previews (relatório da fase, 2026-08-28):
+# o rótulo vai DENTRO da pill, à direita do preço. As três alternativas caíram
+# na imagem, e cada teste abaixo trava o motivo pelo qual elas caíram.
+
+# Preço e referência mais largos que o projeto pode publicar hoje:
+# `selection.price_max_brl` é 1000, e a referência riscada é a nossa mediana —
+# ela não tem teto de configuração.
+PIOR_PRECO, PIOR_REF = 99999, 199999
+
+
+def _pill_story(offer, verdict=NO_CLAIM):
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    return _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, _pill_left(offer, verdict),
+                            STORY_TITLE_WIDTH, STORY_NOTA_SIZE)
+
+
+def _pill_feed(offer, verdict=NO_CLAIM):
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    return _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, _pill_left(offer, verdict),
+                            FEED_TITLE_WIDTH, FEED_NOTA_SIZE)
+
+
+def test_a_pill_da_shopee_leva_o_rotulo_e_a_do_ml_nao():
+    """K1: só a Shopee. O preço do ML é o do anúncio do buy box, que é o que a
+    página mostra — rotular lá seria ruído sobre um preço que ninguém contesta."""
+    shopee, meli = make_offer(), make_offer(source="meli")
+    for plan in (story_plan(shopee, NO_CLAIM), feed_plan(shopee, NO_CLAIM)):
+        assert plan["sem_cupom"] == "SEM CUPOM"
+    for plan in (story_plan(meli, NO_CLAIM), feed_plan(meli, NO_CLAIM)):
+        assert plan["sem_cupom"] == ""
+    assert _pill_story(meli)["nota_text"] == ""
+    assert _pill_feed(meli)["nota_text"] == ""
+
+
+def test_o_rotulo_nao_custa_um_pixel_de_altura():
+    """Por que ele foi para o LADO do preço e não para baixo dele: alinhado
+    pela linha de base, o rótulo cabe na altura que o preço já ocupa. A
+    variante "segunda linha dentro da pill" engordava a pill em ~50 px e o
+    guarda de overflow derrubava o SELO no feed com título longo — visto no
+    preview de 2026-08-28, e o selo é o último a cair por desenho."""
+    for pill in (_pill_story, _pill_feed):
+        com = pill(make_offer(price_current_cents=68999))
+        sem = pill(make_offer(price_current_cents=68999, source="meli"))
+        assert com["height"] == sem["height"]
+
+
+def test_o_selo_e_a_meta_sobrevivem_ao_rotulo():
+    """A consequência do teste acima, medida na peça inteira: o pior caso da
+    suíte (título de 2 linhas + meta + selo) continua com selo nos dois
+    formatos, e com meta no story."""
+    offer = make_offer(title=" ".join(["palavra"] * 30), sales=45950,
+                       sales_window_days=30, rating=4.9, price_current_cents=68999)
+    selo = Verdict("B", 0, "🏷️ Menor preço dos últimos 6 meses (verificado)", 180)
+    for plan in (story_plan(offer, selo), feed_plan(offer, selo)):
+        assert plan["selo"] == "MENOR PREÇO VERIFICADO · 6 MESES"
+        assert plan["sem_cupom"] == "SEM CUPOM"
+    assert story_plan(offer, selo)["meta"] is True
+
+
+def test_a_pill_com_o_rotulo_cabe_na_largura_util_no_pior_caso():
+    """Por que ele NÃO foi para a linha de meta: aquela linha não tem guarda
+    horizontal (registrado na fase 5H) e o rótulo a fazia encostar na margem —
+    no pior caso ela era CORTADA pela borda do canvas. A pill tem guarda, e o
+    rótulo entra dentro dele: no pior caso publicável a pill continua na
+    largura útil, e a margem continua >= o padding do formato."""
+    casos = [
+        make_offer(price_current_cents=PIOR_PRECO),
+        make_offer_ref(PIOR_REF, price_current_cents=PIOR_PRECO),
+        make_offer_ref(PIOR_REF, price_current_cents=2000),
+    ]
+    for offer in casos:
+        v = _v(offer)
+        story, feed = _pill_story(offer, v), _pill_feed(offer, v)
+        assert story["width"] <= STORY_TITLE_WIDTH, offer.price_ref_cents
+        assert (1080 - story["width"]) / 2 >= STORY_PAD
+        assert feed["width"] <= FEED_TITLE_WIDTH
+        assert (1080 - feed["width"]) / 2 >= FEED_PAD
+        # e o rótulo NUNCA é o que cede
+        assert story["nota_text"] == feed["nota_text"] == "SEM CUPOM"
+        # dentro da faixa publicável ele também não cobra nada do riscado:
+        # o pior caso (906 px de pill no story) ainda sobra 30 px da largura
+        # útil e 15 px da margem — medido em 2026-08-28.
+        assert not story["orig_text"].endswith("…")
+        assert not feed["orig_text"].endswith("…")
+
+
+def test_quando_falta_espaco_quem_cede_e_a_referencia_riscada():
+    """Precedência do guarda: o riscado é decoração e já nasceu com mecanismo
+    de corte (`_hard_truncate`); o rótulo é a honestidade da peça e não pode
+    sumir para caber."""
+    offer = make_offer_ref(99999999, price_current_cents=PIOR_PRECO)   # R$ 999.999,99
+    dims = _pill_story(offer, Verdict("A", 90, ""))
+    assert dims["width"] <= STORY_TITLE_WIDTH
+    assert dims["orig_text"].endswith("…")
+    assert dims["nota_text"] == "SEM CUPOM"
+
+
+def test_o_rotulo_esta_pintado_a_direita_do_preco_dentro_da_pill():
+    """O que a imagem prova: a pill desenhada é a pill medida, e o slot que a
+    medição reservou à direita do preço tem tinta. Sem isto, "o rótulo existe"
+    seria uma afirmação sobre um dicionário, não sobre a peça."""
+    offer = make_offer(price_current_cents=68999)
+    dims = _pill_story(offer)
+    assert dims["nota_text"] == "SEM CUPOM"
+    png = render_story(offer, COPY, NO_CLAIM, client=_client_for(_image_handler))
+    box = (0, 1000, 1080, 1600)
+    left, top, right, bottom = _gold_bbox(png, box)
+    assert abs((right - left) - dims["width"]) <= 3
+    x0 = left + dims["pad_x"] + dims["cur_w"] + dims["gap"]
+    pill = Image.open(io.BytesIO(png)).convert("RGB").crop(box)
+    slot = pill.crop((round(x0), top, round(x0 + dims["nota_w"]), bottom))
+    assert any(p == PRICE_DIM_INK for p in slot.get_flattened_data())
 
 
 def test_respiro_do_feed_nao_derruba_a_meta_por_alguns_pixels():

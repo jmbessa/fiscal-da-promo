@@ -5,7 +5,8 @@ Gera a arte de story (1080×1920) e de feed (1080×1350) a partir de um `Offer`
 e do `Verdict` já decidido (`pricing.verdict`): fundo navy com brilho
 radial, cabeçalho com mascote (ver `afiliado.brand`), card branco com a foto
 do produto (badge "-N%" só em modo A), título, pill de preço (referência
-riscada só em modo A), meta (vendas/fonte) e — quando o veredito traz o
+riscada só em modo A; "SEM CUPOM" à direita do preço só na Shopee, fase 5K —
+ver `_pill_nota`), meta (vendas/fonte) e — quando o veredito traz o
 selo — o selo "menor preço verificado" com a mesma janela do texto. A arte
 NÃO recalcula modo nem selo: é o que faz Telegram, story e feed concordarem
 (C9). `story_plan`/`feed_plan` expõem o que será desenhado, para teste.
@@ -76,6 +77,13 @@ STORY_META_GAP = 88     # respiro entre o preço e a linha de avaliações
 STORY_SELO_GAP = 28
 FEED_META_GAP = 64     # 88 no story x (1350/1920): o feed tem 570px a menos
 FEED_SELO_GAP = 24
+
+# Fase 5K — o corpo do rótulo "SEM CUPOM" dentro da pill do preço. Mesmo
+# tamanho da linha de meta de cada formato, porque é a mesma VOZ: mono, caixa
+# alta, letra miúda que qualifica o número (a sans é a voz humana — título,
+# preço, CTA; a mono é a voz do sistema — meta, selo, handle).
+STORY_NOTA_SIZE = 30
+FEED_NOTA_SIZE = 27
 
 DOWNLOAD_TIMEOUT = 20
 
@@ -346,6 +354,29 @@ def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: 
 
 # --- Pill de preço (align-self: flex-start) -----------------------------------
 
+def _pill_nota(offer: Offer) -> str:
+    """O rótulo à DIREITA do preço na pill: "SEM CUPOM" nas ofertas da Shopee,
+    "" no resto (fase 5K).
+
+    Quem decide é `pricing.sem_cupom`, junto do resto da régua — aqui só a
+    forma (caixa alta, como o selo). A colocação foi escolhida olhando os
+    previews de 2026-08-28, e as três alternativas caíram na imagem:
+
+    - na LINHA DE META ("· sem cupom"): ela não tem guarda horizontal (fase
+      5H) e passou a encostar na margem; no pior caso o texto era cortado pela
+      borda do canvas. Pior ainda, no feed em modo A com selo a meta é
+      DERRUBADA pelo guarda de overflow — e o rótulo sumia com ela;
+    - em LINHA PRÓPRIA sob a pill: come o respiro entre o preço e a meta, que o
+      dono pediu e que foi aumentado de propósito (`STORY_META_GAP`);
+    - em SEGUNDA LINHA dentro da pill: engorda a pill em ~50 px e o guarda de
+      overflow passa a derrubar o SELO no feed com título longo.
+
+    À direita do preço, alinhado pela linha de base, ele custa ZERO altura
+    (cabe na que o preço já ocupa) e entra no guarda horizontal que a pill já
+    tinha — onde falta espaço quem cede é a referência riscada, não ele."""
+    return pricing.sem_cupom(offer).upper()
+
+
 def _pill_left(offer: Offer, verdict: Verdict) -> tuple[str, bool]:
     """(texto à esquerda do preço na pill, se ele é riscado) — pelo veredito.
 
@@ -362,7 +393,7 @@ def _pill_left(offer: Offer, verdict: Verdict) -> tuple[str, bool]:
 def _price_pill_dims(
     draw: ImageDraw.ImageDraw, offer: Offer, orig_size: int, cur_size: int,
     pad_y: int, pad_x: int, gap: int, pill_left: tuple[str, bool] = ("", False),
-    max_width: int | None = None,
+    max_width: int | None = None, nota_size: int = 0,
 ) -> dict:
     left_text, strike = pill_left
     orig_font = _font("sans", orig_size, 600 if strike else 500)
@@ -373,9 +404,21 @@ def _price_pill_dims(
     cur_asc, cur_desc = cur_font.getmetrics()
     cur_w = cur_bbox[2] - cur_bbox[0]
 
+    # Slot da direita: o rótulo "SEM CUPOM" (fase 5K). `nota_size == 0` é quem
+    # não tem slot nenhum — o carrossel e o story usam os tamanhos do formato.
+    nota_text = _pill_nota(offer) if nota_size > 0 else ""
+    nota_font = _font("mono", nota_size, 500) if nota_text else None
+    nota_bbox = draw.textbbox((0, 0), nota_text, font=nota_font) if nota_text else (0, 0, 0, 0)
+    nota_w = nota_bbox[2] - nota_bbox[0]
+    nota_asc = nota_font.getmetrics()[0] if nota_text else 0
+    # O que o rótulo tira da largura disponível: ele e o respiro antes dele.
+    nota_bloco = (gap + nota_w) if nota_text else 0
+
     # Guarda horizontal: a pill nunca pode passar da largura útil do canvas.
+    # O rótulo entra na conta ANTES do riscado: onde não cabe tudo, quem cede é
+    # a referência riscada (decoração, com corte já previsto), nunca o rótulo.
     if left_text and max_width is not None:
-        disponivel = max_width - 2 * pad_x - gap - cur_w
+        disponivel = max_width - 2 * pad_x - gap - cur_w - nota_bloco
         left_text = (_hard_truncate(draw, left_text, orig_font, disponivel)
                      if disponivel > 0 else "")
 
@@ -389,13 +432,18 @@ def _price_pill_dims(
         orig_bbox, orig_w = (0, 0, 0, 0), 0
         content_h = cur_asc + cur_desc
         content_w = cur_w
+    # `content_h` NÃO cresce com o rótulo: ele compartilha a linha de base do
+    # preço e é muito menor que ele. É isso que faz a colocação custar zero
+    # altura — e é por isso que ela não derruba meta nem selo.
     return {
         "orig_font": orig_font, "cur_font": cur_font,
         "orig_text": left_text, "cur_text": cur_text, "strike": strike,
         "orig_bbox": orig_bbox, "cur_bbox": cur_bbox,
         "orig_asc": orig_asc, "cur_asc": cur_asc,
         "orig_w": orig_w, "cur_w": cur_w,
-        "width": content_w + 2 * pad_x, "height": content_h + 2 * pad_y,
+        "nota_font": nota_font, "nota_text": nota_text, "nota_bbox": nota_bbox,
+        "nota_asc": nota_asc, "nota_w": nota_w,
+        "width": content_w + nota_bloco + 2 * pad_x, "height": content_h + 2 * pad_y,
         "pad_y": pad_y, "pad_x": pad_x, "gap": gap,
     }
 
@@ -420,6 +468,14 @@ def _draw_price_pill(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, 
     cur_bbox = dims["cur_bbox"]
     cur_y = baseline - dims["cur_asc"]
     draw.text((cur_x - cur_bbox[0], cur_y - cur_bbox[1]), dims["cur_text"], font=cur_font, fill=INK)
+    if dims["nota_text"]:
+        # Mesma linha de base do preço e a mesma tinta apagada do riscado: a
+        # pill fica com o número no meio e uma letra miúda de cada lado.
+        nota_bbox = dims["nota_bbox"]
+        nota_x = cur_x + dims["cur_w"] + dims["gap"]
+        nota_y = baseline - dims["nota_asc"]
+        draw.text((nota_x - nota_bbox[0], nota_y - nota_bbox[1]), dims["nota_text"],
+                  font=dims["nota_font"], fill=PRICE_DIM_INK)
     return y + h
 
 
@@ -571,7 +627,8 @@ def _draw_selo(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, radius
 def _story_body_dims(draw, offer, verdict, title_size, title_weight, title_lines_cap,
                       include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, STORY_TITLE_WIDTH, title_lines_cap, title_weight)
-    price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, pill_left, STORY_TITLE_WIDTH)
+    price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, pill_left, STORY_TITLE_WIDTH,
+                             STORY_NOTA_SIZE)
     y = 1050 + title["height"] + 34 + price["height"]
     meta = None
     if include_meta:
@@ -587,7 +644,8 @@ def _story_body_dims(draw, offer, verdict, title_size, title_weight, title_lines
 def _feed_body_dims(draw, offer, verdict, title_size, title_weight, title_lines_cap,
                      include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, FEED_TITLE_WIDTH, title_lines_cap, title_weight)
-    price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, pill_left, FEED_TITLE_WIDTH)
+    price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, pill_left, FEED_TITLE_WIDTH,
+                             FEED_NOTA_SIZE)
     y = 790 + title["height"] + 24 + price["height"]
     meta = None
     if include_meta:
@@ -834,6 +892,7 @@ def _resumo(plan: dict) -> dict:
         "selo": plan["selo"]["text"] if plan["selo"] is not None else "",
         "badge_pct": plan["badge_pct"],
         "riscado": plan["pill_left"][0],
+        "sem_cupom": plan["price"]["nota_text"],
         "title_lines": list(plan["title"]["lines"]),
         "meta": plan["meta"] is not None,
     }
@@ -842,7 +901,8 @@ def _resumo(plan: dict) -> dict:
 def story_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict:
     """O que `render_story` vai desenhar para este veredito — sem baixar a
     imagem nem pintar: `selo` (rótulo, ou "" quando não há), `badge_pct`,
-    `riscado` (a referência riscada na pill, ou ""), `title_lines`, `meta`.
+    `riscado` (a referência riscada na pill, ou ""), `sem_cupom` (o rótulo à
+    direita do preço, ou ""), `title_lines`, `meta`.
     É o hook que prova, por teste e não por pixel, que arte, texto e
     legendas concordam (mesmo `Verdict` -> selo em todos ou em nenhum)."""
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))

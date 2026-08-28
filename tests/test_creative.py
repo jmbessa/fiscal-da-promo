@@ -610,16 +610,24 @@ def test_a_pill_com_o_rotulo_cabe_na_largura_util_no_pior_caso(rotulo):
         assert not feed["orig_text"].endswith("…")
 
 
-def test_quando_falta_espaco_quem_cede_e_a_referencia_riscada(rotulo):
-    """Precedência do guarda: o riscado é decoração e já nasceu com mecanismo
-    de corte (`_hard_truncate`); o rótulo é a honestidade da peça e não pode
-    sumir para caber. Desligado não há o que ceder — mas o guarda continua de
-    pé, e quem é cortada continua sendo a referência."""
+def test_quando_falta_espaco_a_referencia_riscada_SOME_inteira(rotulo):
+    """Precedência do guarda: o riscado é decoração; o rótulo é a honestidade da
+    peça e não pode sumir para caber. Mas quando a referência não cabe INTEIRA
+    ela sai inteira — ela não é cortada.
+
+    Isto mudou na fase 5P, e mudou por causa de um PREVIEW. Com a condição
+    longa ("NO PIX COM CUPOM") no pior caso publicável, o corte de
+    `_hard_truncate` produzia um riscado "R$ 7…" ao lado de "R$ 523,48": um
+    número pela metade, riscado, que o seguidor lê como "de R$ 7". Preço
+    truncado não é decoração degradada, é informação FALSA — e um título
+    cortado, que é para onde `_hard_truncate` continua servindo, não tem esse
+    problema. Sem a referência a peça ainda diz o desconto: o badge de -N% e o
+    veredito continuam lá."""
     # R$ 99.999.999.999.999,99: não cabe em nenhum dos dois estados.
     offer = make_offer_ref(9999999999999999, price_current_cents=PIOR_PRECO)
     dims = _pill_story(offer, Verdict("A", 90, ""))
     assert dims["width"] <= STORY_TITLE_WIDTH
-    assert dims["orig_text"].endswith("…")
+    assert dims["orig_text"] == ""
     assert dims["nota_text"] == rotulo.upper()
 
 
@@ -687,8 +695,10 @@ def test_a_condicao_longa_cabe_no_canvas_e_no_story_quem_cede_e_a_referencia():
     feed = _pill_feed(offer, Verdict("A", 90, ""))
     assert story["nota_text"] == feed["nota_text"] == "NO PIX COM CUPOM"
     assert story["width"] <= STORY_TITLE_WIDTH and feed["width"] <= FEED_TITLE_WIDTH
-    assert story["orig_text"].endswith("…")
-    assert not feed["orig_text"].endswith("…")
+    # No story ela não cabe: sai INTEIRA, nunca cortada em "R$ 7…" (o preview
+    # que motivou a mudança). No feed cabe e fica.
+    assert story["orig_text"] == ""
+    assert feed["orig_text"] == "R$ 1.999,99"
 
 
 def test_no_modo_b_a_condicao_longa_nem_encosta_no_guarda():

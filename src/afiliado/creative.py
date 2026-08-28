@@ -437,11 +437,21 @@ def _price_pill_dims(
 
     # Guarda horizontal: a pill nunca pode passar da largura útil do canvas.
     # O rótulo entra na conta ANTES do riscado: onde não cabe tudo, quem cede é
-    # a referência riscada (decoração, com corte já previsto), nunca o rótulo.
+    # a referência riscada, nunca o rótulo.
+    #
+    # E ela cede INTEIRA — não é truncada (fase 5P). Até aqui o guarda chamava
+    # `_hard_truncate`, e com a condição longa no pior caso publicável isso
+    # produzia um riscado "R$ 7…" ao lado de "R$ 523,48" (visto no preview de
+    # 2026-08-28): um número pela metade, riscado, que o seguidor lê como "de
+    # R$ 7". Preço cortado não é decoração degradada, é informação FALSA — ao
+    # contrário de um título cortado, que é onde `_hard_truncate` continua
+    # servindo. Sem a referência a peça ainda diz o desconto: o badge de -N% e o
+    # veredito continuam lá.
     if left_text and max_width is not None:
         disponivel = max_width - 2 * pad_x - gap - cur_w - nota_bloco
-        left_text = (_hard_truncate(draw, left_text, orig_font, disponivel)
-                     if disponivel > 0 else "")
+        medida = draw.textbbox((0, 0), left_text, font=orig_font)
+        if (medida[2] - medida[0]) > disponivel:
+            left_text = ""
 
     if left_text:
         orig_bbox = draw.textbbox((0, 0), left_text, font=orig_font)

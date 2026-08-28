@@ -19,8 +19,10 @@ número menor e conclui que o nosso está velho.
 
 ## O preço com cupom não vem por SERVIDOR — seis caminhos fechados
 
-(Pelo navegador ele vem: ver "A sétima rota FUNCIONA", logo abaixo desta lista.
-Estas seis continuam valendo como o que NÃO adianta tentar por HTTP puro.)
+(Pelo navegador ele vem, mas só COM SESSÃO: ver "A sétima rota FUNCIONA" e, logo
+depois, "A sétima rota EXIGE SESSÃO" — a medição da fase 5P, que é a que decide
+se dá para usá-la. Estas seis continuam valendo como o que NÃO adianta tentar
+por HTTP puro.)
 
 Cinco pela API de afiliados, todos medidos nesta data:
 
@@ -92,6 +94,105 @@ Mesma honestidade, força oposta. E o segundo é literalmente a frase da página
 - ler `innerText` procurando "ou R$ X sem cupom" depende da redação da Shopee:
   se ela mudar, tem de **falhar fechado** (publicar o preço da API, como hoje)
   e nunca adivinhar.
+
+### A sétima rota EXIGE SESSÃO — e é isso que a trava (fase 5P, 2026-08-28)
+
+A leitura acima foi feita no **Chrome logado do dono**, que é exatamente o
+perfil que o requisito acima proíbe usar. Com um perfil PRÓPRIO E DESLOGADO a
+página do produto não entrega preço nenhum. Medido nesta data, com o binário do
+Chrome instalado e um `--user-data-dir` novo:
+
+| tentativa | resultado |
+|---|---|
+| headless, ida direta a `/product/{loja}/{item}` | "Login Necessário" |
+| headless, aquecendo pela home antes | "Login Necessário" |
+| **com janela** (headless=False), aquecendo pela home | "Login Necessário" |
+| URL canônica `…-i.{loja}.{item}`, desktop | "Login Necessário" |
+| user agent e viewport de **celular**, nas duas formas de URL | "Página indisponível" |
+| `?__mobile__=1` | "Página indisponível" |
+| home → `/search?keyword=…` → clicar no card | a **home** também caiu |
+
+O endereço final de todas elas é `https://shopee.com.br/verify/traffic/error`:
+não é uma tela de login, é a **verificação de tráfego** da Shopee. E ela
+PIORA com o uso — as primeiras tentativas carregaram a home normalmente e,
+depois de ~10 requisições automatizadas, a própria home passou a cair no
+interstício. Ou seja: navegar automatizado desta máquina **queima a reputação
+do IP que o dono usa logado**. Foi por isso que a medição parou aí.
+
+Duas rotas NÃO foram sondadas, de propósito:
+
+- **abrir o link de afiliado (`s.shopee.com.br/…`) no navegador.** Isso é um
+  clique de afiliado artificial — a fase 5A tirou o GET do `check_link`
+  justamente para não fazer isso (tráfego inválido é risco de encerramento da
+  conta de afiliados). E o interstício é aplicado ao NAVEGADOR, não à URL: a
+  rota 6 acima já mostrou que o destino é a casca mobile sem campo de preço;
+- **logar um perfil separado com a conta do dono.** É o mesmo cookie de
+  sessão, no mesmo IP, com automação em cima — o risco que a guarda existe
+  para evitar, só que com um passo a mais.
+
+**O que sobra, e é decisão do dono:** uma conta Shopee **descartável**, logada
+num perfil só nosso. Aí a rota funciona e o que se arrisca é uma conta que não
+sustenta nada. Nada disso está feito — o que está feito é a máquina, pronta e
+segura, para o dia em que existir essa sessão.
+
+### O que a fase 5P entregou, com a leitura DESLIGADA
+
+`src/afiliado/preco_real.py`, `preco_real:` no `config.yaml` (com
+`enabled: false`) e `afiliado preco-real <url|itemId>`.
+
+- **`parse_preco`** só devolve número quando a frase "ou R$ X sem cupom" está na
+  página E o X é exatamente o preço que o `refresh_price` mediu segundos antes
+  (a âncora). Toda outra situação é uma recusa COM NOME — interstício, frase
+  ausente, preço de outro anúncio, destaque que não é menor, destaque barato
+  demais (parcela lida como preço) — e a recusa é o comportamento de hoje.
+- **A condição publicada é "com cupom"**, não "no Pix com cupom": o `innerText`
+  medido não traz a palavra Pix. Ela só entra se a própria página a escrever
+  entre o número e a frase.
+- **O preço de checkout NÃO substitui o de catálogo.** Ele é carimbado ao lado
+  (`Offer.price_checkout_cents`). O de catálogo continua sendo a série do
+  `price_log`, da mediana, do p25, do piso do selo e do `check_price` — um preço
+  de cupom ali faria a regra do quartil da 5B alegar desconto todo dia em que
+  houvesse cupom. O portão do modo A segue decidido catálogo contra catálogo; o
+  percentual IMPRESSO passa a ser o dos dois números exibidos, para a conta
+  fechar na peça.
+- **O desarme** vive em `day_flags` (como o `instagram_story_link`): 3 leituras
+  seguidas sem preço fecham o dia; o interstício fecha na primeira.
+- **O perfil** passa por `preco_real.perfil_proibido` — qualquer caminho dentro
+  do "User Data" do Chrome/Chromium/Edge do usuário é recusado, e o run avisa o
+  chat de operações em vez de subir.
+
+**A dependência é o Playwright**, extra opcional `preco` (`pip install -e
+.[preco]`). Não é CDP contra o Chrome já instalado: com CDP alguém precisa subir
+o Chrome à mão com `--remote-debugging-port` e `--user-data-dir`, e o erro de
+apontar esse segundo argumento para o perfil do dono — ou de anexar à instância
+já aberta — é justamente o que encerra o lado Shopee.
+`launch_persistent_context` recebe o diretório como argumento obrigatório e ele
+passa pela guarda antes: a regra vira código. `channel: chrome` usa o binário
+instalado (menos detectável) com um perfil vazio nosso, então nem o download do
+Chromium é necessário. Sem o extra, a leitura se desarma com um aviso acionável
+e o pipeline segue inteiro.
+
+**O rótulo, invertido.** Ele NÃO é o `MOSTRAR_SEM_CUPOM` religado — aquele é a
+versão negativa e o dono a recusou com razão. Este só existe quando há número
+real e diz o que ele exige. Mesmo slot da 5K (à direita do preço, dentro da
+pill, zero altura), e a geometria foi conferida nos previews de 2026-08-28
+(`.claude/previews/fase5p/`, 24 peças: story e feed, modo A e B, com e sem selo,
+com e sem leitura, condição curta e longa, caso real e teto de preço):
+
+| pior caso publicável (R$ 999,99, riscado R$ 1.999,99) | story | feed |
+|---|---|---|
+| sem rótulo | 720 px | 637 px |
+| "COM CUPOM" (162/144 px — a MESMA largura de "SEM CUPOM") | 906 | 803 |
+| "NO PIX COM CUPOM" (288/256 px) | 929 | 915 |
+| largura útil | 936 | 952 |
+
+**E o preview mudou o código.** Com a condição longa no pior caso, o guarda
+horizontal cortava a referência riscada em **"R$ 7…"** ao lado de "R$ 523,48" —
+um número pela metade, riscado, que se lê como "de R$ 7". Preço truncado não é
+decoração degradada, é informação falsa. Desde esta fase a referência que não
+cabe **inteira sai inteira**; `_hard_truncate` continua servindo aos títulos,
+onde um corte não mente. Sem ela a peça ainda diz o desconto: o badge de -N%
+continua lá.
 
 ## O que fazer, então
 

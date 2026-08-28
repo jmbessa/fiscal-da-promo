@@ -174,7 +174,7 @@ def nova_sessao():
 
 
 def entra(cl, username: str, password: str, session_path: str | Path,
-          totp_seed: str = "") -> None:
+          totp_seed: str = "", sessionid: str = "") -> None:
     """Login com sessão persistida — o caminho ÚNICO de autenticação do
     projeto (canal e `afiliado ig-login` passam por aqui).
 
@@ -183,12 +183,22 @@ def entra(cl, username: str, password: str, session_path: str | Path,
     o padrão que dispara `challenge_required`. 2FA só por TOTP (app
     autenticador) — o instagrapi não faz SMS.
 
+    `sessionid` (env `IG_SESSIONID`) tem PRECEDÊNCIA sobre a senha. Medido em
+    2026-08-27 nesta conta: `login(user, senha)` devolve
+    `BadPassword: "You can log in with your linked Facebook account"` — a conta
+    é business vinculada a Página e não tem senha própria de Instagram, então
+    a senha correta é rejeitada por construção. O cookie `sessionid` de um
+    navegador já logado contorna isso e, de quebra, dispensa guardar a senha.
+
     Levanta o que o instagrapi levantar: quem chama decide o que dizer, e
     ninguém aqui tenta de novo em laço.
     """
     caminho = Path(session_path)
     if caminho.is_file():
         cl.load_settings(caminho)
+    if sessionid:
+        cl.login_by_sessionid(sessionid)
+        return
     if totp_seed:
         cl.login(username, password, verification_code=cl.totp_generate_code(totp_seed))
     else:
@@ -289,11 +299,16 @@ class InstagramStoryLinkChannel:
                  brand_handle: str | None = None, brand_name: str = "Fiscal da Promo",
                  verificar: bool = True, max_sem_link: int = MAX_SEM_LINK_PADRAO,
                  link_factory: Callable[[str], object] | None = None,
-                 http_client: httpx.Client | None = None, estado=None):
+                 http_client: httpx.Client | None = None, estado=None,
+                 sessionid: str = ""):
         self.username = (username or "").strip()
         # A senha só é lida em `cl.login`. Não vai a log, a exceção, a resumo:
         # ver `_sem_senha`, por onde passa TODA mensagem deste canal.
         self.password = password or ""
+        # Cookie de sessão do navegador (env `IG_SESSIONID`). Tem precedência
+        # sobre a senha e recebe o MESMO tratamento dela: é credencial, e não
+        # aparece em log, aviso, exceção nem resumo.
+        self.sessionid = (sessionid or "").strip()
         self.session_path = Path(session_path)
         # `client` injetado é o duplo do teste (e o cliente já logado, depois do
         # primeiro login); `http_client` é outra coisa — é quem baixa a imagem
@@ -499,7 +514,8 @@ class InstagramStoryLinkChannel:
             # Sem `totp_seed` de propósito: 2FA é assunto do `afiliado ig-login`,
             # que o dono roda à mão. Aqui, conta com 2FA e sessão morta vira
             # mensagem acionável — não uma tentativa de adivinhar código.
-            entra(cl, self.username, self.password, self.session_path)
+            entra(cl, self.username, self.password, self.session_path,
+                  sessionid=self.sessionid)
         except erros_de_sessao as exc:
             # Desafio, senha trocada, conta suspensa: a sessão morreu e só o
             # dono resolve. Dizer isso é diferente de dizer "deu erro".
@@ -596,6 +612,7 @@ class InstagramStoryLinkChannel:
             self.warnings.append(texto)
 
     def _sem_senha(self, texto: str) -> str:
-        """Nenhuma mensagem deste canal carrega `IG_PASSWORD` — nem quando ela
-        vem DENTRO do texto de uma exceção de terceiro."""
-        return sem_segredos(texto, self.password)
+        """Nenhuma mensagem deste canal carrega credencial — nem quando ela vem
+        DENTRO do texto de uma exceção de terceiro. Vale para a senha e para o
+        `sessionid`: um cookie de sessão dá acesso à conta como a senha dá."""
+        return sem_segredos(texto, self.password, self.sessionid)

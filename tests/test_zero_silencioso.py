@@ -43,36 +43,14 @@ def _sem_rede(request: httpx.Request) -> httpx.Response:
 
 
 def _dia_do_pool(raw: dict) -> date:
-    """O "hoje" em que este pool é contemporâneo: a MAIS RECENTE entre a
-    geração e as datas de verificação do buy box.
+    """O "hoje" em que este pool é contemporâneo — a data de geração.
 
-    Congelar só em `generated_at` parecia bastar até o passo semanal do buy box
-    rodar: ele carimba `buy_box_checked_at` de hoje sem regerar o arquivo (é o
-    procedimento documentado — o vencedor do buy box muda mais rápido que
-    título e histórico). Com o relógio parado na geração, essas datas ficam no
-    FUTURO e o leitor rejeita a entrada por data inválida — a suíte acusava um
-    pool saudável. A régua é o que este teste protege; a idade do arquivo,
-    não."""
-    datas = [date.fromisoformat(raw["generated_at"])]
-    datas += [date.fromisoformat(o["buy_box_checked_at"]) for o in raw["offers"]
-              if o.get("buy_box_checked_at")]
-    return max(datas)
-
-
-def test_o_dia_do_pool_acompanha_a_checagem_semanal_do_buy_box():
-    """O passo semanal carimba `buy_box_checked_at` sem regerar o arquivo.
-
-    Aconteceu de verdade em 2026-08-28: 31 entradas renovadas contra um
-    `generated_at` de 2026-08-26 fizeram o leitor recusar TODAS por "data do
-    buy box inválida", e a suíte apontou para o dado quando o errado era o
-    relógio do teste."""
-    raw = {"generated_at": "2026-08-26",
-           "offers": [{"buy_box_checked_at": "2026-08-28"},
-                      {"buy_box_checked_at": "2026-08-27"},
-                      {}]}
-    assert _dia_do_pool(raw) == date(2026, 8, 28)
-    # Sem checagem posterior, o dia continua sendo o da geração.
-    assert _dia_do_pool({"generated_at": "2026-08-26", "offers": [{}]}) == date(2026, 8, 26)
+    A única validade que resta é a do ARQUIVO (`generated_at` + `valid_days`).
+    Até a fase 5M havia uma segunda, de 7 dias, sobre o `buy_box_checked_at`
+    de cada entrada, e este helper tinha de acompanhar a MAIS RECENTE das
+    duas; o buy box saiu do leitor junto com a premissa de que o preço vinha
+    do anúncio dele."""
+    return date.fromisoformat(raw["generated_at"])
 
 
 def _congela(monkeypatch, dia: date) -> date:
@@ -131,12 +109,24 @@ def test_meli_produz_candidatas_com_config_real_e_pool_no_formato_novo(tmp_path,
     db.close()
 
 
-def test_toda_oferta_do_meli_nasce_com_referencia_p25_janelas_e_piso(tmp_path, pool_no_prazo):
+def test_toda_oferta_do_meli_nasce_SEM_regua_e_com_preco(tmp_path, pool_no_prazo):
+    """Invertido na fase 5M, e de propósito: a régua curada do pool é do
+    anúncio que vencia o buy box, e o preço publicado passou a ser o do
+    anúncio LINKADO mais barato — outro vendedor. Levar a régua junto faria o
+    selo comparar o preço de A com a mínima de B.
+
+    O que NÃO pode zerar junto é o preço: sem ele o `ev_score` é 0, a oferta
+    cai para o fim da fila e o `min_ev_brl` a mata — o zero silencioso de novo,
+    agora pela porta do ranking. A mediana do pool continua sendo a estimativa
+    com que a oferta entra na fila."""
     offers = _meli_source(tmp_path).fetch_offers(_cfg())
-    assert all(o.price_ref_cents > 0 for o in offers)
-    assert all(o.price_p25_cents > 0 for o in offers)
-    assert all(o.price_window_days >= pricing.MIN_WINDOW_DAYS for o in offers)
-    assert all(o.price_floor_cents > 0 and o.price_floor_window_days > 0 for o in offers)
+    assert offers
+    assert all(o.price_ref_cents == 0 and o.price_p25_cents == 0 for o in offers)
+    assert all(o.price_window_days == 0 for o in offers)
+    assert all(o.price_floor_cents == 0 and o.price_floor_window_days == 0 for o in offers)
+    assert all(o.price_current_cents > 0 for o in offers)
+    assert all(pricing.verdict(o, 10).mode == "B" for o in offers)
+    assert all(pricing.verdict(o, 10).seal == "" for o in offers)
 
 
 def test_desconto_do_vendedor_zerado_nao_derruba_mais_ninguem(tmp_path, pool_no_prazo):
@@ -155,8 +145,8 @@ def test_pool_real_produz_candidatas_com_o_config_real(tmp_path, monkeypatch):
     com o `config.yaml` de produção, tem de virar candidatas.
 
     É aqui que um refresh malfeito aparece: entrada sem p25, mínima acima do
-    p25, preço fora da faixa, buy box não verificado — tudo isso faz o leitor
-    ignorar a entrada COM MOTIVO, e se ele ignorar todas o ML publica zero.
+    p25, preço fora da faixa — tudo isso faz o leitor ignorar a entrada COM
+    MOTIVO, e se ele ignorar todas o ML publica zero.
     Sem este teste, esse zero seria indistinguível de "não havia oferta boa"
     (foi assim nas quatro vezes anteriores).
 

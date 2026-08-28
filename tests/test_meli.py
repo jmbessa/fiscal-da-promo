@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from datetime import date, timedelta
 
@@ -185,14 +186,18 @@ def test_fetch_offers_le_pool_e_mapeia_campos(tmp_path):
     assert o.title == "Creatina 1kg Growth"
     assert o.image_url == "https://http2.mlstatic.com/D_creatina.jpg"
     assert o.category == "MLB264586"
+    # A mediana do pool vira o preço ESTIMADO com que a oferta entra na fila
+    # (o preço de verdade só existe depois do `refresh_price`).
     assert o.price_current_cents == 2590
     assert o.price_original_cents == 2590  # sem desconto inflado (ver Mudança 3)
-    assert o.price_ref_cents == 2590       # mediana da janela, do pool curado
-    assert o.price_p25_cents == 2428
-    assert o.price_window_days == 91
-    assert o.price_floor_cents == 1699     # mínima histórica -> selo de menor preço
-    assert o.price_floor_window_days == 365
-    assert o.real_discount_pct == 0        # no preço típico: nada a alegar
+    # ...mas a RÉGUA não viaja mais na oferta: fase 5M, ver
+    # `test_a_oferta_do_meli_nasce_sem_regua` logo abaixo.
+    assert o.price_ref_cents == 0
+    assert o.price_p25_cents == 0
+    assert o.price_window_days == 0
+    assert o.price_floor_cents == 0
+    assert o.price_floor_window_days == 0
+    assert o.real_discount_pct == 0        # sem referência: nada a alegar
     assert o.sales == 13337
     assert o.rating == 4.8
     assert o.commission_pct == 4.0
@@ -346,8 +351,7 @@ def test_pool_aceita_centavos_em_float_integral(tmp_path):
     src = source_with(_no_network_handler, tmp_path)
     (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
     assert src.pool_warning is None
-    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (5000, 4500, 91)
-    assert (o.price_floor_cents, o.price_floor_window_days) == (4000, 365)
+    assert o.price_current_cents == 5000
     # inteiros de verdade: o resto do código faz aritmética de centavos
     assert all(isinstance(v, int) for v in (o.price_ref_cents, o.price_p25_cents,
                                             o.price_current_cents, o.price_window_days,
@@ -403,17 +407,15 @@ def test_pool_pula_p25_acima_da_referencia_e_minima_acima_do_p25(tmp_path):
                      "1 p25 acima da referência)")
 
 
-def test_pool_pula_entrada_sem_buy_box_e_id_repetido(tmp_path):
+def test_pool_pula_id_repetido_e_entrada_malformada(tmp_path):
     ids, aviso = _pool_com(tmp_path, [
-        {"product_id": "A", "title": "t", "price_ref_cents": 5000, "buy_box_item_id": ""},
-        {"product_id": "B", "title": "t", "price_ref_cents": 5000, "buy_box_item_id": None},
         {"product_id": "C", "title": "t", "price_ref_cents": 5000},
         {"product_id": "C", "title": "t", "price_ref_cents": 5000},
         {"product_id": "", "title": "t", "price_ref_cents": 5000},
         "não é objeto",
     ])
     assert ids == ["C"]
-    assert aviso == ("5 entrada(s) do pool ignorada(s) (2 sem buy box, 1 entrada não é objeto, "
+    assert aviso == ("3 entrada(s) do pool ignorada(s) (1 entrada não é objeto, "
                      "1 id repetido, 1 sem id ou título)")
 
 
@@ -439,64 +441,38 @@ def test_pool_antigo_sem_p25_e_rejeitado_inteiro(tmp_path):
     assert aviso == "1 entrada(s) do pool ignorada(s) (1 sem p25)"
 
 
-# -- buy box que envelhece (rodada de correção da 5B, Fix 1 — caminho B) ----
-# Verificado ao vivo em 2026-08-26, 3 produtos: a ordem de /products/{id}/items
-# bateu com a página em 2 de 3 (no 3º a página mostrava results[1]) e o
-# anúncio do pool de um deles já tinha sumido da lista. Nem a API nem o pool
-# reproduzem a página com certeza; o que o loader garante é a IDADE da
-# verificação do buy box — 7 dias.
+# -- fase 5M: o buy box saiu do leitor --------------------------------------
+# A validade de 7 dias do `buy_box_checked_at` existia para proteger UMA
+# premissa: o preço publicado era o do anúncio do buy box, e esse anúncio
+# envelhece. A premissa caiu — o preço agora é o do anúncio linkado mais
+# barato, lido ao vivo. Manter a validade só faria o pool inteiro parar de
+# publicar 7 dias depois de cada refresh, por um campo que ninguém lê.
 
-def test_pool_buy_box_verificado_ha_mais_de_7_dias_e_ignorado_com_os_dias_no_motivo(tmp_path):
-    hoje = date.today()
+
+def test_pool_nao_exige_mais_buy_box_nem_a_data_dele(tmp_path):
     ids, aviso = _pool_com(tmp_path, [
-        {"product_id": "FRESCO", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (hoje - timedelta(days=7)).isoformat()},
-        {"product_id": "HOJE", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": hoje.isoformat()},
-        {"product_id": "VELHO", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (hoje - timedelta(days=8)).isoformat()},
-        {"product_id": "MUITO-VELHO", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (hoje - timedelta(days=30)).isoformat()},
+        {"product_id": "SEM-BB", "title": "t", "price_ref_cents": 5000,
+         "buy_box_item_id": None},
+        {"product_id": "BB-VELHO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (date.today() - timedelta(days=90)).isoformat()},
+        {"product_id": "BB-TORTO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": "ontem"},
     ])
-    assert ids == ["FRESCO", "HOJE"]
-    assert aviso == ("2 entrada(s) do pool ignorada(s) (1 buy box não verificado há 30 dias, "
-                     "1 buy box não verificado há 8 dias)")
+    assert ids == ["SEM-BB", "BB-VELHO", "BB-TORTO"]
+    assert aviso is None
 
 
-def test_pool_sem_buy_box_checked_at_usa_a_data_de_geracao(tmp_path):
-    # Gerar o pool É uma verificação (o Passo 1 do skill devolve o buyBoxId):
-    # sem o campo, vale a data de geração — e envelhece junto com ela, mesmo
-    # com o pool dentro dos 30 dias de validade.
+def test_pool_antigo_de_30_dias_ainda_publica(tmp_path):
+    """Antes da 5M um pool gerado há 8 dias vinha VAZIO (o buy box vencia em 7)
+    e o ML parava sozinho entre um `/meli-pool-refresh` e outro. A validade que
+    resta é a do arquivo (`valid_days`, 30 dias)."""
     pool_path = tmp_path / "meli_offers.json"
     cfg = {"meli": {"offers_path": str(pool_path)}, "selection": SEL}
     write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
-               generated_at=date.today() - timedelta(days=8))
-    src = source_with(_no_network_handler, tmp_path)
-    assert src.fetch_offers(cfg) == []
-    assert src.pool_warning == "1 entrada(s) do pool ignorada(s) (1 buy box não verificado há 8 dias)"
-
-    write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
-               generated_at=date.today() - timedelta(days=7))
+               generated_at=date.today() - timedelta(days=29), valid_days=30)
     src = source_with(_no_network_handler, tmp_path)
     assert len(src.fetch_offers(cfg)) == 1
     assert src.pool_warning is None
-
-
-def test_pool_buy_box_checked_at_invalido_ou_no_futuro_e_ignorado(tmp_path):
-    ids, aviso = _pool_com(tmp_path, [
-        {"product_id": "A", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": "ontem"},
-        {"product_id": "B", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": 20260826},
-        {"product_id": "C", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": ""},
-        {"product_id": "D", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (date.today() + timedelta(days=1)).isoformat()},
-    ])
-    assert ids == []
-    assert aviso == "4 entrada(s) do pool ignorada(s) (4 data do buy box inválida)"
-
-
-def test_pool_validade_do_buy_box_e_de_7_dias():
-    from afiliado.sources.meli import BUY_BOX_MAX_AGE_DAYS
-    assert BUY_BOX_MAX_AGE_DAYS == 7
 
 
 # -- fase 5J: a entrada SEM HISTÓRICO (os cinco campos de régua zerados) -----
@@ -577,8 +553,7 @@ def test_pool_sem_historico_nao_e_barrado_pela_faixa_de_preco(tmp_path):
     ])
     assert ids == ["SEM"]                      # a de R$ 3.000 COM régua cai
     assert aviso == "1 entrada(s) do pool ignorada(s) (1 fora da faixa de preço)"
-    assert "1 entrada(s) sem histórico" in nota
-    assert "preço VIVO" in nota
+    assert "1 oferta(s) do ML nascem SEM RÉGUA" in nota
 
 
 def test_pool_so_com_entradas_sem_historico_nao_gera_aviso_nenhum(tmp_path):
@@ -592,7 +567,7 @@ def test_pool_so_com_entradas_sem_historico_nao_gera_aviso_nenhum(tmp_path):
     ])
     assert ids == ["A", "B"]
     assert aviso is None
-    assert nota.startswith("2 entrada(s) sem histórico")
+    assert nota.startswith("2 oferta(s) do ML nascem SEM RÉGUA")
     assert "modo B" in nota
 
 
@@ -611,9 +586,11 @@ def test_pool_note_nao_sobrevive_a_uma_leitura_que_nem_chegou_ao_pool(tmp_path):
     assert "pool ausente ou inválido" in src.pool_warning
 
 
-def test_ruler_coverage_conta_quantas_entradas_tem_regua_curada(tmp_path):
-    """J4: sem este número, "o ML só publica modo B" vira descoberta de semanas
-    depois — e o ponto da fase é que a proporção mude sozinha com o tempo."""
+def test_ruler_coverage_e_zero_por_construcao_desde_a_5M(tmp_path):
+    """J4 + M4: o número existe para que "o ML só publica modo B" não vire
+    descoberta de semanas depois. Desde a 5M ele é ZERO por desenho — a régua
+    curada é de OUTRO anúncio —, e a régua própria (price_log) só aparece
+    depois do `enrich_offers`, que roda adiante."""
     pool_path = tmp_path / "meli_offers.json"
     write_pool(pool_path, [
         {"product_id": "A", "title": "t", "price_ref_cents": 5000},
@@ -622,8 +599,48 @@ def test_ruler_coverage_conta_quantas_entradas_tem_regua_curada(tmp_path):
     ])
     src = source_with(_no_network_handler, tmp_path)
     offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
-    assert src.ruler_coverage(offers) == (1, 3)
+    assert src.ruler_coverage(offers) == (0, 3)
     assert src.ruler_coverage([]) == (0, 0)
+
+
+# -- fase 5M (M4): a régua do pool é de OUTRO anúncio -------------------------
+
+def test_a_oferta_do_meli_nasce_sem_regua(tmp_path):
+    """A régua curada (mediana/p25/janela/mínima) é do anúncio que vencia o buy
+    box; o preço publicado é o do anúncio linkado mais barato — outro vendedor.
+    Selar "menor preço dos últimos 12 meses (verificado)" comparando o preço de
+    A com a mínima de B é mentira, então a oferta nasce sem régua e publica em
+    modo B."""
+    from afiliado import pricing
+
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [
+        {"product_id": "MLB1", "title": "Creatina", "price_ref_cents": 10490,
+         "price_p25_cents": 9990, "price_window_days": 91,
+         "price_historic_min_cents": 8990, "price_min_window_days": 365},
+    ])
+    src = source_with(_no_network_handler, tmp_path)
+    (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (0, 0, 0)
+    assert (o.price_floor_cents, o.price_floor_window_days) == (0, 0)
+    # ...e o veredito que sai daí não alega desconto nem sela nada.
+    veredito = pricing.verdict(dataclasses.replace(o, price_current_cents=7890), 10)
+    assert veredito.mode == "B"
+    assert veredito.discount_pct == 0 and veredito.seal == ""
+
+
+def test_a_mediana_do_pool_ainda_serve_para_ranquear(tmp_path):
+    """Zerar a régua não pode zerar o preço: sem preço o `ev_score` é 0 e a
+    oferta cai para o fim da fila (ou morre no `min_ev_brl`). A mediana do pool
+    continua sendo a ESTIMATIVA com que a oferta entra na fila — o preço de
+    verdade só existe depois do `refresh_price`."""
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "MLB1", "title": "t", "price_ref_cents": 10490}])
+    src = source_with(_no_network_handler, tmp_path)
+    (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    assert o.price_current_cents == 10490
+    assert o.price_original_cents == 10490      # e sem "de" inventado
+    assert o.discount_pct == 0
 
 
 # -- fase 5M: o preço publicado é o do ANÚNCIO que o nosso link abre ---------

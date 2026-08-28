@@ -24,17 +24,16 @@ TOKEN_EXPIRY_MARGIN_S = 60
 # `refresh_price`, imediatamente antes de publicar.
 DEFAULT_OFFERS_PATH = "data/meli_offers.json"
 DEFAULT_VALID_DAYS = 30
-# Páginas de /products/{id}/items percorridas atrás do anúncio do buy box
-# (100 anúncios por página; o maior produto visto tinha 38).
+# Páginas de /products/{id}/items percorridas atrás dos anúncios linkados
+# (100 anúncios por página; o maior produto do pool tem 277 — medido em
+# 2026-08-28, sondando os 53 inteiros: 1717 anúncios, mediana 4 por produto).
 MAX_ITEMS_PAGES = 5
-# Validade da verificação do buy box (rodada de correção da 5B, Fix 1). Ao
-# vivo em 2026-08-26, 3 produtos: `results[0]` de /products/{id}/items bateu
-# com a página em 2 de 3 (no 3º a página mostrava `results[1]`), e o anúncio
-# do pool de um deles já tinha SUMIDO da lista. Nem a ordem da API nem o
-# `buy_box_item_id` do pool reproduzem a página com certeza — o que o loader
-# consegue garantir é a IDADE da verificação: `buy_box_checked_at` (ou, na
-# falta, `generated_at`) com mais de 7 dias → entrada ignorada com motivo.
-BUY_BOX_MAX_AGE_DAYS = 7
+#
+# O `buy_box_checked_at` NÃO é mais lido (fase 5M). A validade de 7 dias dele
+# protegia uma premissa que caiu: o preço publicado era o do anúncio do buy
+# box, e esse anúncio envelhece. Agora o preço é o do anúncio linkado mais
+# barato, lido ao vivo — manter a validade só faria o pool inteiro parar de
+# publicar 7 dias depois de cada refresh, por um campo que ninguém lê.
 
 # Campos inteiros obrigatórios em cada entrada do pool (fase 5B, C7d) e o
 # motivo, por grupo, que vai ao aviso quando faltam.
@@ -222,12 +221,16 @@ class MeliSource:
         no aviso, por motivo — quando falta qualquer campo de preço inteiro
         > 0 (`CAMPOS_DE_PRECO`), quando `price_ref_cents / 100` sai de
         `selection.price_min_brl..price_max_brl`, quando o p25 passa da
-        referência, quando a mínima histórica passa do p25, quando não há
-        `buy_box_item_id` (sem ele `refresh_price` nunca teria preço: entrada
-        morta por construção), ou quando a verificação do buy box
-        (`buy_box_checked_at`; na falta, `generated_at`) tem mais de
-        `BUY_BOX_MAX_AGE_DAYS` dias — o vencedor muda e o anúncio do pool some
-        da lista (visto ao vivo). Um pool que era foto de um dia (C7) não passa."""
+        referência ou quando a mínima histórica passa do p25. Um pool que era
+        foto de um dia (C7) não passa.
+
+        A régua curada continua sendo VALIDADA aqui e não viaja na oferta
+        (fase 5M, ver `_parse_pool_offer`): pool quebrado segue sendo pool
+        quebrado — e a validação custa zero, porque nenhuma das 53 entradas do
+        pool de produção cai por ela.
+
+        `buy_box_item_id` e `buy_box_checked_at` deixaram de ser exigidos: o
+        preço não vem mais do anúncio do buy box."""
         me = cfg.get("meli") or {}
         sel = cfg.get("selection") or {}
         offers_path = Path(me.get("offers_path") or DEFAULT_OFFERS_PATH)
@@ -260,7 +263,7 @@ class MeliSource:
             if not isinstance(item, dict):
                 motivos["entrada não é objeto"] += 1
                 continue
-            offer, motivo = _parse_pool_offer(item, commission_pct, sel, generated_at, hoje)
+            offer, motivo = _parse_pool_offer(item, commission_pct, sel)
             if offer is None:
                 motivos[motivo] += 1
                 continue
@@ -277,15 +280,16 @@ class MeliSource:
         # `pool_note` é INFORMATIVO e mora fora do `pool_warning` de propósito:
         # este significa "voltou menos do que o pool tem", e é sobre ele que a
         # rede contra o zero silencioso afirma `is None`. Um pool inteiro sem
-        # histórico é estado SAUDÁVEL — despejá-lo no aviso faria o doctor
-        # imprimir ⚠️ num dia normal, e um ⚠️ que está sempre aceso deixa de
-        # ser lido: a entrada silenciosamente ignorada se esconderia atrás dele.
-        sem_regua = len(offers) - self.ruler_coverage(offers)[0]
+        # régua é estado SAUDÁVEL desde a 5M — despejá-lo no aviso faria o
+        # doctor imprimir ⚠️ num dia normal, e um ⚠️ que está sempre aceso
+        # deixa de ser lido: a entrada ignorada em silêncio se esconderia atrás.
         self.pool_note = (
-            f"{sem_regua} entrada(s) sem histórico: régua zerada, publicam em "
-            "modo B (sem alegar desconto e sem selo) até o nosso price_log "
-            "sustentar a régua — a faixa de preço delas é checada no preço "
-            "VIVO, depois do refresh, e não na carga") if sem_regua else None
+            f"{len(offers)} oferta(s) do ML nascem SEM RÉGUA (fase 5M): a régua "
+            "curada do pool é do anúncio que vencia o buy box e o preço "
+            "publicado é o do anúncio linkado mais barato — outro vendedor. "
+            "Elas publicam em modo B (sem alegar desconto e sem selo) até o "
+            "nosso price_log, que agora registra o preço do anúncio escolhido, "
+            "sustentar uma régua própria") if offers else None
         return offers
 
     # -- preço ao vivo (imediatamente antes de publicar) -------------------
@@ -403,16 +407,18 @@ class MeliSource:
         return sum(1 for o in offers if pool.get(o.item_id)), len(offers)
 
     def ruler_coverage(self, offers: list[Offer]) -> tuple[int, int]:
-        """(quantas ofertas trazem RÉGUA CURADA do pool, total) — fase 5J, J4.
+        """(quantas ofertas trazem RÉGUA, total) — fase 5J, J4.
 
-        As demais são as entradas "sem histórico": publicáveis, mas em modo B
-        até `ref_min_observations` dias do nosso price_log sustentarem uma
-        régua própria. Sem este número no doctor e no resumo de ops, "o ML só
-        publica modo B" vira descoberta de semanas depois — e o ponto da fase é
-        justamente que essa proporção mude sozinha com o tempo.
+        Sem este número no doctor e no resumo de ops, "o ML só publica modo B"
+        vira descoberta de semanas depois.
 
-        Chamada ANTES do `enrich_offers`, é o que o POOL tem; depois dele, o
-        que a oferta tem (o degrau 3 já pode ter carimbado régua própria)."""
+        **Desde a 5M o primeiro número é 0 por construção**, e isso é o
+        desenho, não um defeito: a régua curada é do anúncio do buy box e o
+        preço é de outro anúncio, então ela não viaja na oferta (ver
+        `_parse_pool_offer`). Como o pipeline e o doctor chamam este método
+        ANTES do `enrich_offers`, a régua que o nosso price_log vier a
+        sustentar (degrau 3) não aparece aqui — quem a vê é o veredito do
+        post."""
         return sum(1 for o in offers if o.price_ref_cents > 0), len(offers)
 
     @property
@@ -513,8 +519,8 @@ def _centavos(valor) -> tuple[int | None, str]:
     return valor, ""
 
 
-def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
-                      generated_at: date, hoje: date) -> tuple[Offer | None, str]:
+def _parse_pool_offer(item: dict, commission_pct: float,
+                      sel: dict) -> tuple[Offer | None, str]:
     """(Offer, "") quando a entrada é válida; (None, motivo) quando é pulada."""
     product_id = str(item.get("product_id") or "").strip()
     title = str(item.get("title") or "").strip()
@@ -532,13 +538,6 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         # Motivo PRÓPRIO: "sem p25" mandaria a curadoria procurar um campo que
         # está lá, e "sem histórico" absolveria uma régua que está quebrada.
         return None, "régua parcial (uns campos de régua zerados, outros não)"
-    if not str(item.get("buy_box_item_id") or "").strip():
-        return None, "sem buy box"
-    idade_buy_box = _dias_desde_a_checagem(item.get("buy_box_checked_at"), generated_at, hoje)
-    if idade_buy_box is None:
-        return None, "data do buy box inválida"
-    if idade_buy_box > BUY_BOX_MAX_AGE_DAYS:
-        return None, f"buy box não verificado há {idade_buy_box} dias"
     ref, p25 = valores["price_ref_cents"], valores["price_p25_cents"]
     minima = valores["price_historic_min_cents"]
     preco_min = sel.get("price_min_brl")
@@ -565,7 +564,9 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         # entrada sem histórico, que quer dizer "preço ainda desconhecido". Nos
         # dois casos ele é substituído pelo preço VIVO em `refresh_price`, antes
         # de qualquer decisão de publicação; o 0 nunca chega a um post (sem
-        # preço vivo a oferta é descartada, "sem buy box").
+        # preço vivo a oferta é descartada). Ele serve para RANQUEAR (o
+        # `ev_score` precisa de um preço) e para a faixa de preço na carga —
+        # não para o post.
         price_original_cents=ref,
         price_current_cents=ref,
         commission_pct=commission_pct,
@@ -579,27 +580,30 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         sales_e_faixa=True,
         sales_window_days=SALES_WINDOW_DAYS,
         rating=float(item.get("rating") or 0.0),
-        price_ref_cents=ref,
-        price_p25_cents=p25,
-        price_window_days=valores["price_window_days"],
-        price_floor_cents=minima,
-        price_floor_window_days=valores["price_min_window_days"],
+        # RÉGUA ZERADA (fase 5M, M4). A régua curada do pool — mediana, p25,
+        # janela e mínima histórica — é do anúncio que vencia o buy box. O
+        # preço publicado passou a ser o do anúncio LINKADO mais barato, que é
+        # outro vendedor: os dois deixaram de falar da mesma coisa, e um selo
+        # "menor preço dos últimos 12 meses (verificado)" comparando o preço do
+        # vendedor A com a mínima do vendedor B é mentira.
+        #
+        # Então a oferta do ML nasce sem régua e publica em MODO B (preço +
+        # prova social, sem alegar desconto e sem selo) — o caminho que a fase
+        # 5J já abriu. A régua volta sozinha quando o NOSSO `price_log`, que
+        # agora registra o preço do anúncio escolhido, tiver
+        # `selection.ref_min_observations` dias distintos: aí ela fala do mesmo
+        # objeto que o post. Melhor um post honesto sem selo que um selo que
+        # não se sustenta.
+        #
+        # Os números curados continuam NO ARQUIVO (são medianas reais de 13
+        # semanas) e continuam validados na carga: pool quebrado segue sendo
+        # pool quebrado, e a faixa de preço ainda é checada sobre a referência.
+        price_ref_cents=0,
+        price_p25_cents=0,
+        price_window_days=0,
+        price_floor_cents=0,
+        price_floor_window_days=0,
     ), ""
-
-
-def _dias_desde_a_checagem(checado, generated_at: date, hoje: date) -> int | None:
-    """Idade (dias) da verificação do buy box. Campo ausente/nulo → a data de
-    geração do pool (gerar o pool É verificar: o Passo 1 do skill devolve o
-    `buyBoxId`). Não-string, data inválida ou no futuro → None."""
-    if checado is None:
-        return (hoje - generated_at).days
-    if not isinstance(checado, str):
-        return None
-    try:
-        idade = (hoje - date.fromisoformat(checado)).days
-    except ValueError:
-        return None
-    return idade if idade >= 0 else None
 
 
 def _price_cents(price) -> int | None:

@@ -7,7 +7,7 @@ from datetime import datetime
 
 import yaml
 
-from afiliado import pipeline
+from afiliado import cli, pipeline
 
 WORKFLOW = ".github/workflows/publish.yml"
 
@@ -63,18 +63,40 @@ def _posts_per_run() -> int:
 
 
 def test_publish_roda_de_hora_em_hora_das_08_as_23_brt():
-    # 16 jobs/dia: minuto 0 de 11h a 23h UTC (08:00–20:00 BRT) + 0h a 2h UTC
-    # (21:00–23:00 BRT). Eram 32 (de 30 em 30 min) até a revisão da 5C mostrar
+    # 16 jobs/dia: minuto 7 de 11h a 23h UTC (08:07–20:07 BRT) + 0h a 2h UTC
+    # (21:07–23:07 BRT). Eram 32 (de 30 em 30 min) até a revisão da 5C mostrar
     # que o GitHub cobra cada job arredondado para cima — ver
     # test_a_cadencia_cabe_na_cota_mensal_de_minutos.
     #
-    # A primeira hora ficou num cron SÓ DELA na rodada de fechamento da 5D:
-    # `github.event.schedule` vale a string do cron que disparou, então
-    # "0 11-23 * * *" não distingue as 08:00 das outras doze — e é nessa hora
-    # que o conteúdo de feed sai, uma vez por dia. A cadência não mudou.
-    assert _crons() == ["0 11 * * *", "0 12-23 * * *", "0 0-2 * * *"]
+    # A primeira hora teve um cron SÓ DELA entre a 5D e a 5G, para que o passo
+    # do feed pudesse se reconhecer por `github.event.schedule`. A fase 5G
+    # mediu que ~15 dos 16 disparos são DESCARTADOS pelo agendador: prender o
+    # feed a um slug único era feed que nunca sai. O freio dele foi para o
+    # código (teto diário em `day_flags`) e os crons voltaram a ser dois.
+    assert _crons() == ["7 11-23 * * *", "7 0-2 * * *"]
     assert len(_disparos_brt()) == 16
     assert _disparos_brt()[0].hour == 8 and _disparos_brt()[-1].hour == 23
+
+
+def test_o_cron_foge_do_minuto_zero_e_cabe_na_janela_do_ritmo():
+    """Fase 5G, a medição que motivou tudo: em ~25 h e ~16 disparos esperados,
+    o workflow `publish` teve **1** run — e ele saiu 51 min atrasado. O GitHub
+    documenta que o evento `schedule` atrasa em períodos de carga alta, que o
+    COMEÇO DE CADA HORA é o pico, e que um disparo atrasado além do intervalo é
+    descartado. Minuto 0 é o pior slot possível.
+
+    A regra tem duas metades, e a segunda é o que impede a "correção" ingênua
+    de escolher o minuto 30: `schedule.window_end` é 23:15, e o último disparo
+    (23:xx BRT) precisa cair DENTRO da janela — senão `pacing_budget` devolve 0
+    e o último run do dia não publica nada."""
+    minutos = {int(m) for cron in _crons() for m in cron.split()[0].split(",")}
+    assert minutos and 0 not in minutos
+    fim = pipeline.schedule_settings(_config())["window_end"]
+    hora_do_fim, minuto_do_fim = (int(x) for x in fim.split(":"))
+    # A segunda metade só tem sentido porque o último disparo é na hora em que
+    # a janela fecha; se um dia não for, é a conta que muda, não a regra.
+    assert _disparos_brt()[-1].hour == hora_do_fim
+    assert max(minutos) < minuto_do_fim
 
 
 def test_a_cadencia_cabe_na_cota_mensal_de_minutos():
@@ -166,17 +188,28 @@ def test_o_job_mede_a_propria_duracao():
 PASSO_FEED = "Conteúdo do feed"
 
 
-def test_o_feed_sai_uma_vez_por_dia_no_primeiro_disparo():
-    """A fase 5D entregou `afiliado feed` e NADA o executava — o carrossel era
-    gesto manual do dono. O cron deste workflow é de hora em hora e o teto do
-    `instagram_carrossel` é 1/dia: rodar o comando nos 16 disparos para
-    descartar 15 gastaria minutos à toa. O passo é condicionado ao cron do
-    PRIMEIRO disparo do dia (08:00 BRT), e o teto do config fica como rede."""
+def test_o_feed_roda_em_todo_disparo_e_o_freio_mora_no_codigo():
+    """A fase 5D entregou `afiliado feed` e NADA o executava; a 5D o prendeu ao
+    cron das 08:00 (`if: github.event.schedule == '0 11 * * *'`) para não
+    gastar minutos nos outros 15 disparos.
+
+    A 5G mediu que ~15 dos 16 disparos são DESCARTADOS pelo agendador: prender
+    a peça a um slug de cron é feed que nunca sai — e que não sai em silêncio,
+    porque o passo é `continue-on-error`. O passo perde o `if:` (roda em todo
+    disparo, `workflow_dispatch` incluído) e quem garante o "uma vez por dia" é
+    o código, onde os testes alcançam: `_carrossel_pode_sair` e
+    `_flagrante_pode_sair`, ambos ANTES de qualquer descoberta."""
     passo = _passo(PASSO_FEED)
-    cron = re.search(r"github\.event\.schedule == '([^']+)'", passo["if"]).group(1)
-    assert cron in _crons()
-    assert _horas_brt(cron) == [8] == [_disparos_brt()[0].hour]
+    assert "if" not in passo
+    assert "github.event.schedule" not in yaml.safe_dump(passo)
     assert "afiliado feed" in passo["run"]
+    # Os dois freios que o comentário do passo promete existem de verdade...
+    assert callable(cli._carrossel_pode_sair) and callable(cli._flagrante_pode_sair)
+    # ...e o comentário diz o CUSTO da troca (dois comandos por disparo, que
+    # saem antes de qualquer rede quando a cota do dia já foi gasta) no lugar
+    # da justificativa do `if:` que morreu.
+    with open(WORKFLOW, encoding="utf-8") as f:
+        assert "startup do Python" in f.read()
 
 
 def test_o_feed_nao_pode_derrubar_o_commit_de_estado():

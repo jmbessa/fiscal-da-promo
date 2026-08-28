@@ -8,10 +8,12 @@
 # `--posts-per-run 5` o cobre com uma vaga de folga para recuperar um disparo
 # perdido (atraso de cron é rotina no Actions).
 #
-# O conteúdo de FEED (fase 5D) tem cadência própria: o passo "Conteúdo do feed"
-# roda UMA vez por dia, no disparo das 08:00 BRT — um carrossel publicado e um
-# flagrante despachado ao chat de operações. Ele custa ~1 job/dia de minutos e
-# não pode derrubar o commit de estado (`continue-on-error`).
+# O conteúdo de FEED (fase 5D) tem cadência própria — um carrossel publicado e
+# um flagrante despachado ao chat de operações POR DIA. Quem garante o "por
+# dia" é o CÓDIGO (teto do `instagram_carrossel` + `day_flags` do flagrante),
+# não o cron: o passo "Conteúdo do feed" roda em TODOS os disparos e sai calado
+# nos que já gastaram a cota (fase 5G, G2). Ele não pode derrubar o commit de
+# estado (`continue-on-error`).
 #
 # Custo — a conta REFEITA (o GitHub cobra cada JOB arredondado para o minuto
 # SEGUINTE; runner Linux = 1×; plano grátis de repo privado = 2.000 min/mês):
@@ -46,13 +48,20 @@
 name: publish
 on:
   schedule:
-    # A primeira hora tem um cron SÓ DELA porque `github.event.schedule` vale a
-    # string do cron que disparou o run: com "0 11-23 * * *" as treze horas
-    # seriam indistinguíveis, e o passo do feed (1×/dia) não teria como se
-    # reconhecer. A cadência é a mesma de antes: 16 disparos.
-    - cron: "0 11 * * *"         # 08:00 BRT — o primeiro run do dia
-    - cron: "0 12-23 * * *"      # 09:00–20:00 BRT
-    - cron: "0 0-2 * * *"        # 21:00–23:00 BRT
+    # MINUTO 7, e não 0 (fase 5G). Medido na API do GitHub em 2026-08-28: em
+    # ~25 h de elegibilidade na branch padrão e ~16 disparos esperados, este
+    # workflow teve UM run — e ele saiu 51 min atrasado. O `tests.yml` rodava
+    # normalmente no mesmo período, então não é billing nem permissão: é o
+    # agendador. O GitHub documenta que o evento `schedule` atrasa em carga
+    # alta, que o COMEÇO DE CADA HORA é o pico e que disparo atrasado além do
+    # intervalo é DESCARTADO — minuto 0 é o pior slot possível.
+    # O 7 tem teto: `schedule.window_end` é 23:15, e um minuto ≥ 15 jogaria o
+    # último disparo para fora da janela do ritmo (`pacing_budget` = 0, último
+    # run do dia sem publicar nada). Travado em tests/test_workflow_yaml.py.
+    # Voltaram a ser DUAS entradas: o corte em três só existia para o `if:` do
+    # passo do feed, que morreu junto com a dependência de um disparo único.
+    - cron: "7 11-23 * * *"      # 08:07–20:07 BRT
+    - cron: "7 0-2 * * *"        # 21:07–23:07 BRT
   workflow_dispatch:
     inputs:
       dry_run:
@@ -119,11 +128,23 @@ jobs:
           MELI_REFRESH_TOKEN: ${{ secrets.MELI_REFRESH_TOKEN }}
       # Fase 5D (F1): o `afiliado feed` existia e ninguém o executava — o
       # carrossel do termômetro era gesto manual do dono. Ele é DIÁRIO (o teto
-      # de `channels.instagram_carrossel` é 1/dia), e este workflow dispara de
-      # hora em hora: rodar o comando nos 16 disparos para descartar 15 é
-      # desperdício de minutos, então o passo se prende ao cron do PRIMEIRO
-      # disparo do dia. O teto do config fica como rede — se um dia o cron for
-      # duplicado, `pacing_budget` + `count_posts_today` barram o segundo.
+      # de `channels.instagram_carrossel` é 1/dia).
+      #
+      # Fase 5G (G2): o passo era `if: github.event.schedule == '0 11 * * *'`.
+      # Com ~15 dos 16 disparos DESCARTADOS pelo agendador (medição no
+      # cabeçalho), prender o feed a um slug de cron significa, na prática,
+      # feed que nunca sai — e sai em silêncio, porque o passo é
+      # `continue-on-error`. O freio passou para o CÓDIGO, onde os testes
+      # alcançam: `_carrossel_pode_sair` (ritmo + teto de
+      # `channels.instagram_carrossel`) e `_flagrante_pode_sair` (teto diário
+      # em `day_flags`), ambos conferidos ANTES de qualquer descoberta.
+      # O que isso compra, além de não depender do agendador: um run que falha
+      # é repetido pelo disparo seguinte e a peça ainda sai no MESMO dia —
+      # antes, uma falha às 08:00 era um dia inteiro sem feed. E o
+      # `workflow_dispatch` passa a fazer feed, o que nunca fazia.
+      # Custo: os dois comandos são invocados em todos os disparos; nos runs em
+      # que a cota do dia já foi gasta ambos saem antes de qualquer chamada de
+      # rede — ~1–2 s de startup do Python por disparo, e nada mais.
       #
       # As duas peças num passo só (um bloco de segredos, não três) e nenhuma
       # derrubando a outra: o shell é `bash -e` e o `||` é o que impede o
@@ -134,7 +155,6 @@ jobs:
       # diário porque a rodada de fechamento lhe deu dedupe de 7 dias
       # (`day_flags`) — sem isso o mesmo produto voltaria toda manhã.
       - name: Conteúdo do feed
-        if: github.event.schedule == '0 11 * * *'
         # Um carrossel que falha não pode impedir o commit do `state.db` que o
         # `run` acabou de produzir: sem ele, o dedupe e o teto do próximo run
         # saem furados. O passo avisa e o job segue verde.

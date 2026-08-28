@@ -219,7 +219,17 @@ def ev_score(offer: Offer, cfg: dict, watchlist: Watchlist | None = None) -> flo
     12,36 (com a comissão crua era 31,08 × 34,29, e o de 2 vendas ganhava).
     Quem garante que o campeão de VENDAS chega ao LLM é o recorte por vendas do
     `build_slate`, não este expoente. Os três casos estão em
-    `tests/test_selection.py`."""
+    `tests/test_selection.py`.
+
+    NÃO normalize o `sales` aqui — está medido (fase 5H, 2026-08-28). Ele é
+    incomparável entre fontes (vitalício no ML, 30 dias na Shopee), mas o
+    `log10` da linha abaixo já esmaga a diferença: 250.000 vira fator 2,62 e
+    45.950 vira 2,40 — 9% a favor do ML, com a `source_quota` de 0,5/0,5
+    repartindo o dia de qualquer jeito. Mexer aqui é refazer a régua inteira
+    (comissão, desconto, boost da watchlist mudam de peso juntos) por 9% que a
+    cota já anula. Onde a comparação crua DECIDIA alguma coisa era a fatia por
+    vendas do slate — ela era 100% ML por construção —, e é lá que ela foi
+    consertada."""
     w = cfg["selection"].get("ev_weights") or {}
     wp = float(w.get("popularity", 0.3))
     expoente = float(pricing.setting(w, "commission_exp", DEFAULT_COMMISSION_EXP))
@@ -241,11 +251,41 @@ def order_by_ev(offers: list[Offer], cfg: dict, watchlist: Watchlist | None = No
     return sorted(offers, key=lambda o: ev_score(o, cfg, watchlist), reverse=True)
 
 
+def _por_vendas_normalizadas(candidates: list[Offer]) -> list[Offer]:
+    """As candidatas ordenadas pela POSIÇÃO de cada uma no ranking de vendas da
+    PRÓPRIA fonte: o mais vendido de cada loja, depois o segundo de cada, e
+    assim por diante.
+
+    `offer.sales` NÃO é comparável entre fontes (fase 5H). O do Mercado Livre é
+    o contador VITALÍCIO que o anúncio exibe (100 mil a 1 milhão); o da Shopee
+    é a janela de ~30 dias (máximo medido em 2026-08-28: 77.344). Com
+    `sorted(key=o.sales)` cru, esta fatia do slate — uma das três fontes de
+    diversidade dele — passava a ser Mercado Livre por construção, todo dia.
+    Normalizada, "o mais vendido da Shopee" disputa de igual para igual com "o
+    mais vendido do ML", que é o que a fatia sempre quis dizer.
+
+    Por POSIÇÃO e não por PERCENTIL (`i / n`): o percentil premia a fonte com
+    MAIS candidatas — com centenas da Shopee contra dezenas do ML, o segundo da
+    Shopee (1/779) viria antes do segundo do ML (1/50) e a monocultura só
+    trocaria de dono. O desempate entre posições iguais é o número absoluto, e
+    ele só decide QUEM vem primeiro num par que já vai entrar junto."""
+    por_fonte: dict[str, list[Offer]] = {}
+    for offer in candidates:
+        por_fonte.setdefault(offer.source, []).append(offer)
+    posicao: dict[tuple[str, str], int] = {}
+    for ofertas in por_fonte.values():
+        for i, offer in enumerate(sorted(ofertas, key=lambda o: o.sales, reverse=True)):
+            posicao[(offer.source, offer.item_id)] = i
+    return sorted(candidates,
+                  key=lambda o: (posicao[(o.source, o.item_id)], -o.sales))
+
+
 def build_slate(candidates: list[Offer], cfg: dict,
                 watchlist: Watchlist | None = None) -> list[Offer]:
     """O que o ranker vê: a UNIÃO de três recortes das candidatas, alternando
-    a origem — o melhor por valor esperado, o mais vendido, o de maior
-    desconto alegável, e de novo (fase 5C, M3/A8).
+    a origem — o melhor por valor esperado, o mais vendido DA SUA LOJA, o de
+    maior desconto alegável, e de novo (fase 5C, M3/A8; fase 5H no recorte de
+    vendas, ver `_por_vendas_normalizadas`).
 
     Três consequências desenhadas:
     - o campeão de vendas entra mesmo com EV baixo (a creatina de R$ 30 com
@@ -270,7 +310,7 @@ def build_slate(candidates: list[Offer], cfg: dict,
     na cota — senão TODAS as ofertas sem categoria disputariam 4 vagas."""
     recortes = [
         order_by_ev(candidates, cfg, watchlist),
-        sorted(candidates, key=lambda o: o.sales, reverse=True),
+        _por_vendas_normalizadas(candidates),
         sorted((o for o in candidates if _desconto_alegavel(o, cfg) > 0),
                key=lambda o: _desconto_alegavel(o, cfg), reverse=True),
     ]
@@ -339,11 +379,24 @@ def _limite_por_categoria(candidates: list[Offer]) -> int:
                math.ceil(MAX_CANDIDATES_FOR_PROMPT / len(categorias)))
 
 
+def _janela_de_vendas(offer: Offer) -> str:
+    """A unidade do `vendas` na linha do prompt: "total" (contador vitalício) ou
+    "últimos N dias".
+
+    O LLM recebe as duas lojas na MESMA lista e é instruído a olhar "apelo
+    popular". Sem a unidade, `vendas=1000000` (ML, vitalício) ao lado de
+    `vendas=45950` (Shopee, 30 dias) o faria reconcentrar no ML exatamente o que
+    `_por_vendas_normalizadas` acabou de diversificar."""
+    return ("total" if offer.sales_window_days <= 0
+            else f"últimos {offer.sales_window_days} dias")
+
+
 def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,
                  watchlist: Watchlist | None = None, cfg: dict | None = None) -> str:
     linhas = "\n".join(
         f"- id={o.item_id} | {o.title} | categoria={o.category} | "
-        f"desconto verificado={_desconto_alegavel(o, cfg)}% | vendas={o.sales} | "
+        f"desconto verificado={_desconto_alegavel(o, cfg)}% | "
+        f"vendas={o.sales} ({_janela_de_vendas(o)}) | "
         f"comissão=R${(o.price_current_cents / 100) * (o.commission_pct / 100):.2f} "
         f"({o.commission_pct:.1f}%)"
         + (" | em alta: sim" if watchlist is not None and o.item_id in watchlist.hot_items else "")

@@ -77,7 +77,7 @@ O desarme é **gravado no banco local** (`data/state_stories.db`, marca do dia).
 O agendador vai acordar o processo de novo daqui a duas horas: sem isso, o
 processo novo começaria armado e voltaria a publicar stories sem link — foi
 medido, com o pipeline real: **12 stories quebrados por dia**, indefinidamente,
-sem que o teto de 6/dia visse nenhum deles. Com a marca, o dia inteiro não
+sem que o teto diário visse nenhum deles. Com a marca, o dia inteiro não
 passa de `max_sem_link` tentativas.
 
 **Como rearmar**, do mais barato ao mais definitivo:
@@ -91,8 +91,8 @@ passa de `max_sem_link` tentativas.
    primeiro story que sair com link.
 
 E note o que o desarme **não** faz: o story que saiu sem link **fica no ar**
-(apagar é destrutivo, e o post em si não faz mal). Ele conta para o teto de
-6/dia e para o dedupe, porque está na conta e o público o viu — o que ele não
+(apagar é destrutivo, e o post em si não faz mal). Ele conta para o teto
+diário e para o dedupe, porque está na conta e o público o viu — o que ele não
 faz é converter.
 
 ## As duas regras que não se negociam
@@ -115,9 +115,9 @@ faz é converter.
 Ele monta **um** canal: o `instagram_story_link`. Só ele.
 
 - O `instagram_story` (Graph API) e o `story_dispatch` saem pelo `afiliado
-  run`, que é o que o Actions executa. Se este comando os montasse também,
-  seriam **dois tetos de 6/dia e dois dedupes** sobre a mesma conta — o
-  comando avisa e os ignora.
+  run` — outra tarefa do Agendador (`FiscalDaPromo-Run`), e o que o fallback
+  do Actions executa. Se este comando os montasse também, seriam **dois tetos
+  diários e dois dedupes** sobre a mesma conta — o comando avisa e os ignora.
 - Ele usa um **banco de estado próprio**: `state.stories_path` no
   `config.yaml`, padrão `data/state_stories.db`, no `.gitignore`. O
   `data/state.db` é rastreado no git e o Actions o commita a cada run; se o
@@ -125,8 +125,8 @@ Ele monta **um** canal: o `instagram_story_link`. Só ele.
 
 **O preço disso, para você saber:** o dedupe e o histórico de preços deste
 canal ficam **independentes** do resto. Um produto que saiu no Telegram de
-manhã pode virar story à tarde — são superfícies diferentes e são 6 por dia,
-mas é bom não se assustar. E o estoque de candidatas e o `price_log` desse
+manhã pode virar story à tarde — são superfícies diferentes, mas é bom não se
+assustar. E o estoque de candidatas e o `price_log` desse
 banco são locais: a descoberta roda da **sua** máquina, com as credenciais
 Shopee/ML do seu `.env`, e não aproveita nada do que o Actions descobriu.
 
@@ -181,11 +181,15 @@ Em `config.yaml`:
 channels:
   instagram_story_link:
     enabled: true            # o de figurinha
-    max_per_day: 6
+    max_per_day: 60          # decisão do dono (2026-08-27); ~1 a cada 15 min
     max_sem_link: 2
   instagram_story:
     enabled: false           # o oficial vira fallback desligado
 ```
+
+> **O número 60 é o primeiro a baixar** se aparecer `challenge_required`: este
+> canal é API privada, e volume é justamente o que atrai verificação de
+> segurança. O ativo em risco é a conta.
 
 ### 5. Confira
 
@@ -209,27 +213,32 @@ afiliado stories --dry-run     # não publica e não escreve no banco
 afiliado stories               # publica de verdade
 ```
 
-## Agendar no Windows (Agendador de Tarefas)
+## Agendar no Windows
 
-O comando precisa rodar do diretório do projeto, com o `.env` ao lado.
+**Não faça isto à mão.** Desde a fase 5I existe um script que cria a tarefa (e
+as outras três da produção), idempotente e com `-Remover`:
 
-1. Abra o **Agendador de Tarefas** → *Criar Tarefa* (não "tarefa básica").
-2. **Geral:** marque *Executar estando o usuário conectado ou não* só se você
-   souber que a rede está disponível; para IP residencial estável, o normal é
-   deixar *Executar somente quando o usuário estiver conectado*.
-3. **Disparadores:** *Diariamente*, repetir a cada **2 horas**, das 08:00 às
-   23:00. O ritmo fino é do pipeline (`schedule:` no `config.yaml` distribui o
-   `max_per_day` pela janela) — o agendador só precisa acordar o processo.
-4. **Ações:** *Iniciar um programa*
-   - Programa: `C:\caminho\para\.venv\Scripts\afiliado.exe`
-   - Argumentos: `stories`
-   - **Iniciar em:** a pasta do projeto (é de onde saem `config.yaml`, `.env` e
-     `data/`).
-5. **Condições:** desmarque *Iniciar a tarefa somente se o computador estiver
-   ocioso*.
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\agendar-windows.ps1
+afiliado doctor      # ele confere se as tarefas existem e estão habilitadas
+```
 
-Variação de horário é bem-vinda: 6 stories/dia em horários irregulares parece
-gente; 6 stories no minuto zero de cada hora parece robô.
+O procedimento completo — cadência, ordem da virada, como conferir que rodou e
+como voltar para o Actions — está em
+[`docs/runbooks/producao-windows.md`](producao-windows.md). O que vale saber
+aqui:
+
+- a tarefa é `FiscalDaPromo-Stories`, roda `afiliado stories --posts 4` **a
+  cada 15 minutos** das 08:08 às 23:15, e **inicia na pasta do projeto** (é de
+  onde saem `config.yaml`, `.env` e `data/`);
+- 15 min, e não as 2 h que este runbook pedia até a 5F: com
+  `max_per_day: 60`, 2 h entregariam 8 stories/dia — ou rajadas de 7 pelo
+  ritmo, que é justamente o que `pacing_budget` existe para evitar. Um story a
+  cada ~15 min é o que o `config.yaml` já dizia;
+- o minuto de início é **irregular** de propósito: 60 stories no minuto zero de
+  cada hora parecem robô;
+- a tarefa roda como o usuário **interativo** — ela só dispara com você
+  conectado, e é assim que o Agendador aceita a tarefa **sem guardar senha**.
 
 ## Quando o canal desarmar
 

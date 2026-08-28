@@ -182,11 +182,20 @@ bem-sucedido. O efeito colateral bom: **um disparo que falha é repetido pelo
 seguinte, e a peça ainda sai no mesmo dia** — antes, uma falha logo cedo
 significava nenhum feed até o dia seguinte.
 
+**Quem dispara, desde a fase 5I (2026-08-28):** duas tarefas do Agendador de
+Tarefas do Windows na máquina do dono — `FiscalDaPromo-Feed` e
+`FiscalDaPromo-Flagrante`, a cada 2 h dentro da janela
+(`deploy/agendar-windows.ps1`, runbook em
+`docs/runbooks/producao-windows.md`). O passo do Actions continua existindo no
+disparo manual do `publish.yml`, que virou fallback. Duas tarefas separadas
+para que uma falha não derrube a outra; a cadência de 2 h é só a chance de
+retentativa, porque o "uma por dia" vive no código.
+
 A pesquisa acima pede 2–3 carrosséis por semana e a cadência entregue é 7; a
 mesma pesquisa mede crescimento monotônico com a frequência e nenhuma
 penalidade por volume, então o teto que manda é o
 `channels.instagram_carrossel.max_per_day` do `config.yaml` — baixar é editar
-esse número. Fora do Actions, `afiliado feed` na mão do dono.
+esse número. Fora do agendador, `afiliado feed` na mão do dono.
 
 ### O que ainda falta
 

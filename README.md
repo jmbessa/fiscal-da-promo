@@ -116,8 +116,10 @@ ao vivo → link) em `docs/runbooks/meli-setup.md`.
   API; `flagrante` desenha o gráfico de 90 dias do "de" inflado de um vendedor
   e **despacha ao chat de operações** — nunca publica, porque nomear um
   vendedor é risco jurídico e isso não se automatiza. Em produção quem o chama
-  é o GitHub Actions, **uma vez por dia** (ver Agendamento). `--dry-run` grava
-  as artes em `.claude/previews/` e não escreve no banco.
+  são duas tarefas do Agendador do Windows (`FiscalDaPromo-Feed` e
+  `FiscalDaPromo-Flagrante`); o teto de **uma peça por dia** vive no código,
+  não na cadência (ver Agendamento). `--dry-run` grava as artes em
+  `.claude/previews/` e não escreve no banco.
 - `afiliado ig-login` — cria/renova `data/ig_session.json`, a sessão do
   instagrapi, lendo `IG_USERNAME`/`IG_PASSWORD` do ambiente. Um login
   bem-sucedido também **rearma** o canal, se ele tiver se desarmado hoje. Ver
@@ -178,6 +180,15 @@ e **cota 50/50** entre Shopee e Mercado Livre (`selection.source_quota` — a
 fração é normalizada entre as fontes LIGADAS, então com o ML desligado a
 Shopee fica com o teto inteiro; e se uma não tem candidata, a outra completa).
 
+> **A cota é uma meta, não uma garantia — e a diferença é visível (fase 5I).**
+> Com 37 produtos no pool do ML e dedupe de 30 dias, o ML sustenta ~1,2
+> oferta/dia contra uma cota de 30: a Shopee cobre o resto e **nada falha**,
+> porque a cota reparte o teto e nunca o deixa ocioso. Por isso o resumo de
+> operações passou a dizer `🏷️ Hoje por fonte: meli X/30 · shopee Y/30` e a
+> avisar quando uma fonte ligada fica abaixo de metade da cota, nomeando o
+> motivo provável (estoque esgotado pelo dedupe). A correção de verdade é
+> aumentar o pool.
+
 Isso só fecha por causa da **descoberta rotativa**. A medição de 2026-08-26
 contra a API real (147 chamadas —
 `docs/superpowers/reviews/2026-08-26-descoberta-shopee.md`) mostrou que:
@@ -218,64 +229,75 @@ prompt promete 30 candidatas e precisa entregar 30.
 
 ## Agendamento
 
-- **GitHub Actions (produção)** — `.github/workflows/publish.yml` roda **de
-  hora em hora entre 08:07 e 23:07 BRT** (16 jobs/dia, `--posts-per-run 5`) e
-  commita `data/state.db` de volta com `git pull --rebase` antes do push. Em
-  conflito no binário o run atual vence e o log registra um `::warning::` —
-  nunca se perde um run. O GitHub cobra **cada job arredondado para o minuto
-  seguinte**: 16 jobs × 31 dias × 3 min = 1.488 dos 2.000 min/mês do plano
-  grátis para repositório privado, com folga até 4 min/job — **teto, não
-  previsão** (ver abaixo). A duração real ainda não foi medida — o job a
-  imprime no *Summary*; a conta inteira está em `docs/runbooks/vps-setup.md`.
-  Disparo manual: aba Actions → publish → Run workflow (com opção dry-run).
-- **O minuto 7 e o buraco na cadência (fase 5G)** — medido em 2026-08-28: o
-  agendador do Actions entregou **1 de ~16 disparos em ~25 h**, e o único saiu
-  51 min atrasado. O cron saiu do minuto 0 (o pico de carga do GitHub, onde
-  disparo atrasado é descartado) e o resumo do chat de operações passa a
-  **acusar buracos na cadência** — em horas e em disparos perdidos — acima de
-  `schedule.max_gap_minutes` (150). A eficácia do minuto 7 só se comprova
-  observando os próximos disparos: se a taxa continuar baixa, a causa não era
-  congestionamento (hipóteses em `docs/runbooks/vps-setup.md`).
-- **Conteúdo de feed, 1×/dia (fase 5D, revisto na 5G)** — o mesmo workflow tem
-  um passo "Conteúdo do feed" que roda em **todos** os disparos: um `afiliado
-  feed --tipo termometro` (publica o carrossel) e um `afiliado feed --tipo
-  flagrante` (despacha ao chat de ops para o dono aprovar). Quem garante o
-  "uma vez por dia" é o código — o teto de `channels.instagram_carrossel`
-  (1/dia, com o ritmo da 5A) e uma marca em `day_flags` para o flagrante,
-  gravada só depois do despacho bem-sucedido —, e não o cron: com a maioria
-  dos disparos sendo descartada, prender a peça a um deles era feed que quase
-  nunca saía. Um disparo que falha é repetido pelo seguinte, e a peça ainda
-  sai no mesmo dia. É `continue-on-error`: uma peça que falha não impede o
-  commit do `state.db`, e o disparo manual do workflow agora **também** roda
-  esse passo. A pesquisa pede 2–3 carrosséis por semana; a cadência entregue é
-  7 — o teto e o ritmo da 5A mandam, e baixar é editar `max_per_day`.
+- **A máquina do dono (produção desde 2026-08-28, fase 5I)** — quatro tarefas
+  no **Agendador de Tarefas do Windows**, criadas por
+  `deploy/agendar-windows.ps1` (idempotente, com `-Remover`):
+  `FiscalDaPromo-Run` (`afiliado run --posts-per-run 4`) e
+  `FiscalDaPromo-Stories` (`afiliado stories --posts 4`) **a cada 15 min** das
+  08:03/08:08 às 23:15, mais `FiscalDaPromo-Feed` e `FiscalDaPromo-Flagrante`
+  **a cada 2 h**. Runbook completo — a ordem da virada, como conferir que
+  rodou, como voltar — em `docs/runbooks/producao-windows.md`.
+  **Por que saiu do Actions**, com os três fatos medidos: (1) o agendador do
+  GitHub entregou **1 run em toda a história do repositório** contra ~16
+  disparos esperados em ~25 h, e o único saiu **51 min atrasado**; (2) o story
+  com figurinha **não pode** rodar num IP de datacenter (`challenge_required`)
+  e a Graph API não publica figurinha nenhuma; (3) a máquina foi medida em
+  2026-08-28 com **48,7 h de uptime** e suspensão em corrente alternada = 0.
+  **Por que 15 min:** medido, um `afiliado run` gasta **8 chamadas** de
+  descoberta (sempre, mesmo sem publicar nada) + 2 por oferta publicada — 608
+  por tarefa por dia, ~1.216 com as duas, contra os ~1.920/dia que a VPS já
+  fazia. E é a cadência que faz o maior salto do `pacing_budget` cair para 1,
+  com `--posts-per-run 4` cobrindo três disparos perdidos.
+- **O buraco na cadência é o sensor (fase 5G, recalibrado na 5I)** — o resumo
+  do chat de operações **acusa buracos** — em horas e em disparos perdidos —
+  acima de `schedule.max_gap_minutes` (**40**, para a cadência de 15 min:
+  tolera um disparo perdido e acusa a partir do segundo). É ele que denuncia
+  uma máquina parada. O `afiliado doctor` completa: no Windows ele confere se
+  as quatro tarefas existem e estão habilitadas.
+- **GitHub Actions (fallback manual)** — `.github/workflows/publish.yml`
+  perdeu o `schedule:` e ficou só com `workflow_dispatch`: dois hosts
+  publicando ao mesmo tempo postariam a mesma oferta duas vezes (cada um tem o
+  seu `state.db`, e é ele que guarda o dedupe). O disparo manual roda o
+  pipeline **e** as duas peças de feed, com `--posts-per-run 5` (maior que o
+  da máquina de propósito: emergência publica o orçamento acumulado), e
+  commita `data/state.db` de volta com `git pull --rebase` antes do push.
+  Aba Actions → publish → Run workflow (com opção dry-run).
+- **Conteúdo de feed, 1×/dia (fase 5D, revisto na 5G e na 5I)** — `afiliado
+  feed --tipo termometro` (publica o carrossel) e `--tipo flagrante` (despacha
+  ao chat de ops para o dono aprovar). Quem garante o "uma vez por dia" é o
+  código — o teto de `channels.instagram_carrossel` (1/dia, com o ritmo da 5A)
+  e uma marca em `day_flags` para o flagrante, gravada só depois do despacho
+  bem-sucedido —, e não a cadência do agendador: um disparo que falha é
+  repetido pelo seguinte e a peça ainda sai no mesmo dia. A pesquisa pede 2–3
+  carrosséis por semana; a cadência entregue é 7 — o teto e o ritmo da 5A
+  mandam, e baixar é editar `max_per_day`.
 - **VPS a cada 5 min (opcional)** — o timer systemd chama `afiliado run` a
   cada 5 minutos das 08:00 às 23:55 (192 execuções/dia, 1 oferta por run),
   para quem quiser cadência mais fina e um estoque de candidatas mais fresco;
   setup em `docs/runbooks/vps-setup.md`. `state.db` fica local e persiste
-  sozinho (sem commit). **Não rode as duas ao mesmo tempo** — dois estados
-  independentes furam o dedupe e o teto.
+  sozinho (sem commit). **Nunca rode dois hosts ao mesmo tempo** — dois
+  estados independentes furam o dedupe e o teto.
 
-O teto e o ritmo mandam nos dois casos: `--posts-per-run` diz só quanto UM run
-pode chegar a publicar; quem distribui os 60/dia pela janela é o
+O teto e o ritmo mandam em todos os casos: `--posts-per-run` diz só quanto UM
+run pode chegar a publicar; quem distribui os 60/dia pela janela é o
 `pacing_budget` da fase 5A.
 
 Cada canal tem um teto diário (`max_per_day` em `config.yaml`, contado no
 SQLite **no dia local** de `schedule.timezone`): `telegram` em 60/dia (a meta
-do canal), `instagram_story` em 6/dia e `instagram_feed` em 2/dia
-(`story_dispatch`, o fallback manual, está desligado e herdaria os mesmos
-6/dia).
+do canal), `instagram_story_link` em 60/dia e `instagram_feed` em 2/dia
+(`instagram_story` e `story_dispatch`, os dois fallbacks, estão desligados).
 Desde a fase 5A o teto é **distribuído pela janela** (`schedule.window_start`
 – `window_end`): um canal só publica enquanto o que já postou hoje está
 abaixo de `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`
-— 60/dia vira ~1 a cada 16 min, 6 stories viram ~1 a cada 2h40, o 2º feed só
-sai da metade da janela em diante, e fora da janela nada é publicado. Quando
+— 60/dia vira ~1 a cada 15 min (a mesma cadência do agendador, e não por
+acaso), o 2º feed só sai da metade da janela em diante, e fora da janela nada
+é publicado. Quando
 nenhum canal pode publicar, o run termina antes de chamar o LLM (nenhuma
 oferta paga preço, link ou copy sem ter onde ser publicada); um canal que
 bate o teto de verdade aparece como aviso no resumo, não como falha.
 
-Com 16 runs/dia no Actions (ou 192 na VPS), mandar um resumo a cada execução
-inundaria o chat de operações. O resumo só é enviado quando o run publicou,
+Com 61 runs/dia na máquina do dono (ou 192 na VPS), mandar um resumo a cada
+execução inundaria o chat de operações. O resumo só é enviado quando o run publicou,
 descartou algo ou gerou aviso — e cada aviso entra **uma vez por dia** (tabela
 `warned`), então uma watchlist vencida não vira uma mensagem por run. O
 primeiro run do dia manda um heartbeat ("☀️ Bom dia — ontem: N publicados, M

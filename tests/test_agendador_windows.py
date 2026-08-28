@@ -221,6 +221,64 @@ def test_o_script_falha_alto_quando_o_exe_ou_a_pasta_nao_existem():
     assert "Test-Path" in texto
 
 
+# -- o runbook (T5) ------------------------------------------------------------
+
+def _runbook() -> str:
+    with open(cli.RUNBOOK_DA_PRODUCAO, encoding="utf-8") as f:
+        return " ".join(f.read().split())      # a quebra do markdown não conta
+
+
+def test_o_runbook_da_producao_diz_a_ordem_da_virada():
+    """Invertida, a ordem deixa um intervalo sem ninguém publicando — e o
+    posto duplo, se ninguém desligar o outro lado, publica a mesma oferta duas
+    vezes (cada host tem o seu `state.db`, e é ele que guarda o dedupe)."""
+    runbook = _runbook()
+    assert "A ORDEM DA VIRADA" in runbook
+    assert runbook.index("Criar as tarefas") < runbook.index("SÓ ENTÃO")
+    assert "Ver um run REAL acontecer" in runbook
+    assert "Nunca deixe os dois publicando ao mesmo tempo" in runbook
+
+
+def test_o_runbook_diz_o_pre_requisito_que_o_dono_faz_uma_vez():
+    """`pip install -e .` na pasta principal (a instalação editável aponta para
+    o worktree) e `afiliado ig-login` (a sessão do instagrapi é gitignored e só
+    existe lá). Sem os dois, as tarefas rodam código velho ou não logam."""
+    runbook = _runbook()
+    assert "pip install -e ." in runbook and "afiliado ig-login" in runbook
+    assert "worktree" in runbook
+
+
+def test_o_runbook_ensina_a_conferir_e_a_voltar_para_o_actions():
+    runbook = _runbook()
+    assert "Como conferir que rodou" in runbook
+    assert "Get-ScheduledTask" in runbook
+    assert "Como voltar para o Actions" in runbook
+    # Voltar sem desligar as tarefas é posto duplo: a ordem inversa também
+    # precisa estar escrita.
+    assert "-Remover" in runbook
+
+
+def test_os_runbooks_nao_divergem_sobre_como_agendar():
+    """A seção "Agendar no Windows" do runbook do instagrapi era um
+    procedimento MANUAL escrito à mão, com outra cadência. Dois procedimentos
+    divergentes é como o dono acaba com uma tarefa que ninguém sabe de onde
+    veio."""
+    with open("docs/runbooks/instagrapi-stories.md", encoding="utf-8") as f:
+        instagrapi = " ".join(f.read().split())
+    assert SCRIPT.replace("/", "\\") in instagrapi or SCRIPT in instagrapi
+    assert cli.RUNBOOK_DA_PRODUCAO.split("/")[-1] in instagrapi
+    # E o passo a passo manual (Criar Tarefa -> Disparadores -> Ações) saiu.
+    assert "Criar Tarefa" not in instagrapi
+
+
+def test_o_readme_diz_onde_a_producao_roda_agora():
+    with open("README.md", encoding="utf-8") as f:
+        readme = " ".join(f.read().split())
+    assert "Agendador de Tarefas do Windows" in readme
+    assert cli.RUNBOOK_DA_PRODUCAO in readme
+    assert "fallback manual" in readme.lower()
+
+
 def test_o_script_nao_grava_credencial_nenhuma():
     """As tarefas herdam o `.env` da pasta do projeto. Senha de conta de
     serviço, `-Password`, token ou usuário do Instagram gravados aqui virariam

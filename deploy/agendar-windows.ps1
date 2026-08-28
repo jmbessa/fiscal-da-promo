@@ -152,6 +152,23 @@ if (-not $AfiliadoExe) {
         if (Test-Path -LiteralPath $palpite -PathType Leaf) { $AfiliadoExe = $palpite }
     }
 }
+
+# Terceira tentativa: perguntar ao Python onde ele instala console scripts.
+# `pip install -e .` num Python sem venv (o caso desta maquina) poe o
+# afiliado.exe num diretorio que NAO esta no PATH, entao as duas buscas acima
+# falham e o script exigia -AfiliadoExe com o caminho completo. Passar esse
+# caminho pelo shell derrubou a instalacao duas vezes (a barra invertida some
+# no Bash): a deteccao que evita o argumento vale mais que o argumento.
+if (-not $AfiliadoExe) {
+    try {
+        $dir = (& python -c "import sysconfig;print(sysconfig.get_path('scripts'))" 2>$null | Select-Object -First 1)
+        if ($dir) {
+            $palpite = Join-Path $dir.Trim() "afiliado.exe"
+            if (Test-Path -LiteralPath $palpite -PathType Leaf) { $AfiliadoExe = $palpite }
+        }
+    }
+    catch { }   # Python ausente ou mudo: cai no throw abaixo, com instrucao.
+}
 if (-not $AfiliadoExe -or -not (Test-Path -LiteralPath $AfiliadoExe -PathType Leaf)) {
     throw ("afiliado.exe não encontrado. Instale o projeto ('pip install -e .') na pasta " +
            "principal e rode de novo, ou passe -AfiliadoExe com o caminho completo.")

@@ -218,11 +218,26 @@ $configuracao = New-ScheduledTaskSettingsSet `
     -RunOnlyIfIdle:$false `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
 
-# Sem credencial: `Interactive` é o único modo que o Agendador aceita sem
-# guardar senha. O preço é que as tarefas só rodam com o usuário conectado —
-# que é o que se quer aqui (IP e sessão residenciais estáveis).
+# Sem credencial E sem janela. `S4U` ("executar estando o usuário conectado ou
+# não") é, como o `Interactive`, aceito pelo Agendador SEM guardar senha — e a
+# diferença que importa é que ele roda numa sessão não interativa: o
+# `afiliado.exe` é aplicação de console e, no modo interativo, abria uma janela
+# de terminal na cara do dono a cada 15 minutos (relatado em 2026-08-28).
+#
+# O que NÃO muda: a máquina é a mesma, então o IP continua residencial e
+# estável — que é a razão de a produção ter vindo para cá (o instagrapi não
+# sobrevive a IP de datacenter). S4U não usa a rede com credencial de domínio;
+# só HTTP de saída, que é tudo o que o pipeline faz.
+#
+# Verificado antes de trocar: `G:` é disco FIXO local (NTFS), não unidade
+# mapeada — sessão não interativa não enxerga unidade de rede mapeada, e isso
+# teria quebrado tudo em silêncio.
+#
+# Se o S4U for recusado nesta máquina (falta o direito "Log on as a batch
+# job"), o `throw` do Register-ScheduledTask diz; a saída é voltar a
+# `Interactive` e esconder a janela por um atalho .vbs com WindowStyle 0.
 $principal = New-ScheduledTaskPrincipal `
-    -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+    -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
 
 function Register-TarefaDoFiscal {
     param([string]$Nome, [string]$Argumentos, [string]$Inicio, [int]$Cadencia,

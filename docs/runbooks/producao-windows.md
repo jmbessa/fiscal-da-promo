@@ -166,7 +166,7 @@ vezes.
 |---|---|
 | `doctor` diz "a tarefa X não existe" | o script nunca rodou, ou rodou em outro usuário |
 | tarefa existe e `LastTaskResult` ≠ 0 | o comando falhou — rode `afiliado run` à mão na pasta do projeto e leia o erro |
-| tarefa não dispara com a máquina ligada | usuário não está conectado (`LogonType Interactive`) |
+| tarefa não dispara com a máquina ligada | o `Register-ScheduledTask` recusou o `LogonType S4U` (falta "Log on as a batch job") — o script diz na hora; a saída é voltar a `Interactive` e esconder a janela por um atalho `.vbs` com WindowStyle 0 |
 | nada no chat de ops e nenhum aviso | confira `TELEGRAM_*` no `.env` da **pasta do projeto** |
 | stories param, ofertas continuam | canal desarmado hoje — `docs/runbooks/instagrapi-stories.md` |
 

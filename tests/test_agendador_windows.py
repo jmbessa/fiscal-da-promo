@@ -287,3 +287,29 @@ def test_o_script_nao_grava_credencial_nenhuma():
     for proibido in ("-Password", "IG_PASSWORD", "IG_USERNAME", "SHOPEE_APP_SECRET",
                      "TELEGRAM_BOT_TOKEN", "ConvertTo-SecureString"):
         assert proibido not in texto, proibido
+
+
+def test_a_tarefa_roda_sem_janela_e_sem_guardar_senha():
+    """`S4U`, não `Interactive` (2026-08-28, pedido do dono).
+
+    O `afiliado.exe` é aplicação de console: no modo interativo o Agendador
+    abria uma janela de terminal na tela a cada 15 minutos. `S4U` roda em
+    sessão NÃO interativa — sem janela — e é, como o `Interactive`, aceito sem
+    guardar senha, que é a outra propriedade que não pode cair.
+
+    O que este teste protege de verdade: voltar para `Interactive` por engano
+    devolve a janela, e ninguém liga uma coisa à outra seis semanas depois."""
+    texto = _script()
+    assert "-LogonType S4U" in texto, "a tarefa voltou a abrir janela"
+    assert "-LogonType Interactive" not in texto
+    # Sem senha: nenhuma das formas de passar credencial pode aparecer.
+    for proibido in ("-Password", "-User ", "ConvertTo-SecureString"):
+        assert proibido not in texto, f"o script passou a lidar com senha: {proibido!r}"
+
+
+def test_a_janela_de_publicacao_nao_depende_do_usuario_estar_logado():
+    """Consequência boa do S4U que vale afirmar: o script não promete mais
+    "só roda com o usuário conectado". Se a frase voltar, o runbook e o
+    comportamento discordam."""
+    texto = _script().lower()
+    assert "só rodam com o usuário conectado" not in texto

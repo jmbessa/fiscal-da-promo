@@ -56,6 +56,22 @@ CAMPOS_DE_PRECO = (
     ("price_min_window_days", "sem janela da mínima"),
 )
 
+# Quantos anúncios de cada produto entram no pool de links (fase 5M, M1).
+#
+# TRÊS, e o número que sustenta: sondando `/products/{id}/items` inteiro para
+# os 53 produtos do pool em 2026-08-28 (1717 anúncios) e comparando com os
+# `buy_box_item_id` lidos em 26/08, **34 de 35 anúncios ainda estavam na lista
+# 2 dias depois** (97,1%) — ~90% em 7 dias. Com 3 links por produto, a chance
+# de os três sumirem numa semana é 0,09% (contra 10% com um link só); em 30
+# dias, 4,4%. E em 27 dos 52 produtos com anúncio elegível os 3 mais baratos
+# JÁ SÃO a lista elegível inteira: para metade do pool a cobertura é total, por
+# construção. O 4º e o 5º link custariam +40% de links (170 contra 121) para
+# cobrir 1 produto a mais.
+#
+# Se o mais barato linkado morrer, cai-se para o 2º: +5,3% na mediana (p75
+# +13,1%) — um negócio pior, nunca um número errado.
+LINKS_POR_PRODUTO = 3
+
 # O `sales` do pool é `catalogSales`: o contador VITALÍCIO do próprio Mercado
 # Livre, o mesmo "+250 mil vendidos" que aparece no anúncio. Janela 0 = sem
 # recorte de tempo. (A estimativa mensal, `catalogOrderCount1m`, já esteve
@@ -294,9 +310,10 @@ class MeliSource:
           fechado: `/items/{id}` e `/sites/MLB/search` são 403, e a página
           `/p/{id}` com sessão devolve uma casca de 14,6 KB sem preço.
 
-        Anúncio linkado nenhum na lista viva → `SourceError` e a oferta é
-        descartada. **Nunca** cai para um anúncio sem link: publicar o preço
-        de um vendedor e o link de outro é o bug que esta fase conserta.
+        Anúncio linkado nenhum na lista viva (ou nenhum que passe no piso de
+        `anuncio_passa_no_piso`) → `SourceError` e a oferta é descartada.
+        **Nunca** cai para um anúncio sem link: publicar o preço de um
+        vendedor e o link de outro é o bug que esta fase conserta.
 
         Devolve um `Offer` novo (frozen) com `price_current_cents`,
         `price_original_cents` (o mesmo: o ML não expõe "de" de vendedor) e
@@ -332,7 +349,7 @@ class MeliSource:
                     continue
                 encontrados.add(item_id)
                 cents = _price_cents(item.get("price"))
-                if cents is not None and cents > 0:
+                if cents is not None and cents > 0 and anuncio_passa_no_piso(item):
                     candidatos[item_id] = cents
             if len(encontrados) == len(linkados):
                 # Achados todos os linkados, as páginas seguintes não podem
@@ -413,6 +430,60 @@ class MeliSource:
                 for pid, entrada in meli_links.ler_pool(self.links_path).items()
                 if entrada["items"]}
         return self._links_pool
+
+
+def anuncio_passa_no_piso(item: dict) -> bool:
+    """Piso de qualidade do anúncio (fase 5M, M3): **novo E (Full OU loja
+    oficial OU frete grátis)**.
+
+    Mandar o seguidor para um vendedor ruim é outro tipo de dano, e a conta se
+    chama Fiscal. Os números que escolheram este piso, medidos em 2026-08-28
+    sobre 1717 anúncios de 53 produtos:
+
+    - `condition == "new"` em 1717/1717 — hoje o piso não exclui NINGUÉM. Fica
+      porque o dia em que um usado entrar na lista não pode ser o dia em que a
+      gente descobre que não olhava;
+    - em **12 dos 53 produtos** o anúncio mais barato é um item barato com
+      frete caro pago pelo comprador (R$ 8,00 + R$ 44,62 de frete = 558% do
+      preço; R$ 17,99 + R$ 44,62...). Publicar "R$ 8,00" ali é dizer um número
+      que ninguém paga;
+    - o piso derruba esses 12 para **ZERO** e custa **1 produto de 53** (fica
+      sem anúncio elegível) e **+0,0% na mediana** do preço publicado (p75
+      +8,6%): em 38 dos 52 produtos o mais barato já passa;
+    - as alternativas não se pagam: só frete grátis custaria 15 produtos de 53
+      e +8,4%; só `gold_pro`, 21 produtos e +10,6%.
+
+    O que NÃO dá para exigir: quantidade em estoque. `/products/{id}/items`
+    não expõe `available_quantity` nem equivalente (0 de 1717 anúncios, todos
+    os campos conferidos) e `GET /items/{id}`, que o traria, é 403 para o
+    token de aplicação. O "Último disponível" visto no card não é checável —
+    ver docs/runbooks/meli-setup.md."""
+    if not isinstance(item, dict) or str(item.get("condition") or "") != "new":
+        return False
+    envio = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    return bool(item.get("official_store_id")
+                or envio.get("free_shipping")
+                or envio.get("logistic_type") == "fulfillment")
+
+
+def anuncios_para_linkar(results: list, n: int = LINKS_POR_PRODUTO) -> list[str]:
+    """Os `n` `item_id` mais baratos de `/products/{id}/items` que passam no
+    piso — a lista que o `/meli-links-refresh` manda ao painel.
+
+    Mesma função que o `refresh_price` usa para escolher o preço, de propósito:
+    cunhar link para um anúncio que a publicação recusaria é trabalho jogado
+    fora, e publicar um anúncio que a cunhagem não escolheria é um link que não
+    existe."""
+    elegiveis = []
+    for item in results:
+        if not anuncio_passa_no_piso(item):
+            continue
+        cents = _price_cents((item or {}).get("price"))
+        item_id = str(item.get("item_id") or "")
+        if cents is None or cents <= 0 or not item_id:
+            continue
+        elegiveis.append((cents, item_id))
+    return [item_id for _, item_id in sorted(elegiveis)[:max(0, int(n))]]
 
 
 def _centavos(valor) -> tuple[int | None, str]:

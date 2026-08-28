@@ -850,6 +850,104 @@ def test_meli_nao_grava_o_preco_do_pool_como_observacao():
     assert MeliSource.observes_price_on_discovery is False
 
 
+# -- fase 5M (M3): o mais barato não pode ser QUALQUER um ---------------------
+#
+# Medido em 2026-08-28 sobre 1717 anúncios de 53 produtos do pool
+# (`/products/{id}/items` paginado inteiro):
+#
+# - `condition` é "new" em 1717/1717 — o piso não exclui ninguém HOJE, e é
+#   justamente por isso que ele fica: o dia em que um usado entrar na lista
+#   não pode ser o dia em que a gente descobre que não olhava;
+# - em 12 dos 53 produtos o mais barato é um item barato com FRETE caro pago
+#   pelo comprador (`free_shipping: false`, `shipping.cost` 44,62): R$ 8,00 +
+#   R$ 44,62 de frete, R$ 17,99 + R$ 44,62... publicar "R$ 8,00" ali é dizer
+#   um número que ninguém paga;
+# - exigir Full OU loja oficial OU frete grátis derruba esses 12 para ZERO,
+#   custa 1 produto de 53 (fica sem anúncio elegível) e encarece o preço
+#   publicado em +0,0% na mediana (p75 +8,6%): em 38 dos 52 produtos o mais
+#   barato JÁ passa no piso;
+# - exigir só frete grátis custaria 15 produtos de 53 e +8,4% na mediana;
+#   exigir `gold_pro`, 21 produtos e +10,6%. Nenhum dos dois se paga.
+
+
+def test_o_piso_de_qualidade_e_novo_E_um_sinal_de_entrega():
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    full = _anuncio("MLB1", 10.0)
+    assert anuncio_passa_no_piso(full)
+    oficial = _anuncio("MLB2", 10.0, official_store_id=1234,
+                       shipping={"free_shipping": False, "logistic_type": "drop_off"})
+    assert anuncio_passa_no_piso(oficial)
+    frete_gratis = _anuncio("MLB3", 10.0,
+                            shipping={"free_shipping": True, "logistic_type": "cross_docking"})
+    assert anuncio_passa_no_piso(frete_gratis)
+
+
+def test_o_piso_barra_o_item_barato_de_frete_caro():
+    """O caso real: R$ 8,00 com R$ 44,62 de frete pago pelo comprador — 558%
+    do preço. Sem loja oficial, sem Full, sem frete grátis."""
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    assert not anuncio_passa_no_piso(_anuncio(
+        "MLB5097654932", 8.0, official_store_id=None,
+        shipping={"free_shipping": False, "logistic_type": "drop_off", "cost": 44.62}))
+
+
+def test_o_piso_barra_o_anuncio_usado_ou_recondicionado():
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    for condicao in ("used", "refurbished", "", None):
+        assert not anuncio_passa_no_piso(_anuncio("MLB1", 10.0, condition=condicao))
+
+
+def test_o_piso_aguenta_payload_torto():
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    assert not anuncio_passa_no_piso({})
+    assert not anuncio_passa_no_piso({"condition": "new", "shipping": "não é dict"})
+    assert not anuncio_passa_no_piso({"condition": "new"})
+
+
+def test_refresh_price_pula_o_linkado_que_nao_passa_no_piso(tmp_path):
+    """Ter link não basta: mandar o seguidor para um vendedor ruim é outro
+    tipo de dano, e a conta se chama Fiscal."""
+    itens = [_anuncio("MLB4555189589", 78.90, official_store_id=None,
+                      shipping={"free_shipping": False, "logistic_type": "drop_off",
+                                "cost": 44.62}),
+             _anuncio("MLB7125449388", 104.90)]
+    src, offer = _fonte(tmp_path, _items_handler(itens))
+    publicada = src.refresh_price(offer)
+    assert publicada.anuncio_id == "MLB7125449388"
+    assert publicada.price_current_cents == 10490
+
+
+def test_refresh_price_com_todos_os_linkados_fora_do_piso_descarta(tmp_path):
+    ruim = {"free_shipping": False, "logistic_type": "drop_off", "cost": 44.62}
+    itens = [_anuncio("MLB4555189589", 78.90, shipping=ruim),
+             _anuncio("MLB7125449388", 104.90, condition="used")]
+    src, offer = _fonte(tmp_path, _items_handler(itens))
+    with pytest.raises(SourceError, match="nenhum anúncio linkado"):
+        src.refresh_price(offer)
+
+
+def test_anuncios_para_linkar_devolve_os_N_mais_baratos_que_passam_no_piso():
+    """O que o `/meli-links-refresh` manda para o painel. N = 3: medido, 34 de
+    35 anúncios sobrevivem a 2 dias (~90% a 7), então a chance de os TRÊS
+    sumirem numa semana é 0,09%; e em 27 dos 52 produtos os 3 já são a lista
+    elegível INTEIRA."""
+    from afiliado.sources.meli import LINKS_POR_PRODUTO, anuncios_para_linkar
+
+    ruim = {"free_shipping": False, "logistic_type": "drop_off", "cost": 44.62}
+    results = [_anuncio("MLB-caro", 300.0), _anuncio("MLB-barato-ruim", 8.0, shipping=ruim),
+               _anuncio("MLB-b", 50.0), _anuncio("MLB-a", 20.0), _anuncio("MLB-c", 90.0),
+               _anuncio("MLB-sem-preco", None)]
+    assert LINKS_POR_PRODUTO == 3
+    assert anuncios_para_linkar(results) == ["MLB-a", "MLB-b", "MLB-c"]
+    assert anuncios_para_linkar(results, n=1) == ["MLB-a"]
+    assert anuncios_para_linkar([], n=3) == []
+    assert anuncios_para_linkar([_anuncio("MLB-x", 8.0, shipping=ruim)]) == []
+
+
 # -- resolve_affiliate_link: o link é o do anúncio publicado ------------------
 
 def test_resolve_affiliate_link_devolve_o_link_do_anuncio_escolhido(tmp_path):

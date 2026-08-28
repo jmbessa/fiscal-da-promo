@@ -17,8 +17,13 @@ def _wl(**kw) -> Watchlist:
 
 def _seed_history(db: StateDB, cents: list[int], source="shopee", item_id="123456",
                   start_days_ago: int = 1) -> None:
-    """cents[0] = `start_days_ago` dias atrás, cents[1] = um dia antes, ..."""
-    hoje = date.today()
+    """cents[0] = `start_days_ago` dias atrás, cents[1] = um dia antes, ...
+
+    O "hoje" vem do BANCO (`local_today`, fuso da operação), nunca de
+    `date.today()` da máquina. Entre 00h e 03h UTC os dois discordam, e o CI
+    — que roda em UTC — falhava todas as noites com um dia a menos na janela:
+    a observação de hoje caía em cima de `cents[0]` e as duas viravam uma."""
+    hoje = db.local_today()
     for i, valor in enumerate(cents):
         db.record_price(source, item_id, valor,
                         day=(hoje - timedelta(days=start_days_ago + i)).isoformat())

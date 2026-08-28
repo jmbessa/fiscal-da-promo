@@ -259,6 +259,7 @@ function Register-TarefaDoFiscal {
         -Settings $configuracao -Principal $principal -Description $Descricao -Force | Out-Null
     Write-Host "ok: $Nome — $Inicio, a cada $Cadencia min até $FimDaJanela"
     Write-Host "    $AfiliadoExe $Argumentos"
+    Write-Host "    (sem janela, via deploy/afiliado-oculto.vbs)"
     Write-Host "    iniciar em: $ProjetoDir"
 }
 

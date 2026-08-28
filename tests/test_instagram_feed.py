@@ -410,3 +410,67 @@ def test_caption_traz_o_selo_do_veredito():
     caption = _caption_for(verdict=v, **offer_kw)
     assert "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)\n🏷️ Menor preço dos últimos 6 meses (verificado)" in caption
     assert "Menor preço" not in _caption_for(verdict=NO_CLAIM, **offer_kw)
+
+
+# -- Fase 5D: a legenda é página de busca -------------------------------------
+
+TITULO_LONGO = ("Creatina Monohidratada 300g Growth Supplements Original "
+                "Importada Pura Sem Sabor")
+
+# Pedir curtida, comentário ou compartilhamento é engagement bait, e a Meta
+# REDUZ a distribuição de quem pede (regra oficial). A conta não tem base de
+# seguidores para pagar esse preço — a saída é a frase-assinatura.
+ISCAS = ["curte", "curta", "curtida", "comenta", "comente", "comentário",
+         "compartilha", "compartilhe", "marca um amigo", "marque", "salva esse",
+         "manda pra", "envia pra", "me segue", "siga", "sorteio", "eu quero"]
+
+
+def test_legenda_termina_com_o_bloco_indexavel():
+    """Os posts do Instagram são indexados pelo Google desde 10/07/2025: a
+    legenda é página de busca. O bloco do fim carrega o nome COMPLETO do
+    produto (a arte trunca, a legenda não), a categoria por nome e a janela
+    REAL que sustenta o preço."""
+    caption = _caption_for(title=TITULO_LONGO, category="100630",
+                           **_ref(price_current_cents=1890))
+    assert caption.rstrip().endswith(
+        f"{TITULO_LONGO}\n"
+        "Categoria: Beleza\n"
+        "Preço verificado nos últimos 90 dias.\n"
+        "Quem conferiu? O Fiscal.")
+
+
+def test_legenda_diz_a_janela_REAL_e_nao_um_numero_bonito():
+    caption = _caption_for(title=TITULO_LONGO, category="100636",
+                           price_ref_cents=2600, price_p25_cents=2600,
+                           price_window_days=45, price_current_cents=1890)
+    assert "Preço verificado nos últimos 45 dias." in caption
+    # Sem janela medida, a linha simplesmente não existe — nada de inventar N.
+    sem_janela = _caption_for(title=TITULO_LONGO, category="100636",
+                              price_current_cents=1890)
+    assert "Preço verificado" not in sem_janela
+    assert "Categoria: Casa" in sem_janela
+
+
+def test_legenda_omite_a_categoria_desconhecida():
+    caption = _caption_for(title=TITULO_LONGO, category="99999",
+                           **_ref(price_current_cents=1890))
+    assert "Categoria" not in caption
+    assert "99999" not in caption
+    caption_sem = _caption_for(title=TITULO_LONGO, category="",
+                               **_ref(price_current_cents=1890))
+    assert "Categoria" not in caption_sem
+
+
+def test_legenda_nao_pede_engajamento():
+    caption = _caption_for(title=TITULO_LONGO, category="100630",
+                           **_ref(price_current_cents=1890)).lower()
+    for isca in ISCAS:
+        assert isca not in caption, f"a legenda pede engajamento: {isca!r}"
+    assert "quem conferiu? o fiscal." in caption
+
+
+def test_o_bloco_indexavel_tambem_sanitiza_o_titulo():
+    caption = _caption_for(title="Produto X http://spam.com agora",
+                           category="100630", **_ref(price_current_cents=1890))
+    assert "http" not in caption.lower()
+    assert "Produto X" in caption

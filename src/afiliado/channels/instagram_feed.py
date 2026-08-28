@@ -19,19 +19,50 @@ casa para `instagram_common` — o story virou um segundo canal automático e us
 exatamente as mesmas. Nada do comportamento do feed mudou nessa viagem.
 """
 
-from afiliado import creative, pricing
+from afiliado import categorias, creative, pricing
 from afiliado.channels.base import PublishResult
 from afiliado.channels.instagram_common import (GRAPH, GRAPH_HOSTS, STATUS_TERMINAIS,
                                                 InstagramBase, graph_error, to_jpeg)
 from afiliado.errors import SourceError
-from afiliado.models import Post
+from afiliado.models import Offer, Post, Verdict
 
-__all__ = ["GRAPH", "GRAPH_HOSTS", "MAX_ITENS_CARROSSEL", "InstagramFeedChannel"]
+__all__ = ["GRAPH", "GRAPH_HOSTS", "MAX_ITENS_CARROSSEL", "bloco_indexavel",
+           "InstagramFeedChannel"]
 
 # Teto da Meta para um álbum. O teto do DESENHO é outro e menor
 # (`creative.CARROSSEL_MAX_SLIDES`, 8); este aqui é o da API, e existe para o
 # canal recusar antes de gastar N uploads e N containers.
 MAX_ITENS_CARROSSEL = 10
+
+
+def bloco_indexavel(titulo: str, offer: Offer, verdict: Verdict) -> str:
+    """O bloco que fecha a legenda: nome completo do produto, categoria por
+    nome e a janela REAL que sustenta o preço, terminando na frase-assinatura.
+
+    Existe porque os posts do Instagram são indexados pelo Google desde
+    10/07/2025 — a legenda é uma página de busca, e o nome do produto por
+    extenso é o que alguém digita. A arte trunca o título em duas linhas; aqui
+    ele vai inteiro.
+
+    O que este bloco NUNCA traz é pedido de curtida, comentário ou
+    compartilhamento: a Meta reduz a distribuição de quem pede (regra oficial
+    de engagement bait), e uma conta sem base de seguidores não tem colchão
+    para pagar isso. No lugar vai a frase-assinatura — CTA de identidade, que
+    constrói reconhecimento sem pedir ação.
+
+    A janela é a MEDIDA (`price_window_days`, ou a do selo quando só ela
+    existe): sem número medido a linha some, em vez de inventar um N. A
+    categoria idem — ID sem nome conhecido não vira texto público
+    (`afiliado.categorias`)."""
+    linhas = [titulo]
+    nome = categorias.nome(offer.category)
+    if nome:
+        linhas.append(f"Categoria: {nome}")
+    janela = offer.price_window_days or verdict.seal_window_days
+    if janela > 0:
+        linhas.append(f"Preço verificado nos últimos {janela} dias.")
+    linhas.append(creative.ASSINATURA)
+    return "\n".join(linhas)
 
 
 class InstagramFeedChannel(InstagramBase):
@@ -168,5 +199,8 @@ class InstagramFeedChannel(InstagramBase):
             f"{titulo}\n"
             f"{bloco_preco}\n\n"
             f"{copy.cta}\n"
-            "🔗 Link na bio e no canal do Telegram"
+            "🔗 Link na bio e no canal do Telegram\n\n"
+            # Fase 5D: a legenda fecha com o bloco indexável — o Google lê esta
+            # página desde 10/07/2025.
+            f"{bloco_indexavel(titulo, offer, post.verdict)}"
         )

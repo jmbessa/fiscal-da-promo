@@ -62,6 +62,11 @@ def _copy_prompt(offer: Offer, cfg: dict, verdict: Verdict) -> str:
         f"{regua}"
         f"Tom: {cfg['copy']['tone']}\n"
         "NÃO inclua preço nem link — eles são adicionados pelo sistema.\n"
+        # Fase 5D: a Meta REDUZ a distribuição de quem pede curtida, comentário
+        # ou compartilhamento (regra oficial de engagement bait), e uma conta
+        # sem base de seguidores não tem colchão para pagar isso. O fechamento
+        # da marca é a frase-assinatura, que o sistema acrescenta.
+        "NÃO peça curtida, comentário, compartilhamento nem marcação de amigos.\n"
         "Responda APENAS com JSON: {\"headline\": \"até 60 chars, com 1 emoji\", "
         "\"description\": \"até 120 chars\", \"cta\": \"até 40 chars\"}"
     )

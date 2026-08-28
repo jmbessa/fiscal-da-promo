@@ -1714,3 +1714,101 @@ def test_falhas_alternadas_nao_fecham_a_fonte(tmp_path, monkeypatch):
     assert len(ch.sent) == 20                      # os 20 ímpares publicaram
     assert not any("fonte fechada" in w for w in summary.warnings)
     db.close()
+
+
+# --- Fase 5I (T6): a mistura entre as fontes fica visível ---------------------
+#
+# `source_quota` "reparte o teto, nunca o deixa ocioso": a Shopee preenche o
+# que o ML não entrega e NADA falha. Com 37 produtos no pool do ML e
+# `dedupe_days: 30`, o ML sustenta 1,2 oferta/dia contra uma cota de 30 — a
+# mistura real fica em ~98% Shopee sem que ninguém veja. Consertar isso é
+# aumentar o pool (outra fase); o que esta faz é NOMEAR o que aconteceu.
+
+CFG_MISTURA = {
+    **CFG,
+    "channels": {"telegram": {"enabled": True, "max_per_day": 60}},
+    "selection": {**CFG["selection"], "posts_per_run": 1, "dedupe_days": 30,
+                  "source_quota": {"shopee": 0.5, "meli": 0.5}},
+}
+
+
+class CanalComTeto(FakeChannel):
+    """O `telegram` do config real: 60/dia, distribuídos pelo ritmo."""
+    max_per_day = 60
+
+
+def _mistura(db, monkeypatch, hora=20, minuto=0, cfg=CFG_MISTURA, antes=None,
+             canal=None, **kw):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    _congela(monkeypatch, hora, minuto)
+    if antes is not None:
+        antes(db)
+    # A oferta do ML é a pior das duas de propósito: quem publica é a Shopee, e
+    # o teste não depende de desempate de ranking.
+    return pipeline.run(cfg, [FakeSource([make_offer(item_id="s1")]),
+                              FakeMeli([make_offer(item_id="m1", source="meli",
+                                                   price_original_cents=5000,
+                                                   price_current_cents=5000,
+                                                   commission_pct=8.0)])],
+                        [canal or FakeChannel()], db, validator=no_network_validator, **kw)
+
+
+def test_o_resumo_diz_quantas_ofertas_sairam_por_fonte_no_dia(tmp_path, monkeypatch):
+    db = StateDB(tmp_path / "s.db")
+    texto = _mistura(db, monkeypatch).text()
+    assert "🏷️ Hoje por fonte: meli 0/30 · shopee 1/30" in texto
+    db.close()
+
+
+def test_a_fonte_que_ficou_abaixo_de_metade_da_cota_e_nomeada(tmp_path, monkeypatch):
+    """Com o motivo PROVÁVEL junto: sem ele o aviso vira ruído, e o dono
+    concluiria que o ML está quebrado quando ele só não tem o que oferecer."""
+    db = StateDB(tmp_path / "s.db")
+    avisos = _mistura(db, monkeypatch).warnings
+    aviso = next(w for w in avisos if w.startswith("⚠️ meli:"))
+    assert "1 de 30" not in aviso and "0 de 30 da cota do dia" in aviso
+    assert "dedupe" in aviso and "30 dias" in aviso
+    assert "source_quota" in aviso
+    # A Shopee entregou 1 de 30 e também está atrás — mas o dia mal começou
+    # para ela pelo mesmo relógio; o critério é o mesmo para as duas.
+    assert any(w.startswith("⚠️ shopee:") for w in avisos)
+    db.close()
+
+
+def test_antes_da_metade_da_janela_a_cota_nao_e_cobrada(tmp_path, monkeypatch):
+    """Às 08:03 nenhuma fonte entregou metade da cota do dia — e nem deveria.
+    Um aviso que toca todo começo de dia é um aviso que o dono aprende a
+    ignorar."""
+    db = StateDB(tmp_path / "s.db")
+    summary = _mistura(db, monkeypatch, hora=8, minuto=3)
+    assert not any("da cota do dia" in w for w in summary.warnings)
+    assert any("Hoje por fonte" in linha for linha in summary.mistura)
+    db.close()
+
+
+def test_a_mistura_aparece_no_run_que_nao_publicou_nada(tmp_path, monkeypatch):
+    """O run mais informativo é justamente o do fim do dia, em que todos os
+    canais bateram o teto e o laço de publicação nem começa."""
+    db = StateDB(tmp_path / "s.db")
+    summary = _mistura(db, monkeypatch, hora=23, minuto=3, canal=CanalComTeto(),
+                       antes=lambda banco: _ja_postados(banco, "telegram", 60))
+    assert summary.published == []
+    assert "🏷️ Hoje por fonte:" in summary.text()
+    db.close()
+
+
+def test_sem_teto_no_canal_nao_ha_cota_nem_linha_de_mistura(tmp_path, monkeypatch):
+    """Sem `channels.telegram.max_per_day` não existe meta por fonte (é dele
+    que a cota reparte) — e o resumo não inventa uma."""
+    db = StateDB(tmp_path / "s.db")
+    summary = _mistura(db, monkeypatch, cfg=CFG)
+    assert summary.mistura == []
+    assert not any("da cota do dia" in w for w in summary.warnings)
+    db.close()
+
+
+def test_a_fracao_do_dia_e_zero_antes_e_um_depois_da_janela():
+    assert pipeline.fracao_do_dia(datetime(2026, 8, 26, 7, 0), "08:00", "23:15") == 0.0
+    assert pipeline.fracao_do_dia(datetime(2026, 8, 26, 23, 59), "08:00", "23:15") == 1.0
+    meio = pipeline.fracao_do_dia(datetime(2026, 8, 26, 15, 37), "08:00", "23:15")
+    assert 0.49 < meio < 0.51

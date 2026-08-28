@@ -78,6 +78,13 @@ def _motivo(motivo: str) -> str:
     return " ".join(_VALOR.sub("", motivo).split())
 
 
+# Fase 5I (T6): a partir de que ponto do dia a cota por fonte pode ser cobrada.
+# Antes da METADE da janela nenhuma fonte entregou metade da cota do dia — e
+# nem deveria; cobrar às 08:03 seria um aviso todo dia, e aviso que toca todo
+# dia é aviso que o dono aprende a ignorar.
+FRACAO_PARA_COBRAR_A_COTA = 0.5
+
+
 @dataclass
 class RunSummary:
     published: list[str] = field(default_factory=list)
@@ -90,6 +97,10 @@ class RunSummary:
     # NÃO é aviso (não passa pelo warn_once — cada run tem números próprios) e
     # NÃO faz o run notificar sozinho: só acompanha um resumo que já ia sair.
     discovery: list[str] = field(default_factory=list)
+    # Fase 5I (T6): quantas ofertas saíram HOJE por fonte, contra a meta do dia
+    # (`selection.source_quota`). Mesma natureza do `discovery`: número do run,
+    # não aviso — não faz o run notificar sozinho.
+    mistura: list[str] = field(default_factory=list)
 
     def _linhas_de_descarte(self) -> list[str]:
         grupos: dict[str, list[tuple[str, str]]] = {}
@@ -111,6 +122,7 @@ class RunSummary:
             linhas += [f"• {d}" for d in self.dispatched]
         linhas.append(f"Descartados ({len(self.discarded)}):")
         linhas += self._linhas_de_descarte() or ["• (nenhum)"]
+        linhas += self.mistura
         linhas += self.discovery
         if self.warnings:
             linhas.append("Avisos:")
@@ -198,6 +210,53 @@ def pacing_budget(max_per_day: int, now_local: datetime,
         return 0
     fracao = (agora - inicio) / (fim - inicio) if fim > inicio else 1.0
     return min(int(max_per_day), int(max_per_day * fracao) + 1)
+
+
+def fracao_do_dia(now_local: datetime, window_start: str, window_end: str) -> float:
+    """Quanto do dia de OPERAÇÃO já passou, em [0, 1].
+
+    Diferente de `pacing_budget`, que devolve 0 fora da janela porque lá não se
+    publica: aqui o que se pergunta é "quanto do dia já foi", e depois do fim
+    da janela a resposta é 1 (o dia acabou), não 0 (o dia não começou)."""
+    inicio, fim = _minutos(window_start), _minutos(window_end)
+    agora = now_local.hour * 60 + now_local.minute
+    if agora <= inicio or fim <= inicio:
+        return 0.0
+    return min(1.0, (agora - inicio) / (fim - inicio))
+
+
+def linha_de_mistura(metas: dict[str, int], publicados: dict[str, int]) -> str:
+    """A linha do resumo que diz quantas ofertas saíram hoje por FONTE.
+
+    Fase 5I (T6). "Publicamos das duas lojas" era verdade só no papel: com 37
+    produtos no pool do ML e `dedupe_days: 30`, o ML sustenta ~1,2 oferta/dia
+    contra uma cota de 30 — e `source_quota` "reparte o teto, nunca o deixa
+    ocioso", então a Shopee preenche o buraco e NADA falha. Esta linha é a
+    única testemunha da mistura real."""
+    partes = " · ".join(f"{nome} {publicados.get(nome, 0)}/{meta}"
+                        for nome, meta in sorted(metas.items()))
+    return f"🏷️ Hoje por fonte: {partes}"
+
+
+def avisos_de_cota_por_fonte(metas: dict[str, int], publicados: dict[str, int],
+                             fracao: float, dedupe_days: int) -> list[str]:
+    """Fonte LIGADA que, passada a metade da janela, entregou menos da METADE
+    da cota do dia — com o motivo provável junto.
+
+    O motivo importa tanto quanto o número: sem ele o dono concluiria que o ML
+    está quebrado, quando ele só não tem o que oferecer. E o aviso existe
+    justamente porque o sistema NÃO falha nesse estado."""
+    if fracao < FRACAO_PARA_COBRAR_A_COTA:
+        return []
+    return [
+        f"⚠️ {nome}: {publicados.get(nome, 0)} de {meta} da cota do dia "
+        f"(selection.source_quota) — provavelmente o estoque de candidatas dela "
+        f"se esgotou pelo dedupe de {dedupe_days} dias. As outras fontes cobrem "
+        f"o teto (a cota reparte, nunca deixa ocioso), então nada falha: a "
+        f"mistura real só aparece aqui"
+        for nome, meta in sorted(metas.items())
+        if meta > 0 and publicados.get(nome, 0) * 2 < meta
+    ]
 
 
 class _Warner:
@@ -294,7 +353,15 @@ def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
 
 
 def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict,
-            warn: "_Warner") -> RunSummary:
+            warn: "_Warner", metas: dict[str, int] | None = None,
+            publicados: dict[str, int] | None = None, fracao: float = 0.0) -> RunSummary:
+    if metas:
+        # T6: sai em TODO run que tem cota — inclusive no que encerrou cedo por
+        # teto atingido, que é justamente o do fim do dia, o mais informativo.
+        summary.mistura.append(linha_de_mistura(metas, publicados or {}))
+        for aviso in avisos_de_cota_por_fonte(metas, publicados or {}, fracao,
+                                              int(sel.get("dedupe_days") or 0)):
+            warn(aviso)
     if llm.stats.falhas:
         warn(f"ℹ️ LLM indisponível em {llm.stats.falhas} de {llm.stats.chamadas} chamadas"
              " — ranking/copy de fallback")
@@ -426,6 +493,17 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     # esses números um dia: some os dois antes, porque a Meta soma.
     horario = schedule_settings(cfg)
     agora = db.local_now()
+    # Cota por fonte (M2): a meta do dia de cada loja, e quanto ela já publicou
+    # hoje. A fila continua ordenada pelo ranking; a cota só escolhe, entre as
+    # candidatas, quem vai primeiro — e nunca deixa o teto ocioso.
+    # Lida AQUI, e não no laço de publicação: o resumo do fim (T6) precisa dela
+    # também nos runs que encerram cedo por teto atingido — que são justamente
+    # os do fim do dia, quando a mistura já é um fato consumado.
+    metas = selection.source_targets(cfg, [s.name for s in sources])
+    publicados_hoje = db.posted_today_by_source() if metas else {}
+    fracao_decorrida = fracao_do_dia(agora, horario["window_start"], horario["window_end"])
+    fim = partial(_finish, summary, db, dry_run, sel, warn, metas=metas,
+                  publicados=publicados_hoje, fracao=fracao_decorrida)
     orcamento: dict[str, int | None] = {}
     for ch in channels:
         cap = getattr(ch, "max_per_day", None)
@@ -453,7 +531,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     if not dry_run:
         if not channels:
             warn("⚠️ nenhum canal disponível — nada a publicar")
-            return _finish(summary, db, dry_run, sel, warn)
+            return fim()
         if not any(aberto(ch) for ch in channels):
             # Aviso só quando algum canal bateu o max_per_day de verdade.
             # Fechado SÓ pelo ritmo (08:05: orçamento 1, já usado) é o
@@ -463,7 +541,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                 warn("ℹ️ teto diário atingido em todos os canais")
             elif nos_tetos:
                 warn("ℹ️ teto diário atingido em " + ", ".join(nos_tetos))
-            return _finish(summary, db, dry_run, sel, warn)
+            return fim()
 
     offers = pricing.enrich_offers(offers, db, watchlist, cfg)
     candidates, cortes = selection.filter_offers_with_stats(offers, db, cfg)
@@ -485,12 +563,6 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
     tetos_atingidos: set[str] = set()
     minimo_pct = int(pricing.setting(
         sel, "min_real_discount_pct", pricing.DEFAULT_MIN_REAL_DISCOUNT_PCT))
-
-    # Cota por fonte (M2): a meta do dia de cada loja, e quanto ela já
-    # publicou hoje. A fila continua ordenada pelo ranking; a cota só escolhe,
-    # entre as candidatas, quem vai primeiro — e nunca deixa o teto ocioso.
-    metas = selection.source_targets(cfg, [s.name for s in sources])
-    publicados_hoje = db.posted_today_by_source() if metas else {}
 
     # Freios da fila (C1 da revisão): teto de descartes e circuito por fonte.
     teto_descartes = int(pricing.setting(sel, "max_descartes_por_run",
@@ -618,4 +690,4 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if ch.name in tetos_atingidos:
             warn(f"ℹ️ {ch.name}: teto diário ({getattr(ch, 'max_per_day', None)}) atingido")
 
-    return _finish(summary, db, dry_run, sel, warn)
+    return fim()

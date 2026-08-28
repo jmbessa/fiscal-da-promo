@@ -529,21 +529,6 @@
       "rating": 4.8
     },
     {
-      "product_id": "MLB65538979",
-      "title": "Secador Cabelo Mondial Portátil Max Travel Sc-10 Vermelho",
-      "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_663911-MLA107117444091_022026-E.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB4820834927",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 250000,
-      "rating": 4.6
-    },
-    {
       "product_id": "MLB45617876",
       "title": "Attracione Men perfume Masculino Com Feromônios Ativados 25 mL",
       "image_url": "https://http2.mlstatic.com/D_NQ_NP_948198-MLA81769955450_012025-O.webp",
@@ -559,81 +544,6 @@
       "rating": 4.5
     },
     {
-      "product_id": "MLB62572208",
-      "title": "Perfume Natura Una Blush Feminino 75ml Eau De Parfum Luxuoso",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_755591-MLA99158972506_112025-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB6191303900",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 50000,
-      "rating": 5.0
-    },
-    {
-      "product_id": "MLB44868729",
-      "title": "Prancha Alisadora Mondial 45W Bivolt P-20",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_669514-MLB91973529960_092025-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB4136042445",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 100000,
-      "rating": 4.7
-    },
-    {
-      "product_id": "MLB44799200",
-      "title": "Prancha Alisadora Mondial 45W Bivolt P-20",
-      "image_url": "https://http2.mlstatic.com/D_981001-MLA99885737821_112025-O.jpg",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB7105311244",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 100000,
-      "rating": 4.7
-    },
-    {
-      "product_id": "MLB44799035",
-      "title": "Prancha De Cabelo Eleganza Plus Bivolt Preto",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_624620-MLA100045851319_122025-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB4220612165",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 100000,
-      "rating": 4.8
-    },
-    {
-      "product_id": "MLB44008422",
-      "title": "Cola Cherry One Original 3ml Extensão de Cílios Adesivo Preto Secagem Rápida 1s Volume Russo e Fio a Fio",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_869706-MLA95086857225_102025-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB4235509717",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 100000,
-      "rating": 4.9
-    },
-    {
       "product_id": "MLB75825805",
       "title": "2 Tônico Ultradlust Crescimento Cabelo E Barba 120ml Hortelã",
       "image_url": "https://http2.mlstatic.com/D_Q_NP_2X_697147-MLA115228153593_072026-E.webp",
@@ -647,21 +557,6 @@
       "price_min_window_days": 0,
       "sales": 5000,
       "rating": 4.7
-    },
-    {
-      "product_id": "MLB42112865",
-      "title": "Prancha Chapinha Eleganza Plus 210°c Gama",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_740359-MLA99932754253_112025-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB6218943540",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 100000,
-      "rating": 4.8
     },
     {
       "product_id": "MLB19694427",
@@ -707,21 +602,6 @@
       "price_min_window_days": 0,
       "sales": 50000,
       "rating": 4.9
-    },
-    {
-      "product_id": "MLB72881233",
-      "title": "Eletrodo Tens Fisioterapia 20 Unidades Branco",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_820998-MLA111794535304_062026-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB6924897520",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 10000,
-      "rating": 4.6
     },
     {
       "product_id": "MLB52363091",
@@ -812,36 +692,6 @@
       "price_min_window_days": 0,
       "sales": 250000,
       "rating": 5.0
-    },
-    {
-      "product_id": "MLB36198080",
-      "title": "Secador De Cabelo Taiff Black Ion 2000w Para Barbearia",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_722229-MLB112586621888_062026-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB6819756424",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 100000,
-      "rating": 4.9
-    },
-    {
-      "product_id": "MLB75682176",
-      "title": "Gokoco GD037 Modeladora/Cacheadora - Preto",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_653652-MLA113721401192_072026-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB7261628652",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 5000,
-      "rating": 4.9
     },
     {
       "product_id": "MLB18390579",
@@ -947,21 +797,6 @@
       "price_min_window_days": 0,
       "sales": 50000,
       "rating": 5.0
-    },
-    {
-      "product_id": "MLB28464729",
-      "title": "Máquina de Cortar Cabelo Sem Fio Kemei KM-2299 Preto Com Acessórios",
-      "image_url": "https://http2.mlstatic.com/D_NQ_NP_700348-MLA99990945105_112025-O.webp",
-      "category": "MLB1246",
-      "buy_box_item_id": "MLB3577119669",
-      "buy_box_checked_at": "2026-08-28",
-      "price_ref_cents": 0,
-      "price_p25_cents": 0,
-      "price_window_days": 0,
-      "price_historic_min_cents": 0,
-      "price_min_window_days": 0,
-      "sales": 100000,
-      "rating": 4.9
     }
   ]
 }

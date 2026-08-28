@@ -449,6 +449,55 @@ def test_doctor_usa_o_retorno_do_send_text(monkeypatch, capsys):
     assert "✅ Telegram: mensagem de teste enviada" in capsys.readouterr().out
 
 
+class _ShopeeComFeed:
+    """Dublê que devolve a fatia de descoberta com a linha do data feed."""
+
+    def __init__(self, feed: str = "", feed_warning: str = ""):
+        from afiliado.sources.shopee import DiscoveryStats
+        self.discovery_stats = DiscoveryStats(calls=1, nodes=0, eligible=0,
+                                              feed=feed, feed_warning=feed_warning)
+        self.cfg_visto: dict = {}
+
+    def fetch_offers(self, cfg):
+        self.cfg_visto = cfg["shopee"]
+        return []
+
+
+def test_doctor_confere_o_data_feed_junto_com_a_busca(monkeypatch, capsys):
+    """Fase 5L: o feed é a segunda superfície de descoberta e só falava pelo
+    resumo do run, uma vez por dia. O doctor o exercita — e com o
+    `feed_calls_per_run` do config, não com um número inventado."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    fonte = _ShopeeComFeed(feed="2 chamadas · 500 linhas · 160 elegíveis · 10 mantidas")
+    monkeypatch.setattr(cli, "_shopee", lambda db=None: fonte)
+
+    assert cli.doctor(cfg) == 0
+    out = capsys.readouterr().out
+    assert "📦 Data feed: 2 chamadas · 500 linhas · 160 elegíveis · 10 mantidas" in out
+    assert fonte.cfg_visto["feed_calls_per_run"] == cfg["shopee"]["feed_calls_per_run"]
+
+
+def test_doctor_avisa_do_feed_fora_do_ar_sem_ficar_vermelho(monkeypatch, capsys):
+    """Feed quebrado NÃO é doctor vermelho: a busca continua publicando, e
+    pintar de ❌ um sistema que está entregando ensina a ignorar o ❌."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_shopee", lambda db=None: _ShopeeComFeed(
+        feed_warning="⚠️ shopee: data feed indisponível (quota) — a busca continua"))
+
+    assert cli.doctor(cfg) == 0
+    assert "data feed indisponível" in capsys.readouterr().out
+
+
+def test_doctor_calado_sobre_o_feed_quando_ele_esta_desligado(monkeypatch, capsys):
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_shopee", lambda db=None: _ShopeeComFeed())
+    cli.doctor(cfg)
+    assert "Data feed" not in capsys.readouterr().out
+
+
 def test_doctor_imprime_a_validacao_do_pool_do_meli(monkeypatch, tmp_path, capsys):
     # Teste obrigatório 8: o doctor roda a mesma validação do pool que o run
     # e imprime o resultado — quantas valem e por que as outras caíram.

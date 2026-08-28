@@ -604,12 +604,24 @@ def _doctor_agendador(consulta=None) -> bool:
 def doctor(cfg: dict) -> int:
     ok = True
     try:
-        # Uma chamada só (a p1 de uma raiz): o doctor confere credencial e
-        # parsing, não faz varredura — e sem StateDB não mexe no cursor do run.
-        offers = _shopee().fetch_offers(
+        # Uma chamada de BUSCA (a p1 de uma raiz) mais a fatia do data feed
+        # como o config a define: o doctor confere credencial e parsing, não
+        # faz varredura — e sem StateDB não mexe no cursor do run.
+        fonte = _shopee()
+        offers = fonte.fetch_offers(
             {**cfg, "shopee": {**cfg["shopee"], "calls_per_run": 1, "pages": 1}})
         print(f"✅ Shopee: {len(offers)} ofertas; primeira: "
               f"{offers[0] if offers else '(vazio — confira sort_types/list_type)'}")
+        # Fase 5L: o feed é a SEGUNDA superfície de descoberta e, sem esta
+        # linha, só falaria pelo resumo do run — uma vez por dia. Feed quebrado
+        # não pinta o doctor de vermelho: a busca continua publicando, e um ❌
+        # num sistema que está entregando é a maneira mais rápida de ensinar o
+        # dono a ignorar o ❌.
+        stats = getattr(fonte, "discovery_stats", None)
+        if getattr(stats, "feed", ""):
+            print(f"📦 Data feed: {stats.feed}")
+        if getattr(stats, "feed_warning", ""):
+            print(stats.feed_warning)
     except Exception as exc:
         ok = False
         print(f"❌ Shopee: {exc}")

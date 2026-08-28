@@ -239,6 +239,17 @@ channels:
   instagram_feed:
     enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
     max_per_day: 2           # 1 de manhã, a 2ª só a partir da metade da janela
+  # Fase 5D: o CARROSSEL (`afiliado feed`, tipo termometro). Publica pelo mesmo
+  # canal e pela mesma cota da Meta que o instagram_feed acima (100/24 h), mas
+  # tem teto próprio porque é um post por vez e não deve competir com o feed de
+  # oferta única. **Um carrossel de 6 ofertas conta como UM post** na cota — é
+  # isso que torna o formato barato.
+  # A pesquisa (2026-08-28) recomenda 2-3 carrosséis por semana; este comando
+  # NÃO sai pelo `afiliado run` — é agendado à parte, e o teto de 1/dia é o que
+  # impede um agendador errado de virar seis por dia.
+  instagram_carrossel:
+    enabled: true
+    max_per_day: 1
   # Fase 5E: story publicado pela API oficial (media_type=STORIES, sem legenda
   # e sem sticker de link — a API não tem um). A cota de publicação da Meta é
   # COMPARTILHADA com o feed: 100 por 24 h; 2 + 6 usam 8.

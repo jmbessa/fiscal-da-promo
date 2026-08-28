@@ -387,3 +387,64 @@ workflow ganha um passo de escrita de volta no secret com um PAT:
       com `GH_TOKEN: ${{ secrets.GH_PAT }}` no `env:`.
 - [ ] Um PAT com escrita em secrets é uma chave que abre o repositório
       inteiro — só crie se o `client_credentials` realmente parar.
+
+---
+
+## 2026-08-28 — o `buy_box_item_id` NÃO é o vencedor do buy box
+
+O dono viu dois stories com preço muito acima do real e o Mercado Livre foi
+**desligado** (`sources.meli: false`). Isto é o que a investigação mediu.
+
+### Os dois casos, com `/products/{id}/items` paginado INTEIRO
+
+| produto | publicamos | nosso anúncio | vendedores | faixa real | mediana | a página mostra |
+|---|---|---|---|---|---|---|
+| MLB19603205 (creatina) | R$ 80,00 | existe, custa R$ 80,00 | 277 | R$ 35,90 – R$ 6.999 | R$ 64,90 | **R$ 39,90** |
+| MLB22983247 (colchão) | R$ 209,87 | existe, custa R$ 209,87 | 137 | R$ 109 – R$ 414,90 | R$ 175 | **R$ 113** |
+
+**`refresh_price` funcionou nos dois.** Ele leu o preço vivo do anúncio
+gravado, que é exatamente o que foi projetado para fazer. Quem está errado é a
+premissa: o `buy_box_item_id` não é o vencedor do buy box — é só *um* vendedor,
+e nos dois casos um caro.
+
+Uma primeira leitura minha disse que o anúncio da creatina tinha sumido da
+lista e que os R$ 80 eram a mediana do pool. **Estava errada**: a sonda só via
+os 100 primeiros de 277. Paginando, o anúncio está lá. Fica registrado porque a
+conclusão muda o conserto: não há bug de fallback para consertar.
+
+### Por que não dá para saber o vencedor
+
+- `GET /products/{id}` → `buy_box_winner` **sempre `null`** (medido em 3
+  produtos em 26/08 e de novo em 28/08).
+- `GET /products/{id}/items` → o campo **`tier` vem vazio** nos 89 anúncios
+  sondados; a ordem da lista não é o buy box (`results[0]` bateu com a página
+  em 2 de 3).
+- `buyBoxId` do JoomPulse → **envelhece**. Renovei 33 entradas na manhã de
+  28/08 e os dois stories errados saíram no mesmo dia.
+
+### O que a medição diz sobre as alternativas
+
+Erro contra o preço que a página mostra:
+
+| regra | creatina | colchão |
+|---|---|---|
+| anúncio do JoomPulse (hoje) | **+100%** | **+86%** |
+| mediana dos vendedores | +63% | +55% |
+| **o mais barato** | **−10%** | **−3,5%** |
+
+O mais barato é, de longe, o melhor estimador — e erra para BAIXO, que é o lado
+em que o seguidor não se sente enganado. Mas erra: o histórico da fase 3B
+registra um caso de "post dizia R$ 32 e o clique mostrava R$ 45".
+
+### Decisão pendente do dono
+
+Religar o ML exige escolher uma destas:
+
+1. **Publicar o mais barato** e aceitar ~10% de erro para baixo.
+2. **Publicar o mais barato e linkar o ANÚNCIO**, não a página de catálogo —
+   aí o preço é exato para o link que damos. Exige gerar link de afiliado por
+   anúncio e dinamicamente; hoje os links são por produto e gerados em lote
+   pelo painel.
+3. **Manter desligado** até a Shopee sozinha não bastar.
+
+Não há opção "publicar o preço do vencedor": esse número não é obtível.

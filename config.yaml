@@ -131,22 +131,27 @@ selection:
 # afiliado (data/meli_links.json, ver docs/runbooks/meli-setup.md).
 sources:
   shopee: true
-  # DESLIGADO EM 2026-08-28 — o preço publicado estava muito acima do real, e a
-  # causa não tem correção rápida. Dois casos medidos ao vivo, ambos no ar:
+  # DESLIGADO EM 2026-08-28 — o preço publicado estava muito acima do real.
+  # Dois stories no ar, os dois medidos ao vivo, paginando /products/{id}/items
+  # inteiro:
   #
-  #   MLB19603205 (creatina): o anúncio gravado como vencedor do buy box NÃO
-  #   está mais em /products/{id}/items. A oferta foi publicada mesmo assim,
-  #   com R$ 80 — que é a MEDIANA do pool, não um preço vivo. Os anúncios reais
-  #   custam de R$ 35,90 a R$ 39,90.
+  #   MLB19603205 (creatina): publicamos R$ 80. Nosso anúncio EXISTE e custa
+  #   R$ 80 mesmo — entre 277 vendedores que vão de R$ 35,90 a R$ 6.999. A
+  #   página mostra R$ 39,90.
   #
-  #   MLB22983247 (colchão): o anúncio gravado existe e custa R$ 209,87, mas o
-  #   vencedor real está entre R$ 109 e R$ 119 (a página mostrava R$ 113).
+  #   MLB22983247 (colchão): publicamos R$ 209,87. Nosso anúncio EXISTE e custa
+  #   isso — entre 137 vendedores de R$ 109 a R$ 414,90. A página mostra R$ 113.
   #
-  # A raiz é a mesma dos dois: NÃO SABEMOS quem vence o buy box. O `buyBoxId`
-  # do JoomPulse envelhece, e a API do ML não entrega o vencedor —
-  # `buy_box_winner` vem nulo e o campo `tier` vem vazio nos 89 anúncios
-  # sondados em 2026-08-28. Religar só depois de decidir qual preço publicar
-  # quando o vencedor é desconhecido (ver docs/runbooks/meli-setup.md).
+  # `refresh_price` funcionou nos dois: leu o preço vivo do anúncio gravado. O
+  # defeito é a PREMISSA — o `buy_box_item_id` não é o vencedor do buy box, é
+  # só um vendedor, e caro. O `buyBoxId` do JoomPulse envelhece (renovei 33
+  # entradas na manhã do mesmo dia e as duas saíram assim), e a API do ML não
+  # entrega o vencedor: `buy_box_winner` vem nulo e `tier` vem vazio nos 89
+  # anúncios sondados.
+  #
+  # Religar exige decidir QUAL preço publicar sem saber o vencedor. Medido: o
+  # mais barato erra 11% e 3,7% para baixo contra a página; a mediana dos
+  # vendedores erra 63% e 55% para cima. Ver docs/runbooks/meli-setup.md.
   meli: false
 
 # Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26

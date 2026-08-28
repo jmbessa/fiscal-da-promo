@@ -42,6 +42,9 @@ from afiliado.state import StateDB
 from afiliado.watchlist import PriceFloor, PriceRef, Watchlist, load_watchlist
 
 CUBO = "ShbModelsPricesDaily"
+# O teto de linhas por consulta do cubo (medido em 2026-08-28). Vale como
+# palpite quando a resposta salva não traz o `query.limit` dela.
+LIMITE_PADRAO = 100
 JANELA_PADRAO = pricing.DEFAULT_REF_WINDOW_DAYS
 WATCHLIST_PADRAO = "data/watchlist.json"
 SECOES_DE_FATO = ("price_refs", "price_floors")
@@ -166,31 +169,51 @@ def regua_do_item(item_id: str, intervalos: list[tuple[date, date | None, int]],
     return Regua(item_id, ref, p25, minimo, len(dias), hoje), ""
 
 
-def _linhas(bruto) -> list[dict]:
-    """As linhas de uma resposta do Cube.js: `{"data": [...]}` ou a lista nua."""
+def _linhas(bruto) -> tuple[list[dict], int]:
+    """`(linhas, limite)` de uma resposta do Cube.js — `{"data": [...]}` ou a
+    lista nua. O limite sai de `query.limit` quando a resposta o traz."""
+    limite = LIMITE_PADRAO
     if isinstance(bruto, dict):
+        consulta = bruto.get("query")
+        if isinstance(consulta, dict):
+            try:
+                limite = int(consulta.get("limit") or LIMITE_PADRAO)
+            except (TypeError, ValueError):
+                limite = LIMITE_PADRAO
         bruto = bruto.get("data")
-    return [linha for linha in bruto or [] if isinstance(linha, dict)]
+    return [linha for linha in bruto or [] if isinstance(linha, dict)], limite
 
 
 def _campo(linha: dict, nome: str):
     return linha.get(f"{CUBO}.{nome}", linha.get(nome))
 
 
-def intervalos_do_bruto(brutos: list) -> tuple[dict[str, list], int]:
-    """Agrupa as linhas cruas por item. Devolve `(por_item, linhas_ignoradas)`.
+def intervalos_do_bruto(brutos: list) -> tuple[dict[str, list], int, set[str]]:
+    """Agrupa as linhas cruas por item. Devolve `(por_item, ignoradas, cortados)`.
 
     O item aparece no mapa mesmo quando NENHUMA linha dele é legível — assim
     ele é recusado com motivo em vez de sumir do relatório.
+
+    `cortados` é a defesa contra a página CHEIA. O grão do cubo é o intervalo e
+    cabem ~4 itens em 100 linhas: a página cheia é o caso normal, e nela o
+    ÚLTIMO item vem cortado no meio da série — faltam justamente os intervalos
+    mais recentes, porque a ordem é `(itemId, priceStart)`. Uma régua feita
+    disso mediria uma janela que não existiu. A página seguinte, quando existe,
+    absolve o item: as linhas que faltavam chegam nela.
     """
     por_item: dict[str, list] = {}
     ignoradas = 0
+    cortados: set[str] = set()
     for bruto in brutos:
-        for linha in _linhas(bruto):
+        linhas, limite = _linhas(bruto)
+        ultimo = ""
+        for linha in linhas:
             item_id = str(_campo(linha, "itemId") or "").strip()
             if not item_id:
                 ignoradas += 1
                 continue
+            ultimo = item_id
+            cortados.discard(item_id)         # esta página continua o que faltava
             inicio = _dia(_campo(linha, "priceStart"))
             preco = centavos(_campo(linha, "modelPrice"))
             por_item.setdefault(item_id, [])
@@ -198,17 +221,23 @@ def intervalos_do_bruto(brutos: list) -> tuple[dict[str, list], int]:
                 ignoradas += 1
                 continue
             por_item[item_id].append((inicio, _dia(_campo(linha, "priceEnd")), preco))
-    return por_item, ignoradas
+        if ultimo and len(linhas) >= limite:
+            cortados.add(ultimo)
+    return por_item, ignoradas, cortados
 
 
 def reguas_do_bruto(brutos: list, hoje: date, janela_dias: int = JANELA_PADRAO,
                     min_dias: int = pricing.MIN_WINDOW_DAYS
                     ) -> tuple[dict[str, Regua], dict[str, str]]:
     """`(réguas aceitas, {item: motivo da recusa})` das respostas do cubo."""
-    por_item, _ = intervalos_do_bruto(brutos)
+    por_item, _, cortados = intervalos_do_bruto(brutos)
     aceitas: dict[str, Regua] = {}
     recusadas: dict[str, str] = {}
     for item_id, intervalos in por_item.items():
+        if item_id in cortados:
+            recusadas[item_id] = ("linhas cortadas no fim da página cheia — "
+                                  "pagine com offset e junte as duas respostas")
+            continue
         regua, motivo = regua_do_item(item_id, intervalos, hoje, janela_dias, min_dias)
         if regua is None:
             recusadas[item_id] = motivo

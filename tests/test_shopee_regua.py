@@ -182,6 +182,35 @@ def test_reguas_do_bruto_agrupa_por_item_e_diz_quem_caiu():
     assert "sem linha" in recusados["lixo"]
 
 
+def test_ultimo_item_de_pagina_cheia_e_recusado():
+    # O cubo devolve no máximo `limit` linhas e o grão é o INTERVALO: com ~4
+    # itens por consulta, a página cheia é o caso NORMAL, e nela o último item
+    # está cortado no meio da série — faltam justamente os intervalos mais
+    # recentes. Uma régua feita disso mede uma janela que não existiu.
+    bruto = {"query": {"limit": 3}, "data": [
+        linha("inteiro", "2026-06-01", "2026-07-15", 152.91),
+        linha("inteiro", "2026-07-16", "2026-08-28", 129.97),
+        linha("cortado", "2026-06-01", "2026-08-28", 410.01),
+    ]}
+    reguas, recusados = shopee_regua.reguas_do_bruto([bruto], HOJE)
+    assert set(reguas) == {"inteiro"}
+    assert "cortad" in recusados["cortado"]
+
+
+def test_pagina_seguinte_absolve_o_item_cortado():
+    cheia = {"query": {"limit": 2}, "data": [
+        linha("a", "2026-06-01", "2026-08-28", 152.91),
+        linha("b", "2026-06-01", "2026-07-15", 410.01),
+    ]}
+    resto = {"query": {"limit": 2}, "data": [
+        linha("b", "2026-07-16", "2026-08-28", 380.00),
+    ]}
+    reguas, recusados = shopee_regua.reguas_do_bruto([cheia, resto], HOJE)
+    assert recusados == {}
+    assert reguas["b"].window_days == 89
+    assert reguas["b"].min_cents == 38000
+
+
 def test_reguas_do_bruto_aceita_lista_e_dict_e_chave_sem_prefixo():
     lista = [linha("a", "2026-06-01", "2026-08-28", 152.91)]
     sem_prefixo = [{"itemId": "b", "modelPrice": 152.91,

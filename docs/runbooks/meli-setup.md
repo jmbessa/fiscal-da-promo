@@ -191,10 +191,11 @@ do anúncio que vence o buy box. Formato:
 ### Validação na carga (o que o leitor rejeita, e diz por quê)
 
 Entrada **pulada e contada no aviso, por motivo**: campo de preço ausente,
-textual ou ≤ 0 (`sem referência` / `sem p25` / `sem janela da referência`
-/ `sem mínima histórica` / `sem janela da mínima`); campo de preço com
-FRAÇÃO de centavo (`4500.5` → `não inteiro`; o float integral `2590.0` é
-aceito como 2590 — JSON não distingue os dois); `price_ref_cents / 100`
+nulo, textual ou negativo (`sem referência` / `sem p25` / `sem janela da
+referência` / `sem mínima histórica` / `sem janela da mínima`); campo de preço
+com FRAÇÃO de centavo (`4500.5` → `não inteiro`; o float integral `2590.0` é
+aceito como 2590 — JSON não distingue os dois); régua **parcialmente** zerada
+(`régua parcial`); `price_ref_cents / 100`
 fora de `selection.price_min_brl..price_max_brl` (`fora da faixa de preço` —
 o item a R$ 19,90 do pool antigo morria em silêncio em todo run);
 `price_p25_cents > price_ref_cents` (`p25 acima da referência`);
@@ -206,6 +207,32 @@ inválida`); `product_id` repetido. O aviso sai assim,
 no `doctor` e no resumo de ops: `3 entrada(s) do pool ignorada(s) (2 fora da
 faixa de preço, 1 sem p25)`. Um pool no formato antigo é rejeitado inteiro
 (`38 entrada(s) do pool ignorada(s) (38 sem p25)`) — não é zero silencioso.
+
+### Entrada SEM HISTÓRICO (fase 5J)
+
+A entrada cujos **cinco** campos de régua vêm presentes e iguais a 0 é
+ACEITA: é a "onda barata" do `/meli-pool-refresh`, que pula o histórico
+(4 consultas do JoomPulse a cada 28 produtos, contra 1 a cada 50 do resto) e
+enche o pool em dias em vez de semanas. Ela publica em **modo B** — preço +
+prova social, sem alegar desconto e sem selo — e ganha régua sozinha quando o
+nosso `price_log` tiver `selection.ref_min_observations` dias distintos
+(degrau 3 de `pricing.enrich_offers`).
+
+- Campo **ausente** continua sendo erro: o que se aceita é o zero EXPLÍCITO,
+  senão um typo de curadoria passaria a valer como "sem histórico".
+- Zero **parcial** continua sendo erro (`régua parcial`): `ref > 0` com
+  `p25 = 0` é curadoria quebrada, não histórico faltando.
+- A faixa de preço é checada sobre a referência, que não existe aqui: para
+  essas entradas ela é **adiada**, não removida — `validate.check_price` a
+  aplica sobre o preço VIVO depois do `refresh_price`, com os mesmos números.
+- O `doctor` e o resumo de ops imprimem a proporção: `🏷️ Mercado Livre: 12 de
+  35 entrada(s) com régua curada; 23 em modo B esperando histórico`.
+- **Quanto demora a graduação, medido:** o preço do ML só entra no
+  `price_log` quando a oferta passa pelo `refresh_price` — ou seja, quando é
+  escolhida para publicar — e o dedupe de 30 dias a tira da fila em seguida.
+  São ~1 observação por item a cada 30 dias: os 14 dias distintos levam ~14
+  MESES, não 14 dias. Na prática, a onda barata é modo B permanente até que
+  alguém decida observar o preço do pool fora do caminho de publicação.
 
 - Desde a fase 4 o ML não tem teto de preço próprio: quem decide
   publicabilidade é `selection.max_above_ref` (não anunciar item mais caro que

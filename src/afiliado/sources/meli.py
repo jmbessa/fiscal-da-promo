@@ -405,6 +405,9 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         product_url=f"https://www.mercadolivre.com.br/p/{product_id}",
         category=str(item.get("category") or ""),
         sales=int(item.get("sales") or 0),
+        # O contador do ML é uma FAIXA ("+250 mil"), não uma contagem: o campo
+        # vem de `catalogSales`, que é o balde que o anúncio publica.
+        sales_e_faixa=True,
         rating=float(item.get("rating") or 0.0),
         price_ref_cents=ref,
         price_p25_cents=p25,

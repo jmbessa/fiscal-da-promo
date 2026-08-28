@@ -19,7 +19,7 @@ passa mais.
   carregue via ToolSearch se estiverem deferidas). Sem ele, avise o usuário e pare.
 - Executar da raiz do repo. Leia `data/meli_offers.json` atual para comparar depois.
 - Regras de consulta: leia `pulse://rules` (`read_resource`, não conta na cota)
-  se for a primeira vez na sessão. Vendas (`catalogOrderCount1m`) são
+  se for a primeira vez na sessão. Vendas ESTIMADAS (`catalogOrderCount1m`) são
   **ESTIMATIVAS** do JoomPulse — divulgue em todo resumo e no campo `source`.
 
 ## Orçamento (obrigatório)
@@ -86,7 +86,7 @@ nas dimensões** — qualquer dimensão de anúncio quebra o rollup por produto.
 
 ```json
 {"dimensions":["MercadoProductsWeekly.productId"],
- "measures":["MercadoProductsWeekly.catalogOrderCount1m","MercadoProductsWeekly.reviewsRating",
+ "measures":["MercadoProductsWeekly.catalogSales","MercadoProductsWeekly.catalogOrderCount1m","MercadoProductsWeekly.reviewsRating",
              "MercadoProductsWeekly.buyBoxPriceAmount","MercadoProductsWeekly.buyBoxPriceAmountHistoricMin",
              "MercadoProductsWeekly.buyBoxId"],
  "filters":[{"member":"MercadoProductsWeekly.merchantCategoryIdL1","operator":"equals","values":["<cat>"]},
@@ -95,9 +95,28 @@ nas dimensões** — qualquer dimensão de anúncio quebra o rollup por produto.
  "order":[["MercadoProductsWeekly.catalogOrderCount1m","desc"]],"limit":100}
 ```
 
+## `sales` do pool é `catalogSales`, NUNCA `catalogOrderCount1m`
+
+Os dois existem e são coisas diferentes:
+
+| medida | o que é | exemplo (protetor MLB19755099) |
+|---|---|---|
+| `catalogSales` | contador ACUMULADO do próprio Mercado Livre — o "+250 mil vendidos" que aparece no anúncio | **250.000** |
+| `catalogOrderCount1m` | ESTIMATIVA do JoomPulse de vendas no último mês | 5.148 |
+
+O campo `sales` do pool vira "N vendidos" na arte, e o seguidor lê isso como o
+contador do anúncio. Gravar a estimativa mensal ali dá um número **20 a 200
+vezes menor** (medido no pool de 2026-08-26: a creatina dizia 27 mil quando são
+1 milhão) — e ainda apresenta estimativa como fato, que é exatamente o que este
+projeto existe para não fazer. Use `catalogSales` em `sales`.
+
+`catalogOrderCount1m` continua servindo para ORDENAR (quem vende mais AGORA) e
+para o filtro `gt 0` — só não vai para o arquivo.
+
 (O filtro `catalogOrderCount1m gt 0` é exigido por `pulse://rules`: ordenar
 `desc` por medida põe NULL primeiro.) Guarde por produto: `buyBoxId`,
-`buyBoxPriceAmount`, `buyBoxPriceAmountHistoricMin`, `catalogOrderCount1m`,
+`buyBoxPriceAmount`, `buyBoxPriceAmountHistoricMin`, `catalogSales`,
+`catalogOrderCount1m`,
 `reviewsRating`. Pré-filtro sem consulta: `reviewsRating >= 4.5`, preço do buy
 box entre `selection.price_min_brl` e `price_max_brl` do `config.yaml`.
 

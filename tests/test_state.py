@@ -68,7 +68,7 @@ def test_price_history_respeita_a_janela_e_ordena_do_mais_recente(tmp_path):
     from datetime import date, timedelta
 
     db = StateDB(tmp_path / "state.db")
-    hoje = date.today()
+    hoje = db.local_today()      # o dia da OPERAÇÃO, não o da máquina (CI roda em UTC)
     for delta, cents in ((0, 3390), (10, 2600), (100, 9999)):
         db.record_price("shopee", "123456", cents,
                         day=(hoje - timedelta(days=delta)).isoformat())
@@ -82,7 +82,7 @@ def test_prune_price_log_apaga_o_que_saiu_da_janela(tmp_path):
     from datetime import date, timedelta
 
     db = StateDB(tmp_path / "state.db")
-    hoje = date.today()
+    hoje = db.local_today()      # o dia da OPERAÇÃO, não o da máquina (CI roda em UTC)
     for delta, cents in ((0, 3390), (10, 2600), (100, 9999)):
         db.record_price("shopee", "123456", cents,
                         day=(hoje - timedelta(days=delta)).isoformat())
@@ -95,7 +95,7 @@ def test_record_run_poda_o_price_log(tmp_path):
     from datetime import date, timedelta
 
     db = StateDB(tmp_path / "state.db")
-    hoje = date.today()
+    hoje = db.local_today()      # o dia da OPERAÇÃO, não o da máquina (CI roda em UTC)
     db.record_price("shopee", "123456", 9999,
                     day=(hoje - timedelta(days=100)).isoformat())
     db.record_price("shopee", "123456", 2600, day=hoje.isoformat())
@@ -112,7 +112,7 @@ def test_count_posts_today(tmp_path):
     db.record_post(make_post(item_id="2"), channel="a", message_id="2")
     db.record_post(make_post(item_id="3"), channel="b", message_id="3")
 
-    ontem = date.today() - timedelta(days=1)
+    ontem = db.local_today() - timedelta(days=1)
     db.conn.execute(
         "INSERT OR REPLACE INTO posted (source, item_id, channel, title, price_cents, "
         "message_id, posted_at) VALUES (?,?,?,?,?,?,?)",

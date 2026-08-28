@@ -255,16 +255,16 @@ def _monta_story_link(ch_cfg: dict, cfg: dict, channels: list, avisos: list[str]
     if oficial:
         _aviso(avisos, AVISO_REGRA_DE_OURO)
         return
-    usuario, senha = _env("IG_USERNAME"), _senha()
-    if not (usuario and senha):
-        # A senha NUNCA entra em aviso, log ou resumo — só a ausência dela.
+    usuario, senha, sessionid = _env("IG_USERNAME"), _senha(), _env("IG_SESSIONID")
+    if not (usuario and (senha or sessionid)):
+        # Credencial NUNCA entra em aviso, log ou resumo — só a ausência dela.
         _aviso(avisos, STORY_LINK_SEM_ENV)
         return
     bruto = story_link_cfg(cfg)
     sessao = ig_session_path(cfg)
     ch = InstagramStoryLinkChannel(
         usuario, senha, session_path=sessao, brand_handle=brand_handle,
-        brand_name=brand_name, estado=db,
+        brand_name=brand_name, estado=db, sessionid=sessionid,
         max_sem_link=int(bruto.get("max_sem_link")
                          or instagram_story_link.MAX_SEM_LINK_PADRAO))
     if max_per_day is not None:
@@ -648,10 +648,15 @@ def ig_login(cfg: dict) -> int:
     senha, nem o texto cru de uma exceção que possa carregá-la.
     """
     usuario, senha, semente = _env("IG_USERNAME"), _senha(), _env("IG_TOTP_SEED")
+    # `IG_SESSIONID` (cookie de um navegador logado) tem PRECEDÊNCIA sobre a
+    # senha. Conta business vinculada a Página pode não ter senha própria de
+    # Instagram: medido em 2026-08-27, `login()` devolve "You can log in with
+    # your linked Facebook account" e a senha correta é rejeitada.
+    sessionid = _env("IG_SESSIONID")
     caminho = ig_session_path(cfg)
-    if not (usuario and senha):
-        print("❌ ig-login: IG_USERNAME/IG_PASSWORD ausentes no ambiente — preencha o "
-              ".env (ver docs/runbooks/instagrapi-stories.md)")
+    if not (usuario and (senha or sessionid)):
+        print("❌ ig-login: IG_USERNAME e (IG_PASSWORD ou IG_SESSIONID) ausentes no "
+              "ambiente — preencha o .env (ver docs/runbooks/instagrapi-stories.md)")
         return 1
     try:
         cl = instagram_story_link.nova_sessao()
@@ -659,12 +664,17 @@ def ig_login(cfg: dict) -> int:
         print(f"❌ ig-login: {instagram_story_link.SEM_INSTAGRAPI}")
         return 1
     try:
-        instagram_story_link.entra(cl, usuario, senha, caminho, totp_seed=semente)
+        instagram_story_link.entra(cl, usuario, senha, caminho, totp_seed=semente,
+                                   sessionid=sessionid)
         instagram_story_link.guarda_sessao(cl, caminho)
     except Exception as exc:      # noqa: BLE001 - vira mensagem, nunca traceback
         # O texto da exceção é de terceiro: raspado antes de ir ao terminal.
-        detalhe = instagram_story_link.sem_segredos(str(exc), senha, semente)
+        detalhe = instagram_story_link.sem_segredos(str(exc), senha, semente, sessionid)
         print(f"❌ ig-login: falhou ({type(exc).__name__}: {detalhe})")
+        if "linked Facebook account" in detalhe:
+            print("   Esta conta é vinculada ao Facebook e pode não ter senha própria "
+                  "de Instagram. Defina IG_SESSIONID com o cookie `sessionid` de um "
+                  "navegador logado em instagram.com (ver o runbook).")
         if not semente:
             print("   Se a conta tem 2FA, defina IG_TOTP_SEED (app autenticador; "
                   "o instagrapi não faz SMS).")

@@ -219,8 +219,11 @@ def test_run_passes_brand_name_to_channels(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pipeline, "run", fake_run)
     assert cli.main(["run", "--config", str(cfg_file)]) == 0
-    story = next(c for c in chamado["channels"] if c.name == "instagram_story")
-    assert story.brand_name == "Fiscal da Promo"
+    # `brand.name` é repassado a TODO canal que desenha arte — não depende de
+    # qual canal de story está ligado no config (isso é decisão de operação).
+    com_marca = [c for c in chamado["channels"] if hasattr(c, "brand_name")]
+    assert com_marca, "nenhum canal recebeu brand_name"
+    assert all(c.brand_name == "Fiscal da Promo" for c in com_marca)
 
 
 @pytest.mark.dotenv_real
@@ -422,7 +425,14 @@ def _doctor_base(monkeypatch):
     for k in ("IG_USER_ID", "IG_ACCESS_TOKEN"):
         monkeypatch.delenv(k, raising=False)
     from afiliado import config
-    return config.load_config("config.yaml")
+    cfg = config.load_config("config.yaml")
+    # Explícito de propósito: estes testes são sobre o VEREDITO do doctor, e o
+    # `config.yaml` é de produção. Herdar `channels.instagram_story_link` dele
+    # fazia 20 testes quebrarem no dia em que o dono ligou o canal — a mesma
+    # armadilha do `sources.meli` (ver test_zero_silencioso). Quem quer testar
+    # esse canal liga na própria fixture.
+    cfg.setdefault("channels", {})["instagram_story_link"] = {"enabled": False}
+    return cfg
 
 
 def test_doctor_usa_o_retorno_do_send_text(monkeypatch, capsys):
@@ -920,14 +930,13 @@ def test_build_channels_monta_feed_e_story_juntos(monkeypatch):
     assert avisos == [cli.ART_HOST_AVISO, cli.ART_HOST_AVISO_STORY]
 
 
-def test_config_yaml_liga_o_story_automatico_e_desliga_o_despacho_manual():
-    """Mudança 3: `instagram_story` é o caminho normal (6/dia, o teto que era do
-    despacho) e `story_dispatch` vira fallback manual — para quando a conta
-    perder a permissão de publicação."""
+def test_config_yaml_desliga_o_despacho_manual_de_story():
+    """Mudança 3: o story deixou de ser gesto manual. `story_dispatch` fica
+    como fallback DESLIGADO — para quando a conta perder a permissão de
+    publicação. Qual dos dois canais automáticos está ligado é decisão de
+    operação (ver `test_config_yaml_liga_exatamente_um_canal_de_story`)."""
     from afiliado import config
     canais = config.load_config("config.yaml")["channels"]
-    assert canais["instagram_story"]["enabled"] is True
-    assert canais["instagram_story"]["max_per_day"] == 6
     assert canais["story_dispatch"]["enabled"] is False
 
 
@@ -955,11 +964,21 @@ def test_run_monta_o_story_a_partir_do_config_yaml(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "run", fake_run)
     assert cli.main(["run", "--config", str(cfg_file)]) == 0
     nomes = [c.name for c in chamado["channels"]]
-    assert "instagram_story" in nomes
     assert "story_dispatch" not in nomes            # fallback manual, desligado
-    story = next(c for c in chamado["channels"] if c.name == "instagram_story")
-    assert story.max_per_day == 6
-    assert story.brand_name == "Fiscal da Promo"
+    # O canal da API privada NUNCA sobe pelo `afiliado run` (é o que o Actions
+    # executa): ele roda só em `afiliado stories`, na máquina do dono.
+    assert "instagram_story_link" not in nomes
+    # Qual canal automático de story está ligado é decisão de operação e muda;
+    # se for o oficial, ele tem de vir montado com a marca e o teto do config.
+    from afiliado import config as _config
+    ligado = (_config.load_config(str(cfg_file))["channels"]
+               .get("instagram_story", {}).get("enabled"))
+    if ligado:
+        story = next(c for c in chamado["channels"] if c.name == "instagram_story")
+        assert story.brand_name == "Fiscal da Promo"
+        assert story.max_per_day >= 1
+    else:
+        assert "instagram_story" not in nomes
 
 
 # -- fase 5F: `afiliado stories` e `afiliado ig-login` --------------------------
@@ -1332,7 +1351,7 @@ def test_ig_login_sem_env_falha_dizendo_o_que_falta(monkeypatch, tmp_path, capsy
 
     assert cli.main(["ig-login", "--config", _config_com_story_link(tmp_path)]) == 1
     saida = capsys.readouterr().out
-    assert "❌" in saida and "IG_USERNAME/IG_PASSWORD" in saida
+    assert "❌" in saida and "IG_USERNAME" in saida and "IG_PASSWORD" in saida
 
 
 def test_ig_login_que_falha_nao_vaza_a_senha(monkeypatch, tmp_path, capsys):
@@ -1348,17 +1367,21 @@ def test_ig_login_que_falha_nao_vaza_a_senha(monkeypatch, tmp_path, capsys):
     assert not (tmp_path / "ig_session.json").exists()
 
 
-def test_config_yaml_traz_o_canal_de_figurinha_desligado_e_o_oficial_ligado():
-    """Mudança 5: o canal da API privada nasce DESLIGADO (o dono liga depois de
-    rodar `afiliado ig-login`) e o `instagram_story` (Graph API, sem figurinha)
-    fica ligado como fallback. Os dois nunca ao mesmo tempo."""
+def test_config_yaml_liga_exatamente_um_canal_de_story():
+    """A REGRA DE OURO, e só ela: publicar pela API privada e pela oficial na
+    MESMA conta é o padrão que chama atenção.
+
+    Este teste afirmava QUAL dos dois estava ligado — e quebrou junto com 19
+    outros no dia em que o dono trocou a escolha dele (2026-08-27, ao adotar o
+    caminho do sticker). Qual canal usar é decisão de operação e muda; o que
+    não muda é que só um pode estar ligado."""
     from afiliado import config
     canais = config.load_config("config.yaml")["channels"]
     link = canais["instagram_story_link"]
-    assert link["enabled"] is False
-    assert link["max_per_day"] == 6 and link["max_sem_link"] == 2
-    assert canais["instagram_story"]["enabled"] is True
-    assert not (link["enabled"] and canais["instagram_story"]["enabled"])
+    oficial = canais["instagram_story"]
+    assert bool(link["enabled"]) != bool(oficial["enabled"]), (
+        "exatamente um canal de story deve estar ligado em config.yaml")
+    assert link["max_sem_link"] >= 1
 
 
 # -- `doctor` e a regra de ouro ------------------------------------------------
@@ -1370,6 +1393,9 @@ def _doctor_com_story_link(monkeypatch, tmp_path, ligado=True, oficial=False):
                                                 "max_per_day": 6, "max_sem_link": 2,
                                                 "session_path": str(tmp_path / "ig.json")},
                        "instagram_story": {"enabled": oficial}}
+    # O doctor lê o desarme do banco do `afiliado stories`: aponte para tmp_path
+    # senão o teste passa a depender do estado real da máquina.
+    cfg.setdefault("state", {})["stories_path"] = str(tmp_path / "stories.db")
     return cfg
 
 

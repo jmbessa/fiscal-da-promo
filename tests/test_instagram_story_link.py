@@ -35,11 +35,16 @@ SENHA = "S3nh4-D0-D0n0"
 # -- duplos --------------------------------------------------------------------
 
 class FakeLink:
-    """O que `StoryLink(webUri=...)` é, para efeito do canal: um objeto com
-    `webUri`. O de verdade é um modelo pydantic do instagrapi."""
+    """O que `StoryLink(...)` é, para efeito do canal: um objeto com `webUri` e
+    geometria. O de verdade é um modelo pydantic do instagrapi.
 
-    def __init__(self, webUri):          # noqa: N803 - o nome do campo é do instagrapi
+    A geometria entrou depois do primeiro story real: o padrão da biblioteca
+    põe a figurinha no CENTRO (y=0.517, altura 0.259), em cima da foto do
+    produto e do título — e mesmo assim o dono não achou o link de primeira."""
+
+    def __init__(self, webUri, area=None, **geo):  # noqa: N803
         self.webUri = webUri
+        self.area = area or geo or {}
 
 
 class FakeClient:
@@ -967,3 +972,43 @@ def test_o_canal_nao_imprime_nada():
     chamadas = [n for n in ast.walk(arvore)
                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "print"]
     assert chamadas == []
+
+
+# -- o redirecionador do Instagram (medido no primeiro story real) -------------
+
+REDIR = ("https://l.instagram.com/?u=https%3A%2F%2Fs.shopee.com.br%2F2qU72EHcWn"
+         "%3Ffbclid%3DPAcGRvZgJleHRuA2FlbQIxMQ&e=AUDdQnINyYl827YFWb7jLHyHOiT")
+
+
+def test_url_efetiva_desembrulha_o_redirecionador_do_instagram():
+    """O Instagram REESCREVE o endereço da figurinha. Medido no primeiro story
+    real (2026-08-27): pedimos `https://s.shopee.com.br/2qU72EHcWn` e o
+    `story_info` devolveu o link inteiro url-encodado dentro de
+    `l.instagram.com/?u=...`, com um `fbclid` pendurado."""
+    from afiliado.channels.instagram_story_link import url_efetiva
+
+    assert url_efetiva(REDIR).startswith("https://s.shopee.com.br/2qU72EHcWn")
+    # Link que não passa pelo redirecionador volta como veio.
+    assert url_efetiva("https://meli.la/1ULuAEY") == "https://meli.la/1ULuAEY"
+
+
+def test_link_reescrito_pelo_instagram_conta_como_COM_LINK():
+    """A regressão que este teste existe para impedir: com a comparação por
+    texto, um story PERFEITO era lido como "sem figurinha" — e duas leituras
+    dessas desarmavam o canal em cima de um falso positivo."""
+    from afiliado.channels.instagram_story_link import mesma_url
+
+    assert mesma_url(REDIR, "https://s.shopee.com.br/2qU72EHcWn")
+    # E continua sabendo dizer não: outro destino é outro destino.
+    assert not mesma_url(REDIR, "https://s.shopee.com.br/OUTROLINK")
+
+
+def test_verificacao_aceita_o_link_reescrito():
+    """Ponta a ponta pelo canal: `story_info` devolve o link reescrito e a
+    publicação é COM_LINK — sucesso, e o contador de desarme zerado."""
+    from afiliado.channels.instagram_story_link import COM_LINK
+
+    cliente = FakeClient(links_do_story=[FakeLink(REDIR)])
+    canal = _canal(cliente)
+    v = canal._verifica(cliente, "123", "https://s.shopee.com.br/2qU72EHcWn")
+    assert v.estado == COM_LINK

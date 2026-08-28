@@ -58,6 +58,7 @@ módulo a carrega — `_sem_senha` raspa até o texto de exceção de terceiro.
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
 from typing import Callable, NamedTuple
 
 import httpx
@@ -174,7 +175,7 @@ def nova_sessao():
 
 
 def entra(cl, username: str, password: str, session_path: str | Path,
-          totp_seed: str = "") -> None:
+          totp_seed: str = "", sessionid: str = "") -> None:
     """Login com sessão persistida — o caminho ÚNICO de autenticação do
     projeto (canal e `afiliado ig-login` passam por aqui).
 
@@ -183,12 +184,22 @@ def entra(cl, username: str, password: str, session_path: str | Path,
     o padrão que dispara `challenge_required`. 2FA só por TOTP (app
     autenticador) — o instagrapi não faz SMS.
 
+    `sessionid` (env `IG_SESSIONID`) tem PRECEDÊNCIA sobre a senha. Medido em
+    2026-08-27 nesta conta: `login(user, senha)` devolve
+    `BadPassword: "You can log in with your linked Facebook account"` — a conta
+    é business vinculada a Página e não tem senha própria de Instagram, então
+    a senha correta é rejeitada por construção. O cookie `sessionid` de um
+    navegador já logado contorna isso e, de quebra, dispensa guardar a senha.
+
     Levanta o que o instagrapi levantar: quem chama decide o que dizer, e
     ninguém aqui tenta de novo em laço.
     """
     caminho = Path(session_path)
     if caminho.is_file():
         cl.load_settings(caminho)
+    if sessionid:
+        cl.login_by_sessionid(sessionid)
+        return
     if totp_seed:
         cl.login(username, password, verification_code=cl.totp_generate_code(totp_seed))
     else:
@@ -225,18 +236,62 @@ def sem_segredos(texto: str, *segredos: str) -> str:
     return texto
 
 
-def story_link(web_uri: str):
-    """`StoryLink(webUri=...)` — a figurinha, do jeito que o instagrapi a
-    nomeia. Fica numa função para o import continuar preguiçoso e para o teste
-    poder injetar um duplo."""
-    return _instagrapi()[1](webUri=web_uri)
+def story_link(web_uri: str, area: dict | None = None):
+    """`StoryLink(...)` — a figurinha, do jeito que o instagrapi a nomeia.
+    Fica numa função para o import continuar preguiçoso e para o teste poder
+    injetar um duplo.
+
+    A geometria é EXPLÍCITA e vem da arte (`creative.story_cta_tap_area`).
+    Dois motivos, os dois medidos nos stories reais de 2026-08-27:
+
+    1. O padrão da biblioteca é o CENTRO da tela (y=0.517, altura 0.259 = de
+       y=744 a y=1241 em 1920) — em cima da foto do produto e do título.
+    2. A figurinha **não é desenhada**: ela entra como área tocável e nada
+       aparece na tela. Então ela tem de cair exatamente sobre a pill dourada
+       da arte, que é o único elemento que diz ao seguidor onde tocar.
+    """
+    area = area or {}
+    return _instagrapi()[1](webUri=web_uri, **{k: area[k] for k in
+                                               ("x", "y", "width", "height")
+                                               if k in area})
+
+
+# O Instagram REESCREVE o endereço da figurinha para o redirecionador dele.
+# Medido no primeiro story real (2026-08-27): pedimos
+# `https://s.shopee.com.br/2qU72EHcWn` e o `story_info` devolveu
+# `https://l.instagram.com/?u=https%3A%2F%2Fs.shopee.com.br%2F2qU72EHcWn%3Ffbclid%3D...&e=...`
+# — o link de afiliado inteiro, url-encodado dentro do parâmetro `u`, com um
+# `fbclid` de rastreio pendurado. Comparar texto com texto dava "story sem
+# figurinha" para um story PERFEITO, e duas leituras dessas desarmariam o canal.
+REDIRECIONADORES = ("l.instagram.com", "l.facebook.com", "lm.facebook.com")
+
+
+def url_efetiva(bruto) -> str:
+    """O endereço que a figurinha realmente abre, desembrulhado do
+    redirecionador do Instagram quando for o caso."""
+    texto = str(bruto or "").strip()
+    partes = urlsplit(texto)
+    if partes.netloc in REDIRECIONADORES:
+        alvo = parse_qs(partes.query).get("u", [""])[0]
+        if alvo:
+            return unquote(alvo)
+    return texto
 
 
 def mesma_url(a, b) -> bool:
-    """O `webUri` volta de um modelo pydantic (`HttpUrl`), que normaliza a URL
-    — uma barra final a mais não pode virar "story sem link". Nada de baixar
+    """Mesmo destino? Desembrulha o redirecionador e ignora o que o Instagram
+    pendura na query (`fbclid`), comparando esquema, host e caminho.
+
+    O `webUri` volta de um modelo pydantic (`HttpUrl`), que normaliza a URL —
+    uma barra final a mais não pode virar "story sem link". Nada de baixar
     caixa: `shope.ee/AbC` e `shope.ee/abc` são links diferentes."""
-    return str(a or "").strip().rstrip("/") == str(b or "").strip().rstrip("/")
+    pa, pb = urlsplit(url_efetiva(a)), urlsplit(url_efetiva(b))
+    if not (pa.netloc and pb.netloc):
+        # Sem host de um dos lados não há o que comparar por partes: cai no
+        # texto, que é o comportamento de antes.
+        return str(a or "").strip().rstrip("/") == str(b or "").strip().rstrip("/")
+    return ((pa.scheme, pa.netloc, pa.path.rstrip("/"))
+            == (pb.scheme, pb.netloc, pb.path.rstrip("/")))
 
 
 def _web_uri(link) -> str:
@@ -289,11 +344,16 @@ class InstagramStoryLinkChannel:
                  brand_handle: str | None = None, brand_name: str = "Fiscal da Promo",
                  verificar: bool = True, max_sem_link: int = MAX_SEM_LINK_PADRAO,
                  link_factory: Callable[[str], object] | None = None,
-                 http_client: httpx.Client | None = None, estado=None):
+                 http_client: httpx.Client | None = None, estado=None,
+                 sessionid: str = ""):
         self.username = (username or "").strip()
         # A senha só é lida em `cl.login`. Não vai a log, a exceção, a resumo:
         # ver `_sem_senha`, por onde passa TODA mensagem deste canal.
         self.password = password or ""
+        # Cookie de sessão do navegador (env `IG_SESSIONID`). Tem precedência
+        # sobre a senha e recebe o MESMO tratamento dela: é credencial, e não
+        # aparece em log, aviso, exceção nem resumo.
+        self.sessionid = (sessionid or "").strip()
         self.session_path = Path(session_path)
         # `client` injetado é o duplo do teste (e o cliente já logado, depois do
         # primeiro login); `http_client` é outra coisa — é quem baixa a imagem
@@ -335,7 +395,7 @@ class InstagramStoryLinkChannel:
         try:
             art = creative.render_story(post.offer, post.copy, post.verdict,
                                         client=self.http_client, handle=self.brand_handle,
-                                        brand_name=self.brand_name)
+                                        brand_name=self.brand_name, cta_figurinha=True)
             caminho = _grava_temporario(to_jpeg(art))
         except SourceError as exc:
             return PublishResult(False, error=self._sem_senha(
@@ -374,7 +434,10 @@ class InstagramStoryLinkChannel:
         # O link é o de AFILIADO, curto — o mesmo que vai ao Telegram.
         try:
             media = cl.photo_upload_to_story(
-                caminho, links=[self.link_factory(post.affiliate_link)])
+                caminho,
+                links=[self.link_factory(
+                    post.affiliate_link,
+                    creative.story_cta_tap_area(post.offer, self.brand_handle))])
         except Exception as exc:      # noqa: BLE001 - publish NUNCA levanta
             if e_erro_de_sessao(exc):
                 # O caso COMUM (a sessão carregada faz o `login()` passar
@@ -499,7 +562,8 @@ class InstagramStoryLinkChannel:
             # Sem `totp_seed` de propósito: 2FA é assunto do `afiliado ig-login`,
             # que o dono roda à mão. Aqui, conta com 2FA e sessão morta vira
             # mensagem acionável — não uma tentativa de adivinhar código.
-            entra(cl, self.username, self.password, self.session_path)
+            entra(cl, self.username, self.password, self.session_path,
+                  sessionid=self.sessionid)
         except erros_de_sessao as exc:
             # Desafio, senha trocada, conta suspensa: a sessão morreu e só o
             # dono resolve. Dizer isso é diferente de dizer "deu erro".
@@ -596,6 +660,7 @@ class InstagramStoryLinkChannel:
             self.warnings.append(texto)
 
     def _sem_senha(self, texto: str) -> str:
-        """Nenhuma mensagem deste canal carrega `IG_PASSWORD` — nem quando ela
-        vem DENTRO do texto de uma exceção de terceiro."""
-        return sem_segredos(texto, self.password)
+        """Nenhuma mensagem deste canal carrega credencial — nem quando ela vem
+        DENTRO do texto de uma exceção de terceiro. Vale para a senha e para o
+        `sessionid`: um cookie de sessão dá acesso à conta como a senha dá."""
+        return sem_segredos(texto, self.password, self.sessionid)

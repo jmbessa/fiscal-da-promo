@@ -21,12 +21,17 @@ exatamente as mesmas. Nada do comportamento do feed mudou nessa viagem.
 
 from afiliado import creative, pricing
 from afiliado.channels.base import PublishResult
-from afiliado.channels.instagram_common import (GRAPH, GRAPH_HOSTS, InstagramBase,
-                                                graph_error, to_jpeg)
+from afiliado.channels.instagram_common import (GRAPH, GRAPH_HOSTS, STATUS_TERMINAIS,
+                                                InstagramBase, graph_error, to_jpeg)
 from afiliado.errors import SourceError
 from afiliado.models import Post
 
-__all__ = ["GRAPH", "GRAPH_HOSTS", "InstagramFeedChannel"]
+__all__ = ["GRAPH", "GRAPH_HOSTS", "MAX_ITENS_CARROSSEL", "InstagramFeedChannel"]
+
+# Teto da Meta para um álbum. O teto do DESENHO é outro e menor
+# (`creative.CARROSSEL_MAX_SLIDES`, 8); este aqui é o da API, e existe para o
+# canal recusar antes de gastar N uploads e N containers.
+MAX_ITENS_CARROSSEL = 10
 
 
 class InstagramFeedChannel(InstagramBase):
@@ -67,6 +72,78 @@ class InstagramFeedChannel(InstagramBase):
         if not post_id:
             return PublishResult(False, error=graph_error(publish_resp))
 
+        return PublishResult(True, str(post_id))
+
+    def publish_carrossel(self, imagens: list[bytes], caption: str) -> PublishResult:
+        """Publica N imagens como UM post de carrossel (álbum).
+
+        Três passos da Content Publishing API: um container por imagem com
+        `is_carousel_item=true`, um container `media_type=CAROUSEL` com
+        `children=<ids separados por vírgula>` e a legenda, e o `media_publish`
+        do container pai.
+
+        **A cota de publicação da Meta é de 100 por 24 h e um carrossel conta
+        como UM post** — não como oito. É isto que torna o formato barato: seis
+        ofertas por uma unidade de cota, contra seis posts de imagem única. Os
+        containers filhos não consomem a cota; só o publish do pai.
+
+        Mesma disciplina do story: NUNCA levanta. Qualquer erro — hospedagem,
+        filho recusado, pai recusado, container morto, publish negado — vira um
+        `PublishResult` falho com a mensagem da Meta. E o polling do container
+        pai é o mesmo do story (`InstagramBase._aguarda_container`)."""
+        if not imagens:
+            return PublishResult(False, error="carrossel sem imagem: nada a publicar")
+        if len(imagens) > MAX_ITENS_CARROSSEL:
+            return PublishResult(
+                False, error=f"carrossel com {len(imagens)} imagens: a Meta aceita "
+                             f"no máximo {MAX_ITENS_CARROSSEL}")
+
+        filhos: list[str] = []
+        for i, png in enumerate(imagens, start=1):
+            image_url = self._host_art(to_jpeg(png))
+            if image_url is None:
+                return PublishResult(
+                    False, error=f"falha ao hospedar temporariamente a imagem {i} "
+                                 "do carrossel")
+            resp = self._graph_post(f"{self.graph}/{self.ig_user_id}/media", {
+                "image_url": image_url,
+                "is_carousel_item": "true",
+                "access_token": self.access_token,
+            })
+            filho_id = resp.get("id") if isinstance(resp, dict) else None
+            if not filho_id:
+                # Sem os filhos todos não existe pai: sair aqui evita criar um
+                # álbum incompleto e gastar a cota com ele.
+                return PublishResult(
+                    False, error=f"imagem {i} do carrossel: {graph_error(resp)}")
+            filhos.append(str(filho_id))
+
+        pai_resp = self._graph_post(f"{self.graph}/{self.ig_user_id}/media", {
+            "media_type": "CAROUSEL",
+            "children": ",".join(filhos),
+            "caption": caption,
+            "access_token": self.access_token,
+        })
+        creation_id = pai_resp.get("id") if isinstance(pai_resp, dict) else None
+        if not creation_id:
+            return PublishResult(False, error=graph_error(pai_resp))
+
+        leitura = self._aguarda_container(str(creation_id))
+        if leitura.status_code in STATUS_TERMINAIS:
+            return PublishResult(
+                False, error=f"container {leitura.status_code}: {leitura.status}")
+        if not leitura.leu:
+            self._avisa_polling_cego()
+
+        publish_resp = self._graph_post(f"{self.graph}/{self.ig_user_id}/media_publish", {
+            "creation_id": creation_id,
+            "access_token": self.access_token,
+        })
+        post_id = publish_resp.get("id") if isinstance(publish_resp, dict) else None
+        if not post_id:
+            erro = graph_error(publish_resp)
+            detalhe = self._sobre_o_container(leitura)
+            return PublishResult(False, error=f"{erro} ({detalhe})" if detalhe else erro)
         return PublishResult(True, str(post_id))
 
     @staticmethod

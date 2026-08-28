@@ -244,6 +244,163 @@ def test_caption_modo_b_sem_referencia_nao_alega_desconto():
     assert "⭐ 4,9 · 30 mil vendidos" in caption
 
 
+# -- Fase 5D: publicar CARROSSEL (um post, N imagens) -------------------------
+
+def _carrossel_handler(seen, filho_falha=None, pai_falha=False, publish_falha=False,
+                       status="FINISHED"):
+    """Rotas da Graph API do carrossel: um container por imagem
+    (`is_carousel_item`), um container CAROUSEL com `children`, e o publish."""
+    filhos = {"n": 0}
+
+    def handler(request):
+        host, path = request.url.host, request.url.path
+        if host == "cf.shopee.com.br":
+            return httpx.Response(200, content=_product_png(),
+                                  headers={"content-type": "image/png"})
+        if host == "api.telegram.org":
+            if path.endswith("/sendPhoto"):
+                return httpx.Response(200, json={"ok": True, "result": {
+                    "message_id": 5, "photo": [{"file_id": "big"}]}})
+            if path.endswith("/getFile"):
+                return httpx.Response(200, json={"ok": True, "result": {
+                    "file_path": "photos/f.jpg"}})
+        if host != "graph.facebook.com":
+            return httpx.Response(404)
+        if request.method == "GET":
+            seen.append(("status", str(request.url)))
+            return httpx.Response(200, json={"status_code": status, "status": "ok"})
+        corpo = parse_qs(request.content.decode())
+        if path.endswith("/media_publish"):
+            seen.append(("publish", corpo))
+            if publish_falha:
+                return httpx.Response(400, json={"error": {"message": "publish recusado"}})
+            return httpx.Response(200, json={"id": "carrossel999"})
+        if path.endswith("/media"):
+            if corpo.get("media_type", [""])[0] == "CAROUSEL":
+                seen.append(("pai", corpo))
+                if pai_falha:
+                    return httpx.Response(400, json={"error": {"message": "children inválido"}})
+                return httpx.Response(200, json={"id": "pai1"})
+            filhos["n"] += 1
+            seen.append(("filho", corpo))
+            if filho_falha == filhos["n"]:
+                return httpx.Response(400, json={"error": {"message": "imagem recusada"}})
+            return httpx.Response(200, json={"id": f"filho{filhos['n']}"})
+        return httpx.Response(404)
+
+    return handler
+
+
+def _canal_carrossel(handler) -> InstagramFeedChannel:
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return InstagramFeedChannel("IGUSER", "IGTOKEN", "BOTTOKEN", "OPSCHAT",
+                                client=client, sleep=lambda s: None)
+
+
+def _imagens(n: int = 3) -> list[bytes]:
+    return [_product_png() for _ in range(n)]
+
+
+def test_publish_carrossel_manda_is_carousel_item_children_e_publica():
+    seen = []
+    res = _canal_carrossel(_carrossel_handler(seen)).publish_carrossel(
+        _imagens(3), "legenda do carrossel")
+    assert res.ok and res.message_id == "carrossel999"
+
+    filhos = [c for k, c in seen if k == "filho"]
+    assert len(filhos) == 3
+    for corpo in filhos:
+        assert corpo["is_carousel_item"] == ["true"]
+        assert "caption" not in corpo          # a legenda é do PAI, não dos filhos
+        assert "media_type" not in corpo
+
+    pai = next(c for k, c in seen if k == "pai")
+    assert pai["media_type"] == ["CAROUSEL"]
+    assert pai["children"] == ["filho1,filho2,filho3"]
+    assert pai["caption"] == ["legenda do carrossel"]
+
+    # UM post: um único media_publish para as três imagens. É isso que faz o
+    # formato caber na cota de 100/24 h da Meta.
+    assert len([k for k, _ in seen if k == "publish"]) == 1
+
+
+def test_publish_carrossel_falha_em_um_filho_nao_cria_o_pai():
+    seen = []
+    res = _canal_carrossel(_carrossel_handler(seen, filho_falha=2)).publish_carrossel(
+        _imagens(3), "legenda")
+    assert not res.ok
+    assert "imagem recusada" in res.error and "2" in res.error
+    assert not [k for k, _ in seen if k in ("pai", "publish")]
+
+
+def test_publish_carrossel_falha_no_pai_nao_publica():
+    seen = []
+    res = _canal_carrossel(_carrossel_handler(seen, pai_falha=True)).publish_carrossel(
+        _imagens(2), "legenda")
+    assert not res.ok and "children inválido" in res.error
+    assert not [k for k, _ in seen if k == "publish"]
+
+
+def test_publish_carrossel_falha_no_publish_vira_resultado_falho():
+    seen = []
+    res = _canal_carrossel(_carrossel_handler(seen, publish_falha=True)).publish_carrossel(
+        _imagens(2), "legenda")
+    assert not res.ok and "publish recusado" in res.error
+
+
+def test_publish_carrossel_container_em_erro_nem_tenta_publicar():
+    seen = []
+    res = _canal_carrossel(_carrossel_handler(seen, status="ERROR")).publish_carrossel(
+        _imagens(2), "legenda")
+    assert not res.ok and "ERROR" in res.error
+    assert not [k for k, _ in seen if k == "publish"]
+
+
+def test_publish_carrossel_sem_imagem_nao_toca_a_rede():
+    seen = []
+    res = _canal_carrossel(_carrossel_handler(seen)).publish_carrossel([], "legenda")
+    assert not res.ok and res.error
+    assert seen == []
+
+
+def test_publish_carrossel_recusa_mais_que_o_teto_da_meta():
+    seen = []
+    res = _canal_carrossel(_carrossel_handler(seen)).publish_carrossel(
+        _imagens(11), "legenda")
+    assert not res.ok and "10" in res.error
+    assert seen == []
+
+
+def test_publish_carrossel_falha_de_hospedagem_vira_resultado_falho():
+    def handler(request):
+        if request.url.host == "api.telegram.org":
+            return httpx.Response(200, json={"ok": False, "description": "bot removido"})
+        return _carrossel_handler([])(request)
+
+    res = _canal_carrossel(handler).publish_carrossel(_imagens(2), "legenda")
+    assert not res.ok and "hospedar" in res.error
+
+
+def test_publish_carrossel_nunca_levanta():
+    client = httpx.Client(transport=httpx.MockTransport(_carrossel_handler([])))
+    ch = InstagramFeedChannel("12\n34", "IGTOKEN", "BOTTOKEN", "OPSCHAT",
+                              client=client, sleep=lambda s: None)
+    res = ch.publish_carrossel(_imagens(2), "legenda")
+    assert not res.ok and res.error
+
+
+def test_publish_carrossel_avisa_polling_cego_uma_vez():
+    def handler(request):
+        if request.url.host == "graph.facebook.com" and request.method == "GET":
+            return httpx.Response(200, json={})     # sem status_code
+        return _carrossel_handler([])(request)
+
+    ch = _canal_carrossel(handler)
+    assert ch.publish_carrossel(_imagens(2), "legenda").ok
+    assert len(ch.warnings) == 1
+    assert "instagram_feed" in ch.warnings[0] and "polling cego" in ch.warnings[0]
+
+
 def test_caption_traz_o_selo_do_veredito():
     # C9: a legenda do IG nunca tinha selo enquanto o Telegram tinha.
     offer_kw = _ref(price_current_cents=1890, price_floor_cents=1890, price_floor_window_days=191)

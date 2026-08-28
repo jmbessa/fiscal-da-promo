@@ -977,13 +977,18 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
         print("ℹ️ carrossel: nenhuma oferta sobreviveu à atualização de preço")
         return 0
 
-    titulo, subtitulo = capa_do_termometro(posts)
     handle, nome_marca = _marca(cfg)
-    legenda = legenda_do_carrossel(posts, titulo, subtitulo)
+    # As fotos primeiro, a capa e a legenda depois (F4): produto cuja imagem
+    # não baixa é pulado, e uma capa que diz "6 OFERTAS" ou uma legenda que
+    # lista um item que o álbum não tem seria a peça mentindo sobre si mesma.
     with _cliente_http() as client:
         try:
-            imagens = creative.render_carrossel(posts, titulo, subtitulo, handle=handle,
-                                                client=client, brand_name=nome_marca)
+            fotos = creative.carrossel_fotos(posts, client, avisos)
+            posts = [post for post, _ in fotos]
+            titulo, subtitulo = capa_do_termometro(posts)
+            legenda = legenda_do_carrossel(posts, titulo, subtitulo)
+            imagens = creative.render_carrossel(fotos, titulo, subtitulo, handle=handle,
+                                                brand_name=nome_marca)
         except SourceError as exc:
             print(f"❌ carrossel: falha ao gerar a arte — {exc}")
             return 1

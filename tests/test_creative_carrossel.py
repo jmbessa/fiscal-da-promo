@@ -18,9 +18,11 @@ from afiliado import pricing
 from afiliado.creative import (
     ASSINATURA,
     CARROSSEL_MAX_SLIDES,
+    CARROSSEL_MIN_OFERTAS,
     CARROSSEL_SIZE,
     CTA_CARROSSEL,
     DEFAULT_HANDLE,
+    carrossel_fotos,
     carrossel_plan,
     render_carrossel,
 )
@@ -49,11 +51,22 @@ def _client(handler=None) -> httpx.Client:
 def _post(n: int = 1, verdict: Verdict = NO_CLAIM, **kw) -> Post:
     kw.setdefault("item_id", f"item{n}")
     kw.setdefault("title", f"Produto {n}")
+    # Uma URL por item: é o que deixa o `MockTransport` derrubar a foto de UM
+    # produto e não a de todos (a tolerância da rodada de fechamento).
+    kw.setdefault("image_url", f"https://cf.shopee.com.br/file/item{n}.jpg")
     return Post(offer=make_offer(**kw), copy=COPY, affiliate_link="", verdict=verdict)
 
 
 def _posts(n: int) -> list[Post]:
     return [_post(i) for i in range(1, n + 1)]
+
+
+def _desenha(posts: list[Post], client: httpx.Client | None = None,
+             avisos: list[str] | None = None, **kw) -> list[bytes]:
+    """As duas etapas do carrossel na ordem em que o CLI as chama: resolver as
+    fotos (quem entra na peça) e só então desenhar."""
+    return render_carrossel(carrossel_fotos(posts, client or _client(), avisos),
+                            TITULO, SUBTITULO, **kw)
 
 
 # --- A ordem e o teto de slides ----------------------------------------------
@@ -99,7 +112,9 @@ def test_carrossel_sem_oferta_nenhuma_levanta():
     with pytest.raises(SourceError):
         carrossel_plan([], TITULO, SUBTITULO)
     with pytest.raises(SourceError):
-        render_carrossel([], TITULO, SUBTITULO, client=_client())
+        carrossel_fotos([], _client())
+    with pytest.raises(SourceError):
+        render_carrossel([], TITULO, SUBTITULO)
 
 
 # --- O veredito, de novo sem recalcular nada ---------------------------------
@@ -126,11 +141,8 @@ def test_slide_de_oferta_ignora_o_de_inflado_do_vendedor():
                          price_current_cents=4900, rating=4.9, sales=30000)
     sem_de = make_offer(item_id="x", price_original_cents=4900,
                         price_current_cents=4900, rating=4.9, sales=30000)
-    cli = _client()
-    a = render_carrossel([Post(offer=inflado, copy=COPY, affiliate_link="")],
-                         TITULO, SUBTITULO, client=cli)
-    b = render_carrossel([Post(offer=sem_de, copy=COPY, affiliate_link="")],
-                         TITULO, SUBTITULO, client=cli)
+    a = _desenha([Post(offer=inflado, copy=COPY, affiliate_link="")])
+    b = _desenha([Post(offer=sem_de, copy=COPY, affiliate_link="")])
     assert a == b
 
 
@@ -138,7 +150,7 @@ def test_slide_de_oferta_ignora_o_de_inflado_do_vendedor():
 
 def test_render_carrossel_devolve_um_png_por_slide():
     posts = _posts(3)
-    imagens = render_carrossel(posts, TITULO, SUBTITULO, client=_client())
+    imagens = _desenha(posts)
     assert len(imagens) == len(carrossel_plan(posts, TITULO, SUBTITULO)) == 5
     for png in imagens:
         assert png[:8] == b"\x89PNG\r\n\x1a\n"
@@ -150,31 +162,89 @@ def test_render_carrossel_devolve_um_png_por_slide():
 
 
 def test_render_carrossel_respeita_o_teto_de_oito():
-    imagens = render_carrossel(_posts(20), TITULO, SUBTITULO, client=_client())
-    assert len(imagens) == CARROSSEL_MAX_SLIDES
+    assert len(_desenha(_posts(20))) == CARROSSEL_MAX_SLIDES
 
 
-def test_render_carrossel_propaga_falha_de_imagem_do_produto():
-    """Uma foto que não baixa derruba o carrossel inteiro, com o item no erro —
-    é o mesmo contrato de `render_feed`, e é o que mantém `carrossel_plan` e o
-    desenho dizendo a MESMA coisa. Quem chama decide o que fazer."""
+# --- Rodada de fechamento (F4): uma foto ruim não derruba o post inteiro ------
+#
+# `render_carrossel` era tudo-ou-nada, como `render_feed`. Só que com SEIS
+# fotos a chance de perder o post é seis vezes a de um post único — e o que se
+# perde é o post com seis ofertas, não um slide. O produto cuja foto não baixa
+# passa a ser PULADO, com aviso, e o carrossel sai com os que sobraram.
+
+def _sem_a_foto_de(*itens: str):
+    """Transport que responde 404 para as fotos destes itens e 200 no resto."""
     def handler(request):
-        return httpx.Response(404)
+        if any(f"/{item}." in request.url.path for item in itens):
+            return httpx.Response(404)
+        return httpx.Response(200, content=_product_png(),
+                              headers={"content-type": "image/png"})
+    return _client(handler)
 
+
+def test_carrossel_pula_o_produto_cuja_foto_nao_baixa():
+    avisos: list[str] = []
+    imagens = _desenha(_posts(4), _sem_a_foto_de("item2"), avisos=avisos)
+    # capa + 3 ofertas + fecho: o post saiu, sem o item2.
+    assert len(imagens) == 5
+    assert len(avisos) == 1 and "item2" in avisos[0]
+
+
+def test_o_contador_conta_os_slides_que_sobraram():
+    """"2/4" num carrossel de 3 ofertas seria o desenho mentindo sobre si
+    mesmo: o total é o que RESTOU, não o que foi pedido."""
+    fotos = carrossel_fotos(_posts(4), _sem_a_foto_de("item2"))
+    ofertas = [s for s in carrossel_plan([p for p, _ in fotos], TITULO, SUBTITULO)
+               if s["tipo"] == "oferta"]
+    assert [s["item_id"] for s in ofertas] == ["item1", "item3", "item4"]
+    assert [s["indice"] for s in ofertas] == [1, 2, 3]
+    assert all(s["total"] == 3 for s in ofertas)
+
+
+def test_plano_e_desenho_concordam_por_construcao():
+    """O motivo de o tudo-ou-nada ter ficado de pé na 5D: se o desenho pula um
+    slide e o plano não, os testes deixam de descrever a peça. Quem decide o
+    elenco passou a ser uma etapa ANTES dos dois — os dois recebem a mesma
+    lista e não têm como discordar."""
+    fotos = carrossel_fotos(_posts(5), _sem_a_foto_de("item1", "item4"))
+    sobreviventes = [p for p, _ in fotos]
+    imagens = render_carrossel(fotos, TITULO, SUBTITULO)
+    assert len(imagens) == len(carrossel_plan(sobreviventes, TITULO, SUBTITULO)) == 5
+
+
+def test_carrossel_falha_quando_sobra_menos_de_duas_ofertas():
+    """A tolerância tem piso: um "termômetro da semana" com uma oferta só não
+    é o post que a capa promete. Abaixo de duas, é melhor não publicar."""
+    avisos: list[str] = []
     with pytest.raises(SourceError) as exc:
-        render_carrossel(_posts(2), TITULO, SUBTITULO, client=_client(handler))
+        carrossel_fotos(_posts(4), _sem_a_foto_de("item1", "item2", "item3"), avisos)
     assert "item1" in str(exc.value)
+    assert str(CARROSSEL_MIN_OFERTAS) in str(exc.value)
+    assert len(avisos) == 3          # cada perda avisada, mesmo com o post morto
+
+
+def test_o_piso_nao_reprova_um_carrossel_pedido_pequeno():
+    """O piso existe contra a DEGRADAÇÃO — pedir seis e ficar com uma. Pedir
+    uma e receber uma é decisão de quem chama, e o desenho não a desfaz."""
+    assert len(_desenha(_posts(1))) == 3
+
+
+def test_carrossel_com_todas_as_fotos_quebradas_levanta_com_o_item_no_texto():
+    """Sem nenhuma foto não há post nenhum — e o erro diz qual item derrubou o
+    quê, para o log do Actions não virar adivinhação."""
+    with pytest.raises(SourceError) as exc:
+        carrossel_fotos(_posts(2), _sem_a_foto_de("item1", "item2"))
+    assert "item1" in str(exc.value) and "item2" in str(exc.value)
 
 
 def test_render_carrossel_titulo_longo_de_capa_nao_quebra():
-    imagens = render_carrossel(_posts(2), " ".join(["palavra"] * 40),
-                               " ".join(["outra"] * 30), client=_client())
+    imagens = render_carrossel(carrossel_fotos(_posts(2), _client()),
+                               " ".join(["palavra"] * 40), " ".join(["outra"] * 30))
     assert all(Image.open(io.BytesIO(p)).size == (1080, 1350) for p in imagens)
 
 
 def test_render_carrossel_muda_com_o_handle():
-    posts = _posts(2)
-    cli = _client()
-    sem = render_carrossel(posts, TITULO, SUBTITULO, client=cli)
-    com = render_carrossel(posts, TITULO, SUBTITULO, handle="@ofiscaldapromo", client=cli)
+    fotos = carrossel_fotos(_posts(2), _client())
+    sem = render_carrossel(fotos, TITULO, SUBTITULO)
+    com = render_carrossel(fotos, TITULO, SUBTITULO, handle="@ofiscaldapromo")
     assert sem != com

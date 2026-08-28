@@ -1377,10 +1377,57 @@ CAPA_SUB_SIZE = 42
 FECHO_TITLE_SIZE = 76
 
 
+# Abaixo disto o carrossel não sai. Um "termômetro da semana" com uma oferta só
+# não é o post que a capa promete ("6 ofertas, 4 passaram"), e a Meta pediria
+# uma legenda que fala de seis para um álbum de três slides.
+CARROSSEL_MIN_OFERTAS = 2
+
+
 def _slides_de_oferta(posts: list[Post]) -> list[Post]:
     if not posts:
         raise SourceError("carrossel sem oferta nenhuma: capa e fecho não são post")
     return list(posts[:CARROSSEL_MAX_SLIDES - 2])
+
+
+def _avisa(avisos: list[str] | None, texto: str) -> None:
+    if avisos is not None:
+        avisos.append(texto)
+
+
+def carrossel_fotos(posts: list[Post], client: httpx.Client | None = None,
+                    avisos: list[str] | None = None) -> list[tuple[Post, Image.Image]]:
+    """As ofertas que REALMENTE entram no carrossel, com a foto já aberta.
+
+    O carrossel era tudo-ou-nada, como o `render_feed`: uma foto que não baixa
+    derrubava o post inteiro. Só que com SEIS fotos a chance de perder é seis
+    vezes a de um post único, e o que se perde é o post com seis ofertas — não
+    um slide. Produto cuja foto falha é PULADO, com aviso, e o carrossel sai
+    com os que sobraram.
+
+    O piso é `CARROSSEL_MIN_OFERTAS`, e ele vale contra a DEGRADAÇÃO: pedir
+    seis e ficar com uma vira `SourceError` (com todos os motivos no texto),
+    porque aí a peça não é mais a que a capa promete. Pedir uma e receber uma é
+    decisão de quem chama, e o desenho não a desfaz.
+
+    É uma etapa SEPARADA de `render_carrossel` porque quem sobreviveu decide o
+    texto da capa ("6 OFERTAS. 4 PASSARAM.") e a legenda do álbum: gerar esses
+    dois antes de saber quem entrou faria a peça anunciar um produto que não
+    está lá. Quem chama resolve as fotos, monta os textos com os
+    sobreviventes e só então desenha."""
+    escolhidos = _slides_de_oferta(posts)
+    vivos: list[tuple[Post, Image.Image]] = []
+    perdidos: list[str] = []
+    for post in escolhidos:
+        try:
+            vivos.append((post, _open_product_image(_get_image_bytes(post.offer, client))))
+        except SourceError as exc:
+            perdidos.append(f"{post.offer.item_id}: {exc}")
+            _avisa(avisos, f"⚠️ carrossel: {post.offer.item_id} ficou de fora — {exc}")
+    if perdidos and len(vivos) < CARROSSEL_MIN_OFERTAS:
+        raise SourceError(
+            f"carrossel com {len(vivos)} oferta(s) depois de {len(perdidos)} foto(s) "
+            f"que não baixaram (mínimo {CARROSSEL_MIN_OFERTAS}) — " + "; ".join(perdidos))
+    return vivos
 
 
 # Capa e fecho centram o BLOCO inteiro (mascote + textos) nesta faixa da tela,
@@ -1464,7 +1511,12 @@ def carrossel_plan(posts: list[Post], titulo: str, subtitulo: str,
     Mesmo papel de `story_plan`/`feed_plan`/`grafico_plan`: os testes afirmam
     sobre ISTO. Cada slide de oferta traz o que o veredito do post autoriza
     (`selo`, `riscado`, `badge_pct`), lido de `post.verdict` e não recalculado.
-    Sem oferta nenhuma levanta `SourceError`: capa e fecho não são post."""
+    Sem oferta nenhuma levanta `SourceError`: capa e fecho não são post.
+
+    Continua OFFLINE (nenhum teste de composição toca a rede) e continua
+    concordando com o desenho, porque quem decide o elenco é `carrossel_fotos`,
+    antes dos dois: passe a esta função os mesmos posts que foram desenhados
+    (`[post for post, _ in fotos]`) e o plano é a peça."""
     escolhidos = _slides_de_oferta(posts)
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     capa = _capa_plan(draw, titulo, subtitulo, handle)
@@ -1547,15 +1599,15 @@ def _draw_contador(draw: ImageDraw.ImageDraw, largura: int, indice: int, total: 
     draw.text((x0 + 20 - bbox[0], y0 + 14 - bbox[1]), texto, font=font, fill=MUTED)
 
 
-def _render_slide_oferta(post: Post, indice: int, total: int, client: httpx.Client | None,
+def _render_slide_oferta(post: Post, product: Image.Image, indice: int, total: int,
                          handle: str | None, brand_name: str) -> bytes:
     """A arte de feed que já existe, com o contador do carrossel — `_draw_card`,
-    `_draw_price_pill` e `selo_label` são os mesmos; nada é reimplementado."""
+    `_draw_price_pill` e `selo_label` são os mesmos; nada é reimplementado.
+
+    A foto chega PRONTA (`_ofertas_com_foto`): é lá que se decide quem entra no
+    carrossel, e baixá-la de novo aqui seria uma segunda chance de falhar
+    depois de o plano já estar fechado."""
     width, height = CARROSSEL_SIZE
-    try:
-        product = _open_product_image(_get_image_bytes(post.offer, client))
-    except SourceError as exc:
-        raise SourceError(f"slide {indice} ({post.offer.item_id}): {exc}") from exc
     canvas = _glow_background(width, height, 540, 81, 594, 338)
     draw = ImageDraw.Draw(canvas)
     plan = _feed_plan(draw, post.offer, post.verdict, handle)
@@ -1571,24 +1623,26 @@ def _render_slide_oferta(post: Post, indice: int, total: int, client: httpx.Clie
     return buffer.getvalue()
 
 
-def render_carrossel(posts: list[Post], titulo: str, subtitulo: str,
-                     handle: str | None = None, client: httpx.Client | None = None,
+def render_carrossel(fotos: list[tuple[Post, Image.Image]], titulo: str, subtitulo: str,
+                     handle: str | None = None,
                      brand_name: str = DEFAULT_BRAND_NAME) -> list[bytes]:
     """Os PNGs do carrossel, na ordem: capa, um slide por oferta, fecho.
+
+    `fotos` é o que `carrossel_fotos` devolveu — o elenco já decidido, com a
+    foto de cada produto aberta. Esta função não baixa nada e não descarta
+    ninguém: quem chega aqui vira slide, e é por isso que `titulo`/`subtitulo`
+    (montados pelo chamador a partir desse mesmo elenco) podem falar de "6
+    ofertas" com segurança.
 
     Capa: `titulo` grande, `subtitulo` e o mascote — nenhum preço, porque ela
     vende o CONCEITO ("3 ofertas, 1 é real"), que é o que faz alguém deslizar.
     Ofertas: a arte de feed com um contador (foto, título, pill de preço e o
     veredito, tudo pelas mesmas funções). Fecho: a frase-assinatura, o handle e
-    "link na bio" — nunca um pedido de curtida ou comentário.
-
-    No máximo `CARROSSEL_MAX_SLIDES` (8): as ofertas além da sexta são
-    ignoradas. Sem oferta nenhuma, ou com uma foto de produto que não baixa,
-    levanta `SourceError` — o mesmo contrato de `render_feed`, e o que mantém
-    `carrossel_plan` e o desenho dizendo a mesma coisa."""
-    escolhidos = _slides_de_oferta(posts)
+    "link na bio" — nunca um pedido de curtida ou comentário."""
+    if not fotos:
+        raise SourceError("carrossel sem oferta nenhuma: capa e fecho não são post")
     imagens = [_render_capa(titulo, subtitulo, handle)]
-    imagens += [_render_slide_oferta(post, i, len(escolhidos), client, handle, brand_name)
-                for i, post in enumerate(escolhidos, start=1)]
+    imagens += [_render_slide_oferta(post, foto, i, len(fotos), handle, brand_name)
+                for i, (post, foto) in enumerate(fotos, start=1)]
     imagens.append(_render_fecho(handle))
     return imagens

@@ -72,7 +72,8 @@ def _ofertas(n: int = 3) -> list:
                        category="100630", price_current_cents=2490 + k,
                        price_ref_cents=2600, price_p25_cents=2400,
                        price_window_days=90, sales=3000 + k, rating=4.8,
-                       commission_pct=12.0)
+                       commission_pct=12.0,
+                       image_url=f"https://cf.shopee.com.br/file/i{k}.jpg")
             for k in range(1, n + 1)]
 
 
@@ -435,11 +436,13 @@ class _CanalQueAvisa:
 
     def __init__(self, ok: bool = True):
         self.warnings: list[str] = []
+        self.publicados: list[tuple[list[bytes], str]] = []
         self._ok = ok
 
     def publish_carrossel(self, imagens, caption):
         from afiliado.channels.base import PublishResult
         self.warnings.append(self.AVISO)
+        self.publicados.append((imagens, caption))
         return (PublishResult(True, "post123") if self._ok
                 else PublishResult(False, error="children inválido"))
 
@@ -467,6 +470,39 @@ def test_o_aviso_do_canal_do_carrossel_chega_ao_chat_de_operacoes(
     assert cli.main(["feed", "--config", _cfg_com_canal(tmp_path)]) == 0
     assert any(_CanalQueAvisa.AVISO in texto for texto in ops)
     assert canal.warnings == []            # drenado, não copiado
+
+
+def test_a_legenda_e_a_capa_so_falam_das_ofertas_que_entraram(
+        tmp_path, monkeypatch, capsys):
+    """F4 no comando: a foto de um produto não baixa, ele é pulado — e a capa
+    ("N OFERTAS") e a legenda (um item por linha) são montadas DEPOIS disso.
+    Uma legenda que lista um produto que o álbum não tem é a peça mentindo
+    sobre si mesma, e a legenda é pública."""
+    _fontes(monkeypatch, _ofertas(3))
+    _liga_instagram(monkeypatch)
+    canal = _CanalQueAvisa()
+    ops = _canal_e_ops(monkeypatch, canal)
+    monkeypatch.setattr(
+        cli, "_cliente_http",
+        lambda: httpx.Client(transport=httpx.MockTransport(
+            lambda r: httpx.Response(404) if "/i2." in r.url.path
+            else httpx.Response(200, content=_product_png(),
+                                headers={"content-type": "image/png"}))))
+
+    assert cli.main(["feed", "--config", _cfg_com_canal(tmp_path)]) == 0
+    imagens, legenda = canal.publicados[0]
+    assert len(imagens) == 4                    # capa + 2 ofertas + fecho
+    assert "NENHUMA DAS 2 PASSOU." in legenda
+    assert "Produto de Teste 2" not in legenda
+    assert "Produto de Teste 1" in legenda and "Produto de Teste 3" in legenda
+    # E o dono fica sabendo do que ficou de fora.
+    assert any("i2" in texto for texto in ops)
+
+    db = StateDB(tmp_path / "s.db")
+    assert db.conn.execute(
+        "SELECT COUNT(*) FROM posted WHERE channel=?",
+        (cli.CANAL_CARROSSEL_ITEM,)).fetchone()[0] == 2
+    db.close()
 
 
 def test_o_aviso_do_canal_sai_mesmo_quando_a_publicacao_falha(

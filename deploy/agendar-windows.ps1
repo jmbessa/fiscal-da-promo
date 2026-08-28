@@ -175,6 +175,15 @@ if (-not $AfiliadoExe -or -not (Test-Path -LiteralPath $AfiliadoExe -PathType Le
 }
 $AfiliadoExe = (Resolve-Path -LiteralPath $AfiliadoExe).Path
 
+# O atalho que esconde a janela. Mora ao lado deste script; se sumir, a tarefa
+# seria criada apontando para o nada e falharia a cada 15 min em silêncio — o
+# modo de falha que esta fase inteira existe para acabar.
+$VbsOculto = Join-Path $PSScriptRoot "afiliado-oculto.vbs"
+if (-not (Test-Path -LiteralPath $VbsOculto -PathType Leaf)) {
+    throw "não achei $VbsOculto — ele acompanha este script e é quem roda o afiliado.exe sem janela."
+}
+$VbsOculto = (Resolve-Path -LiteralPath $VbsOculto).Path
+
 # O `.env` é AVISO, não erro: ele pode não existir ainda na primeira instalação,
 # e a tarefa criada continua correta. O que não pode é o dono descobrir isso
 # pelo silêncio.
@@ -218,32 +227,31 @@ $configuracao = New-ScheduledTaskSettingsSet `
     -RunOnlyIfIdle:$false `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
 
-# Sem credencial E sem janela. `S4U` ("executar estando o usuário conectado ou
-# não") é, como o `Interactive`, aceito pelo Agendador SEM guardar senha — e a
-# diferença que importa é que ele roda numa sessão não interativa: o
-# `afiliado.exe` é aplicação de console e, no modo interativo, abria uma janela
-# de terminal na cara do dono a cada 15 minutos (relatado em 2026-08-28).
+# Sem credencial: `Interactive` é o único modo que o Agendador aceita sem
+# guardar senha E sem elevação.
 #
-# O que NÃO muda: a máquina é a mesma, então o IP continua residencial e
-# estável — que é a razão de a produção ter vindo para cá (o instagrapi não
-# sobrevive a IP de datacenter). S4U não usa a rede com credencial de domínio;
-# só HTTP de saída, que é tudo o que o pipeline faz.
+# O S4U ("executar estando o usuário conectado ou não") foi tentado em
+# 2026-08-28 porque roda em sessão não interativa e resolveria a janela por
+# construção. **Recusado nesta máquina**: `Register-ScheduledTask` devolveu
+# "Acesso negado" (HRESULT 0x80070005) — registrar tarefa S4U exige elevação.
+# Não o traga de volta sem resolver isso primeiro; o efeito é o script inteiro
+# falhar no PRIMEIRO registro.
 #
-# Verificado antes de trocar: `G:` é disco FIXO local (NTFS), não unidade
-# mapeada — sessão não interativa não enxerga unidade de rede mapeada, e isso
-# teria quebrado tudo em silêncio.
-#
-# Se o S4U for recusado nesta máquina (falta o direito "Log on as a batch
-# job"), o `throw` do Register-ScheduledTask diz; a saída é voltar a
-# `Interactive` e esconder a janela por um atalho .vbs com WindowStyle 0.
+# A janela, que era o motivo da tentativa, foi resolvida por outro caminho:
+# `afiliado-oculto.vbs` (ver `Register-TarefaDoFiscal` abaixo).
 $principal = New-ScheduledTaskPrincipal `
-    -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
+    -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
 function Register-TarefaDoFiscal {
     param([string]$Nome, [string]$Argumentos, [string]$Inicio, [int]$Cadencia,
           [string]$Descricao)
 
-    $acao = New-ScheduledTaskAction -Execute $AfiliadoExe -Argument $Argumentos `
+    # A janela: quem executa é o `wscript.exe` rodando `afiliado-oculto.vbs`,
+    # que chama o `afiliado.exe` com WindowStyle 0. Ver o cabeçalho do .vbs —
+    # o caminho direto (S4U, sem janela por natureza) exige ELEVAÇÃO e foi
+    # recusado nesta máquina com "Acesso negado" (0x80070005).
+    $acao = New-ScheduledTaskAction -Execute "wscript.exe" `
+        -Argument ("`"$VbsOculto`" `"$AfiliadoExe`" $Argumentos") `
         -WorkingDirectory $ProjetoDir
     $gatilho = New-GatilhoRepetido -Inicio $Inicio -Cadencia $Cadencia
     # `-Force` é o que torna o script idempotente: mesma tarefa, atualizada.

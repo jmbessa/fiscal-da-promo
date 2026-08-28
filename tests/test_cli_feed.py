@@ -260,7 +260,7 @@ def test_feed_flagrante_grafico_e_legenda_dizem_o_mesmo_preco(
 
 # --- Rodada de fechamento (F5): o flagrante despachado não volta amanhã -------
 
-def _despacha_flagrante(monkeypatch, cfg_file, ofertas):
+def _despacha_flagrante(monkeypatch, cfg_file, ofertas, ok: bool = True):
     """Roda o comando de verdade capturando o que foi ao chat de ops."""
     _fontes(monkeypatch, ofertas)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
@@ -268,9 +268,16 @@ def _despacha_flagrante(monkeypatch, cfg_file, ofertas):
     despachos = []
     monkeypatch.setattr(
         cli, "send_photo_bytes",
-        lambda t, c, data, caption="", **kw: despachos.append(caption) or {"ok": True})
+        lambda t, c, data, caption="", **kw: despachos.append(caption) or {
+            "ok": ok, "description": "chat not found"})
     codigo = cli.main(["feed", "--tipo", "flagrante", "--config", cfg_file])
     return codigo, despachos
+
+
+def _amanha(monkeypatch, dias: int = 1):
+    """Adianta o relógio da operação — o teto do flagrante é do DIA local."""
+    quando = datetime(2026, 8, 27, 12, 0, tzinfo=BRT) + timedelta(days=dias)
+    monkeypatch.setattr(state, "_now", lambda: quando.astimezone(timezone.utc))
 
 
 def test_flagrante_despachado_nao_se_repete_dentro_da_janela(
@@ -291,10 +298,112 @@ def test_flagrante_despachado_nao_se_repete_dentro_da_janela(
                                cli.FLAGRANTE_DEDUPE_DAYS)
     db.close()
 
-    # Amanhã (mesma janela): nada sai, e o comando não vira erro.
+    # Amanhã (teto do dia limpo, mesma janela do produto): nada sai, e o
+    # comando não vira erro.
+    _amanha(monkeypatch)
     codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()])
     assert codigo == 0 and despachos == []
     assert "despachado" in capsys.readouterr().out.lower()
+
+
+# --- Fase 5G (G2): o feed roda em TODO disparo, e o freio mora no código ------
+
+def test_o_flagrante_tem_teto_diario_e_nao_manda_um_segundo_no_mesmo_dia(
+        tmp_path, monkeypatch, rede, capsys):
+    """O passo do Actions deixou de se prender a um cron único (~15 dos 16
+    disparos são descartados pelo agendador: prender o feed a um slug era feed
+    que nunca saía). Rodando em todo disparo, o dedupe por PRODUTO não segura
+    nada — ele desce para o próximo item e mandaria 16 flagrantes diferentes ao
+    ops no mesmo dia. O teto é diário, e mora aqui."""
+    _grava_pico(tmp_path / "s.db", item_id="inflado")
+    _grava_pico(tmp_path / "s.db", item_id="outro")
+    cfg_file = _cfg(tmp_path)
+    ofertas = [_oferta_inflada(),
+               _oferta_inflada(item_id="outro", title="Whey Protein 900g",
+                               price_original_cents=5900)]
+
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
+    assert codigo == 0 and len(despachos) == 1
+
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
+    assert codigo == 0 and despachos == []
+    assert "hoje" in capsys.readouterr().out.lower()
+
+    db = StateDB(tmp_path / "s.db")
+    assert db.day_flag(cli.FLAGRANTE_DIA_FLAG)
+    db.close()
+
+
+def test_o_teto_do_flagrante_e_conferido_antes_da_descoberta(
+        tmp_path, monkeypatch, rede, capsys):
+    """Espelha o `_carrossel_pode_sair`: um disparo que já gastou a cota do dia
+    sai sem tocar em rede. Sem isto, os 16 disparos pagariam 16 descobertas
+    (8 chamadas à Shopee cada) para descartar 15 flagrantes."""
+    _grava_pico(tmp_path / "s.db")
+    cfg_file = _cfg(tmp_path)
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()])
+    assert codigo == 0 and len(despachos) == 1
+
+    monkeypatch.setattr(cli, "_ofertas_do_feed",
+                        lambda *a, **k: pytest.fail("descoberta paga com a cota gasta"))
+    assert cli.main(["feed", "--tipo", "flagrante", "--config", cfg_file]) == 0
+
+
+def test_o_teto_do_flagrante_so_e_gravado_depois_do_despacho_bem_sucedido(
+        tmp_path, monkeypatch, rede, capsys):
+    """Um envio que falhou não gastou o dia: com 16 disparos, o seguinte tenta
+    de novo e a peça ainda sai HOJE. Marcar antes trocaria uma falha de rede
+    por um dia inteiro sem flagrante — o mesmo raciocínio do dedupe por
+    produto, que também só marca depois do "ok"."""
+    _grava_pico(tmp_path / "s.db")
+    cfg_file = _cfg(tmp_path)
+
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()],
+                                            ok=False)
+    assert codigo == 1 and len(despachos) == 1
+    db = StateDB(tmp_path / "s.db")
+    assert db.conn.execute("SELECT COUNT(*) FROM day_flags").fetchone()[0] == 0
+    db.close()
+
+    # O disparo seguinte, no mesmo dia, repete — e agora dá certo.
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, [_oferta_inflada()])
+    assert codigo == 0 and len(despachos) == 1
+
+
+def test_o_dry_run_do_flagrante_le_o_teto_do_dia_e_nao_o_grava(
+        tmp_path, monkeypatch, rede, previews, capsys):
+    """A10: `--dry-run` não escreve — mas LÊ, como já lê o dedupe por produto.
+    Um preview que ignorasse o teto mostraria uma peça que o comando de verdade
+    não mandaria."""
+    _grava_pico(tmp_path / "s.db", item_id="inflado")
+    _grava_pico(tmp_path / "s.db", item_id="outro")
+    cfg_file = _cfg(tmp_path)
+    ofertas = [_oferta_inflada(),
+               _oferta_inflada(item_id="outro", title="Whey Protein 900g",
+                               price_original_cents=5900)]
+    _fontes(monkeypatch, ofertas)
+    assert cli.main(["feed", "--tipo", "flagrante", "--dry-run",
+                     "--config", cfg_file]) == 0
+    assert len(list(previews.glob("*.png"))) == 1
+    capsys.readouterr()
+
+    codigo, despachos = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
+    assert codigo == 0 and len(despachos) == 1        # o preview não gastou o dia
+    capsys.readouterr()
+
+    # O segundo produto ainda é inédito, então só o TETO DO DIA pode segurá-lo.
+    monkeypatch.setattr(cli, "send_photo_bytes",
+                        lambda *a, **k: pytest.fail("dry-run não despacha"))
+    assert cli.main(["feed", "--tipo", "flagrante", "--dry-run",
+                     "--config", cfg_file]) == 0
+    assert "Whey Protein 900g" not in capsys.readouterr().out
+
+    # E o preview não gravou marca nenhuma: as duas do despacho de verdade
+    # (o teto do dia e o dedupe do produto) são as únicas no banco.
+    db = StateDB(tmp_path / "s.db")
+    assert db.conn.execute("SELECT COUNT(*) FROM day_flags").fetchone()[0] == 2
+    assert db.day_flag(cli.FLAGRANTE_DIA_FLAG)
+    db.close()
 
 
 def test_passada_a_janela_o_flagrante_pode_voltar(tmp_path, monkeypatch, rede, capsys):
@@ -315,7 +424,10 @@ def test_a_janela_nao_engole_o_segundo_pior_flagrante(
         tmp_path, monkeypatch, rede, capsys):
     """O dedupe é por PRODUTO, não "um flagrante por semana": bloqueado o de
     maior gravidade, o comando desce para o próximo — senão uma semana inteira
-    de denúncias morreria por causa de um item."""
+    de denúncias morreria por causa de um item.
+
+    Um dia por vez, porque o teto do flagrante é DIÁRIO desde a 5G (G2): os
+    dois freios são independentes e este teste é sobre o de produto."""
     _grava_pico(tmp_path / "s.db", item_id="inflado")
     _grava_pico(tmp_path / "s.db", item_id="outro")
     cfg_file = _cfg(tmp_path)
@@ -325,10 +437,12 @@ def test_a_janela_nao_engole_o_segundo_pior_flagrante(
 
     codigo, primeiro = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
     assert codigo == 0 and len(primeiro) == 1
+    _amanha(monkeypatch, 1)
     codigo, segundo = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
     assert codigo == 0 and len(segundo) == 1
     assert segundo[0] != primeiro[0]
 
+    _amanha(monkeypatch, 2)
     codigo, terceiro = _despacha_flagrante(monkeypatch, cfg_file, ofertas)
     assert codigo == 0 and terceiro == []
 

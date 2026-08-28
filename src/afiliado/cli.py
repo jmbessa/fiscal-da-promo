@@ -63,6 +63,16 @@ SUBTITULO_TERMOMETRO = "O Fiscal olhou o histórico de preço de cada uma."
 FLAGRANTE_DEDUPE_DAYS = 7
 FLAGRANTE_FLAG_PREFIXO = "flagrante"
 
+# Fase 5G (G2): o teto DIÁRIO do flagrante, no mesmo lugar (`day_flags`) e com
+# a mesma semântica do dedupe por produto. Ele existe porque o passo do Actions
+# deixou de se prender ao cron das 08:00: ~15 dos 16 disparos são descartados
+# pelo agendador (medido em 2026-08-28), e prender a peça a um slug de cron era
+# feed que nunca sai. Rodando em todo disparo, o dedupe por PRODUTO não segura
+# nada — ele desce para o próximo item, e o ops receberia 16 flagrantes
+# diferentes por dia. A marca é gravada só DEPOIS do despacho bem-sucedido:
+# um envio que falhou não gastou o dia, e o disparo seguinte repete.
+FLAGRANTE_DIA_FLAG = "feed_flagrante_do_dia"
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="afiliado")
@@ -1104,8 +1114,24 @@ def chave_do_flagrante(offer) -> str:
     return f"{FLAGRANTE_FLAG_PREFIXO}:{offer.source}:{offer.item_id}"
 
 
+def _flagrante_pode_sair(db: StateDB) -> tuple[bool, str]:
+    """O teto diário do flagrante, conferido ANTES da descoberta — como o
+    `_carrossel_pode_sair` faz com o carrossel. Um disparo que já gastou a cota
+    do dia sai sem pagar as 8 chamadas de descoberta e sem tocar em rede.
+
+    Vale também em `--dry-run` (o preview mostra a peça que SAIRIA, e a que
+    sairia é nenhuma), como já vale o dedupe por produto; o que o dry-run não
+    faz é gravar (`somente_leitura`)."""
+    marca = db.day_flag(FLAGRANTE_DIA_FLAG)
+    return (False, marca) if marca else (True, "")
+
+
 def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
     avisos: list[str] = []
+    pode, marca = _flagrante_pode_sair(db)
+    if not pode:
+        print(f"ℹ️ flagrante não sai agora — já houve um hoje ({marca})")
+        return 0
     ofertas, _ = _ofertas_do_feed(cfg, db, avisos, args.dry_run)
     achados = flagrante.encontra(ofertas, db, cfg)
     if not achados:
@@ -1158,6 +1184,12 @@ def _feed_flagrante(cfg: dict, args, db: StateDB) -> int:
     # calar o produto por uma semana por causa disso seria perder a denúncia.
     db.set_day_flag(chave_do_flagrante(achado.offer),
                     f"despachado · gravidade {achado.gravidade:.2f}")
+    # G2: e a marca do TETO DO DIA, pelo mesmo motivo e no mesmo instante —
+    # depois do "ok". O comando roda em todos os disparos do dia; esta linha é
+    # o que faz o segundo sair calado em vez de mandar outro produto ao ops.
+    db.set_day_flag(FLAGRANTE_DIA_FLAG,
+                    f"despachado · {achado.offer.item_id} · "
+                    f"gravidade {achado.gravidade:.2f}")
     print(f"✅ flagrante despachado ao chat de operações (gravidade "
           f"{achado.gravidade:.2f}) — aguardando o ok do dono, e este produto "
           f"não volta por {FLAGRANTE_DEDUPE_DAYS} dias")

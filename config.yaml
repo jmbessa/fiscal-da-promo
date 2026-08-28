@@ -149,9 +149,15 @@ sources:
   # entrega o vencedor: `buy_box_winner` vem nulo e `tier` vem vazio nos 89
   # anúncios sondados.
   #
-  # Religar exige decidir QUAL preço publicar sem saber o vencedor. Medido: o
-  # mais barato erra 11% e 3,7% para baixo contra a página; a mediana dos
-  # vendedores erra 63% e 55% para cima. Ver docs/runbooks/meli-setup.md.
+  # CONSERTADO na fase 5M, e continua desligado até o dono ver uma peça: o
+  # preço publicado passou a ser o do anúncio LINKADO mais barato, e o link do
+  # post é o daquele anúncio. Não se estima mais qual vendedor a página vai
+  # mostrar — post e clique são o mesmo objeto, por construção.
+  #
+  # Para religar: rode /meli-links-refresh (o pool de links está migrado mas
+  # VAZIO de anúncios — os 55 links antigos são de catálogo e não publicam),
+  # confira `afiliado doctor` e só então mude para true.
+  # Ver docs/runbooks/meli-setup.md, seção "2026-08-28 (fase 5M)".
   meli: false
 
 # Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26
@@ -250,7 +256,11 @@ shopee:
 # (/products/{id}/items) só imediatamente antes de publicar (refresh_price).
 meli:
   offers_path: data/meli_offers.json   # pool curado; ver docs/runbooks/meli-setup.md
-  links_path: data/meli_links.json     # pool de links de afiliado (gerado por /meli-links-refresh)
+  # Pool de links de afiliado POR ANÚNCIO (fase 5M), gerado por
+  # /meli-links-refresh: {version: 2, products: {produto: {items: {anúncio:
+  # link}, product_link}}}. É `items` que publica; `product_link` guarda os 55
+  # links de catálogo da fase 5C, que continuam válidos e não publicam nada.
+  links_path: data/meli_links.json
   # Comissão média estimada do programa de afiliados do ML, usada no cálculo de
   # valor esperado enquanto a API não expõe a taxa por item.
   # Ajuste com as taxas reais do seu painel de afiliados por categoria.
@@ -271,9 +281,9 @@ meli:
   # etiqueta só separa o relatório.
   #
   # ATENÇÃO: os 55 links já em data/meli_links.json foram gerados sob `jmbessa`
-  # e continuam valendo (o link não muda de dono). Eles passam a `ofiscaldapromo`
-  # quando forem regerados — o que a fase do preço por anúncio vai fazer de
-  # qualquer forma, porque os links deixam de ser por produto.
+  # e continuam valendo (o link não muda de dono), guardados em `product_link`.
+  # Eles não publicam nada desde a fase 5M — são links de catálogo. Os links
+  # por anúncio nascem sob `ofiscaldapromo`.
   tag: "ofiscaldapromo"
 
 validation:

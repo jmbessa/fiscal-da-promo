@@ -150,16 +150,17 @@ def test_summary_text_agrupa_a_partir_de_quatro():
     assert "MLB0" not in text
 
 
-def test_summary_text_agrupa_sem_buy_box():
-    # Rodada de correção da 5B (Fix 1): o "sem buy box" de refresh_price varia
-    # só nos ids e na contagem de vendedores — continua agrupado no resumo.
-    descartes = [(f"Produto {i}", f"meli: sem buy box — anúncio MLB712544938{i} não está "
-                                  f"entre os {30 + i} vendedores de MLB6663723{i}")
+def test_summary_text_agrupa_o_descarte_por_falta_de_anuncio_linkado():
+    # Fase 5M: o descarte de `refresh_price` varia só no id do produto e na
+    # contagem de vendedores — continua agrupado no resumo, em vez de virar
+    # 40 linhas iguais.
+    descartes = [(f"Produto {i}", f"meli: nenhum anúncio linkado de MLB6663723{i} está "
+                                  f"à venda entre os {30 + i} vendedores")
                  for i in range(4)]
     text = pipeline.RunSummary(discarded=descartes).text()
-    assert ("• 4× meli: sem buy box — anúncio MLB não está entre os vendedores de MLB "
+    assert ("• 4× meli: nenhum anúncio linkado de MLB está à venda entre os vendedores "
             "(ex.: Produto 0)") in text
-    assert "MLB7125449380" not in text
+    assert "MLB66637230" not in text
 
 
 def test_descartes_guardam_rotulo_e_motivo_separados(tmp_path, monkeypatch):

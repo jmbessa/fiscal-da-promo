@@ -131,7 +131,23 @@ selection:
 # afiliado (data/meli_links.json, ver docs/runbooks/meli-setup.md).
 sources:
   shopee: true
-  meli: true
+  # DESLIGADO EM 2026-08-28 — o preço publicado estava muito acima do real, e a
+  # causa não tem correção rápida. Dois casos medidos ao vivo, ambos no ar:
+  #
+  #   MLB19603205 (creatina): o anúncio gravado como vencedor do buy box NÃO
+  #   está mais em /products/{id}/items. A oferta foi publicada mesmo assim,
+  #   com R$ 80 — que é a MEDIANA do pool, não um preço vivo. Os anúncios reais
+  #   custam de R$ 35,90 a R$ 39,90.
+  #
+  #   MLB22983247 (colchão): o anúncio gravado existe e custa R$ 209,87, mas o
+  #   vencedor real está entre R$ 109 e R$ 119 (a página mostrava R$ 113).
+  #
+  # A raiz é a mesma dos dois: NÃO SABEMOS quem vence o buy box. O `buyBoxId`
+  # do JoomPulse envelhece, e a API do ML não entrega o vencedor —
+  # `buy_box_winner` vem nulo e o campo `tier` vem vazio nos 89 anúncios
+  # sondados em 2026-08-28. Religar só depois de decidir qual preço publicar
+  # quando o vencedor é desconhecido (ver docs/runbooks/meli-setup.md).
+  meli: false
 
 # Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26
 # contra a API real (147 chamadas; docs/superpowers/reviews/2026-08-26-descoberta-shopee.md).

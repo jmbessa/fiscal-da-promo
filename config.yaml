@@ -259,7 +259,22 @@ meli:
   # decide publicabilidade é selection.max_above_ref + validate.check_price,
   # igual para as duas lojas; a mínima histórica do pool vira
   # Offer.price_floor_cents e só alimenta o selo de menor preço.
-  tag: "jmbessa"             # etiqueta cadastrada no painel de afiliados (linkbuilder)
+  # Etiqueta cadastrada no painel de afiliados (linkbuilder). Ela é o
+  # `matt_word` do link — medido em 2026-08-28 resolvendo links reais:
+  #
+  #   .../social/bessarodriguesjoomarcello?matt_word=jmbessa&matt_tool=58475193
+  #   .../social/bessarodriguesjoomarcello?matt_word=ofiscaldapromo&matt_tool=58475193
+  #
+  # O caminho `/social/<apelido>` é IDÊNTICO nos dois: ele é o apelido do perfil
+  # social da conta, não a etiqueta — mudá-lo é mexer no perfil do ML, não aqui.
+  # O `matt_tool` também é o mesmo, ou seja, a comissão cai na MESMA conta; a
+  # etiqueta só separa o relatório.
+  #
+  # ATENÇÃO: os 55 links já em data/meli_links.json foram gerados sob `jmbessa`
+  # e continuam valendo (o link não muda de dono). Eles passam a `ofiscaldapromo`
+  # quando forem regerados — o que a fase do preço por anúncio vai fazer de
+  # qualquer forma, porque os links deixam de ser por produto.
+  tag: "ofiscaldapromo"
 
 validation:
   # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio

@@ -630,6 +630,16 @@ def doctor(cfg: dict) -> int:
                 print(f"⚠️ Mercado Livre: token ok; {pool}; {meli.pool_warning}")
             else:
                 print(f"✅ Mercado Livre: token ok; {pool}")
+            # Fase 5J (J4): a proporção que a fase existe para mudar. As
+            # entradas sem régua publicam em modo B e ganham uma sozinhas
+            # depois de `ref_min_observations` dias do nosso price_log; sem
+            # este número, "o ML só publica modo B" vira descoberta de semanas
+            # depois.
+            com_regua, total_pool = meli.ruler_coverage(offers)
+            if total_pool:
+                print(f"🏷️ Mercado Livre: {com_regua} de {total_pool} entrada(s) "
+                      f"com régua curada; {total_pool - com_regua} em modo B "
+                      "esperando histórico")
         except Exception as exc:
             ok = False
             print(f"❌ Mercado Livre: {exc}")

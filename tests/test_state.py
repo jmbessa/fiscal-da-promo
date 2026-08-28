@@ -456,3 +456,37 @@ def test_posted_today_by_source(tmp_path, monkeypatch):
     _congela(monkeypatch, datetime(2026, 8, 26, 8, 0, tzinfo=BRT))
     assert db.posted_today_by_source() == {}
     db.close()
+
+
+# --- Fase 5D: a série que o gráfico desenha ----------------------------------
+
+def test_price_history_dated_devolve_dia_e_preco_do_mais_antigo_ao_mais_novo(tmp_path):
+    """O gráfico e o `flagrante` precisam do DIA de cada preço, não só do valor:
+    um pico de um dia só é pico porque durou um dia."""
+    from datetime import date, timedelta
+
+    db = StateDB(tmp_path / "s.db")
+    hoje = db.local_today()
+    for delta, cents in ((0, 1890), (1, 6890), (2, 2600), (100, 9999)):
+        db.record_price("shopee", "123456", cents,
+                        day=(hoje - timedelta(days=delta)).isoformat())
+    serie = db.price_history_dated("shopee", "123456", days=90)
+    assert serie == [(hoje - timedelta(days=2), 2600),
+                     (hoje - timedelta(days=1), 6890),
+                     (hoje, 1890)]
+    assert all(isinstance(d, date) for d, _ in serie)
+    assert db.price_history_dated("shopee", "outro", days=90) == []
+    db.close()
+
+
+def test_price_history_dated_ignora_dia_ilegivel(tmp_path):
+    """`price_log.day` é TEXT: uma linha gravada por outra ferramenta (ou por
+    uma versão futura) não pode derrubar o gráfico — ela é pulada."""
+    db = StateDB(tmp_path / "s.db")
+    hoje = db.local_today()
+    db.record_price("shopee", "123456", 2600, day=hoje.isoformat())
+    db.conn.execute("INSERT INTO price_log (source, item_id, day, price_cents) "
+                    "VALUES (?,?,?,?)", ("shopee", "123456", "ontem", 9999))
+    db.conn.commit()
+    assert db.price_history_dated("shopee", "123456", days=3650) == [(hoje, 2600)]
+    db.close()

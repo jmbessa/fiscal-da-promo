@@ -249,6 +249,28 @@ class StateDB:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def price_history_dated(self, source: str, item_id: str,
+                            days: int) -> list[tuple[date, int]]:
+        """A mesma janela de `price_history`, com o DIA de cada preço e do mais
+        ANTIGO para o mais novo — a ordem em que uma série de tempo é desenhada
+        (fase 5D).
+
+        `price_history` devolve só os valores e do mais recente para o mais
+        antigo, que é o que a mediana precisa e o que um gráfico não pode usar:
+        um pico de um dia só é pico porque durou um dia, e isso exige a data.
+        Linha com `day` ilegível é PULADA — `price_log.day` é TEXT, e uma linha
+        estranha não pode derrubar a arte."""
+        cutoff = (self.local_today() - timedelta(days=days)).isoformat()
+        serie: list[tuple[date, int]] = []
+        for dia, price in self.conn.execute(
+                "SELECT day, price_cents FROM price_log WHERE source=? AND item_id=? "
+                "AND day>=? ORDER BY day ASC", (source, item_id, cutoff)).fetchall():
+            try:
+                serie.append((date.fromisoformat(str(dia)), int(price)))
+            except (TypeError, ValueError):
+                continue
+        return serie
+
     def price_histories(self, source: str, item_ids: list[str],
                         days: int) -> dict[str, list[int]]:
         """`price_history` de vários itens de uma vez (mais recentes primeiro).

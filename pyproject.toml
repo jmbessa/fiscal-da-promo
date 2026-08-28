@@ -15,6 +15,23 @@ dev = ["pytest>=8.0"]
 # dentro da função), e a suíte roda numa máquina sem ele.
 #   pip install -e .[stories]
 stories = ["instagrapi>=2.18"]
+# Fase 5P: a leitura do preço de CHECKOUT da Shopee no navegador
+# (`afiliado.preco_real`). Opcional pelo mesmo motivo do `stories`, e com a
+# mesma disciplina: o import é preguiçoso, quem não instalar tem o pipeline
+# inteiro funcionando (a leitura se desarma com um aviso) e a suíte roda numa
+# máquina sem ele.
+#
+# Playwright e não CDP contra o Chrome instalado: `launch_persistent_context`
+# recebe o diretório do perfil como argumento obrigatório, e o perfil passa por
+# `preco_real.perfil_proibido` antes — a guarda de "nunca o perfil logado do
+# dono" vira código. Com CDP alguém teria de subir o Chrome à mão com
+# `--user-data-dir`, e o erro de apontá-lo para o perfil do dono é justamente o
+# que encerra o lado Shopee. Ver docs/runbooks/shopee-preco.md.
+#
+#   pip install -e .[preco] && playwright install chromium
+# (com `browser_channel: chrome`, o padrão, o segundo comando é dispensável: ele
+#  usa o Chrome que já está instalado, com um perfil vazio nosso.)
+preco = ["playwright>=1.44"]
 
 [project.scripts]
 afiliado = "afiliado.cli:main"

@@ -17,6 +17,154 @@ O problema não é de exatidão, é de leitura: a Shopee põe os R$ 611,80 em
 vermelho grande e os R$ 689,99 em cinza pequeno. Quem clica bate o olho no
 número menor e conclui que o nosso está velho.
 
+## A OITAVA rota RESOLVE — e ela não passa por navegador nenhum (fase 5R, 2026-08-29)
+
+**Leia esta seção primeiro.** As sete abaixo continuam valendo e são a razão de
+esta existir; elas são a história de como se chegou aqui. Esta é a que está
+LIGADA e publicando.
+
+`ShbMartItem.price`, do cubo do JoomPulse, **É o preço EXIBIDO** — o de
+checkout, com cupom. Medido:
+
+| item | nossa API (`productOfferV2`) | `ShbMartItem.price` | a página mostrava |
+|---|---|---|---|
+| 16892189215 | R$ 689,99 | **611,80** | R$ 611,80 |
+| 23598844177 | R$ 599,00 | **523,48** | R$ 523,48 |
+
+Confirmado em mais 8 itens: sempre 5% a 14,5% abaixo do nosso.
+
+**Por que ela é melhor que a sétima**, que é a do navegador (ver "A sétima rota
+EXIGE SESSÃO", logo abaixo, para o que a trava):
+
+| | sétima (navegador) | oitava (cubo) |
+|---|---|---|
+| exige sessão logada na Shopee | **sim** — e é isso que a trava | não |
+| arrisca a conta do dono | sim (automação de perfil logado) | não |
+| custo por item | uma página de navegador, 10 a 30 s | **1/100 de uma consulta** |
+| frescor | vivo, do segundo | foto por item, mediana de 3 dias |
+| ancoragem | a frase da própria página | o preço vivo da API, por distância |
+| estado | desligada, e toda leitura falha fechada | **ligada** |
+
+A sétima continua sendo a MELHOR quando existir uma sessão que possa ser usada
+sem risco: ela lê a página viva e ancora o número na frase que o qualifica. Por
+isso, no pipeline, **ela vence**: `shopee_checkout` só preenche o que
+`preco_real` não carimbou.
+
+### O que a coleta rende, e o que ela custa
+
+`ShbMartItem` tem **uma linha por item** e o teto do Cube.js é de 100 linhas por
+consulta, então cabem **100 itens por consulta** (medido em 2026-08-29: 120 ids
+no filtro devolveram exatamente 100 linhas; `offset: 100` devolveu as 17
+restantes). Compare com o cubo de histórico da 5O, cujo grão é o INTERVALO e
+onde cabem ~4 itens.
+
+Com a cota diária de ~9 consultas, **1 consulta/dia basta**: ela cobre os 100
+primeiros da fila que o pipeline publicaria, contra ≈60 posts/dia. E rodar mais
+de uma vez por dia **não adianta**: a data que a guarda usa é
+`itemLastSeenDate`, o dia em que a Shopee foi raspada pelo JoomPulse, não o dia
+da nossa consulta.
+
+A cobertura do cubo não é censo (só itens com ao menos uma venda na vida,
+categoria resolvida e preço abaixo de R$ 50.000): **117 dos 120** ids do topo
+da nossa fila estavam lá.
+
+### A guarda: falhar fechado, com os números que a escolheram
+
+O preço da API é VIVO — o `refresh_price` roda segundos antes de publicar. O do
+cubo tem dias. O do cubo só vai à peça quando passa por três portas; fora delas
+o post publica o preço da API, exatamente como antes desta fase.
+
+Medido em 2026-08-29 sobre **117 itens do topo da fila real**, o preço do cubo
+contra o `price_current_cents` do estoque:
+
+- **105 tinham o cubo menor**; 12 tinham-no maior ou igual — esses não são
+  desconto nenhum, são preço velho de anúncio que barateou;
+- dos 105, **85 ficam em até 15%**, e eles se empilham nos degraus de cupom da
+  Shopee: ~5%, ~10% e **exatamente 14,50%**;
+- há um **cotovelo claro** entre 14,57% e 15,34%. Acima dele os valores são
+  espalhados (16,13 · 16,99 · 17,77 · 18,09 · 18,27 · 19,19 · 19,54 …) e a
+  cauda vai a **54,70% e 55,84%** — R$ 199,90 virando R$ 88,27 não é cupom, é o
+  preço tendo mudado desde a raspagem.
+
+| porta | limiar | por que este número |
+|---|---|---|
+| é menor | cubo `<` vivo | preço do cubo maior é preço velho, não cupom |
+| não longe demais | ≤ **15%** abaixo | o topo do degrau de cupom mais alto que sabemos existir, logo antes do cotovelo |
+| não perto demais | ≥ **1%** abaixo | menos que isso é ruído de arredondamento de uma medida `avg`; nenhum dos 117 foi excluído por ele (o menor gap positivo foi 1,45%) |
+| recente | raspagem há ≤ **3 dias** | ver abaixo |
+
+**A idade NÃO é de 24 h**, ao contrário do que o enquadramento inicial supunha.
+O cubo é reconstruído todo dia, mas com a última raspagem de CADA item: na
+amostra, `itemLastSeenDate` teve **mediana de 3 dias e máximo de 30**, e só 36
+dos 117 tinham sido vistos nas últimas 24 h. Por isso a idade é guarda de
+primeira classe, e não uma nota de rodapé.
+
+**Resultado medido: 50 dos 117 publicariam o preço de checkout hoje.** Os 67
+que caem são, quase todos, por idade (56 deles) — 36 estão a exatamente 4 dias,
+um dia além do teto. Subir `idade_max_dias` para 4 levaria a cobertura de 50
+para 86; é um botão do `config.yaml`, com o número ao lado, e é decisão do dono.
+O teto de 3 foi escolhido por ser o mesmo frescor que o projeto já aceita para
+uma candidata (`shopee.candidate_max_age_days`), e não por ajuste à amostra.
+
+### Onde isso mora
+
+- **A conta e as guardas**: `src/afiliado/shopee_checkout.py`, com
+  `tests/test_shopee_checkout.py`. Sem rede.
+- **O leitor do bruto**: `src/afiliado/joompulse.py`. O conector devolve
+  **colunar** (`columns` + `data` de listas), e não a lista de dicionários que a
+  fase 5O supôs — corrigido lá também, onde um bruto colunar virava "sem linha
+  no cubo" para todo item.
+- **O dado**: seção `checkout_prices` de `data/watchlist.json`, ao lado de
+  `price_refs`/`price_floors`. É FATO datado: sobrevive ao vencimento da
+  opinião e carrega em `measured_at` o dia da RASPAGEM.
+- **A coleta**: skill `/shopee-checkout-refresh`.
+- **O interruptor**: `preco_checkout:` no `config.yaml`, com os três limiares.
+- **O aviso**: seção vazia ("a coleta nunca rodou") ou sem nenhum preço dentro
+  do teto de idade viram aviso diário ao chat de operações, e o `afiliado
+  doctor` tem um item `preco_checkout` que conta quantos ainda valem. Ele
+  **nunca** pinta o doctor de vermelho: nada quebra quando falta o dado — o
+  post publica o preço da API —, e um ❌ num sistema que está entregando é a
+  maneira mais rápida de ensinar o dono a ignorar o ❌ (é o critério do data
+  feed da 5L).
+
+### A porcentagem na arte (o pedido do dono)
+
+> "mesmo que o joompulse traga o preço correto, precisamos evidenciar a
+> porcentagem de desconto nos stories, pois isso atrai a atenção do consumidor"
+
+**Qual porcentagem:** a de CHECKOUT — entre o preço de catálogo
+(`price_current_cents`, o que a API dá) e o preço exibido
+(`price_checkout_cents`). No caso real: 599,00 → 523,48 = **−12%**. São dois
+números observados por NÓS, e é isso que a torna publicável. `priceDiscountRate`
+e qualquer desconto derivado de `price_original_cents` continuam PROIBIDOS sem
+o veredito — é o "de" inflado que este projeto inteiro existe para não
+certificar.
+
+O buraco que os previews acharam: uma peça de **modo B** com preço de checkout
+não mostrava porcentagem NENHUMA. O badge de −N% só existia no modo A, e o modo
+A é raro. Desde a 5R:
+
+- **uma porcentagem por peça, sempre a mais forte que é verdadeira.** Modo A: a
+  do veredito (referência → preço publicado), que é sempre maior que a de
+  checkout porque a referência é maior que o catálogo. Modo B: a de checkout;
+- **a base junto.** No modo B com leitura, a pill ganha o preço de catálogo
+  RISCADO. Porcentagem sem base é um número que o seguidor não pode conferir — e
+  este riscado não é o "de" do vendedor: é a nossa medição de hoje, o mesmo
+  número que a página escreve como "ou R$ 599,00 sem cupom";
+- o **selo** de modo A e o badge coexistem sem colidir; conferido nas imagens.
+
+Geometria medida em 2026-08-29 (46 peças em `.claude/previews/fase5r/`: story e
+feed, modo A e B, com e sem selo, com e sem leitura, condição curta e longa,
+título longo, teto de preço, story no modo figurinha, ML):
+
+| pill de modo B, pior caso publicável (R$ 999,99 → R$ 899,99) | story (útil 936) | feed (útil 952) |
+|---|---|---|
+| "COM CUPOM" — o que o cubo produz | 886 (riscado inteiro) | 787 (riscado inteiro) |
+| "NO PIX COM CUPOM" — só a leitura do navegador produz | 813 (o riscado SAI) | 899 (riscado inteiro) |
+
+E a rede da 5P continua de pé: a referência que não cabe **sai inteira**. O
+"R$ 7…" não voltou por esta porta.
+
 ## O preço com cupom não vem por SERVIDOR — seis caminhos fechados
 
 (Pelo navegador ele vem, mas só COM SESSÃO: ver "A sétima rota FUNCIONA" e, logo
@@ -56,6 +204,13 @@ E a sexta, medida em **2026-08-28** antes de aceitar a decisão da fase 5N:
 **Conclusão sobre a API: é estrutural.** Desconto de meio de pagamento e cupom
 acontece no checkout e não existe no catálogo de afiliados. Nenhuma das seis
 rotas acima resolve, e nenhuma vai resolver: só a Shopee, expondo o campo.
+
+> **Esta conclusão continua certa sobre a API de afiliados, e ERRADA sobre o
+> mundo.** Ela olhava só para os nossos próprios acessos. Quem já raspa a
+> página da Shopee todo dia é o JoomPulse, e o preço que ele guarda é o
+> EXIBIDO — ver "A OITAVA rota RESOLVE", no topo. O erro de método: seis
+> caminhos fechados viraram "não existe caminho", quando o que estava provado
+> era "não existe caminho POR AQUI".
 
 ## A sétima rota FUNCIONA — e ela derruba a conclusão acima
 

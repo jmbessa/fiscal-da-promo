@@ -34,7 +34,6 @@ import argparse
 import json
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
 
 from afiliado import joompulse, pipeline, pricing, selection
@@ -53,26 +52,11 @@ __all__ = ["Regua", "centavos", "dias_observados", "regua_do_item", "reguas_do_b
            "mesclar", "escrever", "fila", "alvos", "main", "JANELA_PADRAO", "CUBO"]
 
 
-def centavos(valor) -> int | None:
-    """BRL -> centavos com `Decimal` e ROUND_FLOOR; None para o que não é preço.
-
-    Sempre para BAIXO, como no resto do projeto: referência ou piso arredondado
-    para cima vira desconto (ou selo) inventado. Zero e negativo não são preço —
-    devolvem None, e a linha é descartada em vez de virar uma mínima de R$ 0,00.
-    """
-    try:
-        bruto = Decimal(str(valor)) * 100
-    except (InvalidOperation, ValueError, TypeError):
-        return None
-    if bruto <= 0:
-        return None
-    return int(bruto.to_integral_value(rounding=ROUND_FLOOR))
-
-
-# A data de um `priceStart`/`priceEnd`, e as linhas cruas: os dois formatos
-# (colunar e lista de dicionários) são lidos em `afiliado.joompulse`, uma vez
-# só, para os dois cubos.
+# A data de um `priceStart`/`priceEnd`, os centavos e as linhas cruas: os dois
+# formatos (colunar e lista de dicionários) são lidos em `afiliado.joompulse`,
+# uma vez só, para os dois cubos.
 _dia = joompulse.dia
+centavos = joompulse.centavos
 
 
 def dias_observados(intervalos: list[tuple[date, date | None, int]], hoje: date,

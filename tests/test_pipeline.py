@@ -2109,3 +2109,98 @@ def test_sem_leitor_o_pipeline_e_o_de_hoje(tmp_path, monkeypatch):
     assert post.offer.price_checkout_cents == 0
     assert "R$ 599,00" in post.message_text
     db.close()
+
+
+# --- Fase 5R: o preço de checkout que vem do CUBO, e não do navegador ----------
+#
+# Mesmo carimbo (`Offer.price_checkout_cents`), mesma condição ("com cupom"),
+# outra origem. O interruptor é `preco_checkout.enabled` e o dado mora na
+# watchlist — sem seção, o pipeline é exatamente o de hoje.
+
+def _cfg_cubo(**extra):
+    return {**_cfg_um_post(), "preco_checkout": {"enabled": True, **extra}}
+
+
+def _wl_checkout(cents=52348, medido_em=None, item_id="123456"):
+    from afiliado.watchlist import CheckoutPrice
+    hoje = date.today()
+    return Watchlist(generated_at=hoje, valid_days=14,
+                     checkout_prices={item_id: CheckoutPrice(cents, medido_em or hoje)},
+                     section_dates={"checkout_prices": hoje})
+
+
+def test_o_post_publica_o_preco_do_cubo_com_a_condicao(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_cubo(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator, watchlist=_wl_checkout())
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 52348
+    assert "R$ 523,48" in post.message_text and "com cupom" in post.message_text
+    # o catálogo continua sendo a série do price_log — a régua da 5B não vê cupom
+    assert db.price_history("shopee", "123456", 1) == [59900]
+    db.close()
+
+
+def test_o_cubo_desligado_no_config_nao_muda_nada(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_um_post(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator, watchlist=_wl_checkout())
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 0 and "R$ 599,00" in post.message_text
+    db.close()
+
+
+def test_a_guarda_do_cubo_vale_dentro_do_run(tmp_path, monkeypatch):
+    """Preço do cubo longe demais do vivo: o post publica o da API, como hoje."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_cubo(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator,
+                 watchlist=_wl_checkout(cents=20000))
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 0 and "R$ 599,00" in post.message_text
+    db.close()
+
+
+def test_a_leitura_do_navegador_vence_o_cubo(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_cubo(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator, watchlist=_wl_checkout(),
+                 preco_real=LeitorFalso(cents=51000, condicao="no Pix com cupom"))
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 51000
+    assert "no Pix com cupom" in post.message_text
+    db.close()
+
+
+def test_a_secao_vencida_avisa_o_chat_de_operacoes(tmp_path, monkeypatch):
+    """A coleta parou e ninguém percebeu é a classe de defeito que este projeto
+    persegue desde a 5J: as peças voltariam ao preço de catálogo em silêncio."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    from afiliado.watchlist import CheckoutPrice
+    velha = date.today() - timedelta(days=30)
+    wl = Watchlist(generated_at=date.today(), valid_days=14,
+                   checkout_prices={"123456": CheckoutPrice(52348, velha)},
+                   section_dates={"checkout_prices": velha})
+    summary = pipeline.run(_cfg_cubo(), [FakeSource([make_offer()])], [FakeChannel()],
+                           db, validator=no_network_validator, watchlist=wl)
+    assert any("preco_checkout" in a and "NENHUM" in a for a in summary.warnings)
+    db.close()
+
+
+def test_a_secao_vazia_avisa_que_a_coleta_nunca_rodou(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    wl = Watchlist(generated_at=date.today(), valid_days=14)
+    summary = pipeline.run(_cfg_cubo(), [FakeSource([make_offer()])], [FakeChannel()],
+                           db, validator=no_network_validator, watchlist=wl)
+    assert any("nunca rodou" in a for a in summary.warnings)
+    db.close()

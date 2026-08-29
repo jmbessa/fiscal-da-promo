@@ -5,12 +5,13 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 import httpx
 
 from afiliado import (categorias, config, creative, flagrante, llm, pipeline, preco_real,
-                      pricing, selection)
+                      pricing, selection, shopee_checkout)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import GRAPH_HOSTS, graph_error
 from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
@@ -759,6 +760,8 @@ def doctor(cfg: dict) -> int:
     if not _doctor_preco_real(cfg):
         ok = False
 
+    _doctor_preco_checkout(cfg, _watchlist(cfg))
+
     # Por último de propósito: é o item que responde "quem me chama?", e ele
     # fala do MUNDO (o agendador), não das credenciais.
     if not _doctor_agendador():
@@ -801,6 +804,47 @@ def _doctor_preco_real(cfg: dict) -> bool:
           f"(channel={opcoes['browser_channel'] or 'chromium empacotado'}, "
           f"teto={opcoes['timeout_s']:.0f}s, desarma em {opcoes['max_falhas']} "
           "falhas seguidas)")
+    return True
+
+
+def _doctor_preco_checkout(cfg: dict, watchlist) -> bool:
+    """Fase 5R: o preço de checkout que vem do cubo, conferido SEM rede.
+
+    Desligado ele cala, como o item da 5P. Ligado, ele responde a única
+    pergunta que só se descobre tarde demais: **quantos preços ainda estão
+    dentro do teto de idade hoje**. A seção envelhece sozinha — cada preço tem
+    a data da RASPAGEM, não a do arquivo — e uma coleta que parou faria as
+    peças voltarem ao preço de catálogo sem nada dizer.
+
+    **Ele NUNCA pinta o doctor de vermelho**, e devolve sempre True. É o mesmo
+    critério do data feed da 5L: seção vazia ou vencida não quebra nada — o
+    post publica o preço da API, exatamente como publicava antes desta fase —,
+    e um ❌ num sistema que está entregando é a maneira mais rápida de ensinar
+    o dono a ignorar o ❌. Quem cobra a coleta é o aviso diário do run, que vai
+    ao chat de operações.
+    """
+    opcoes = shopee_checkout.config_de(cfg)
+    if not opcoes["enabled"]:
+        return True
+    regua = (f"teto {opcoes['gap_max']:.0%} · piso {opcoes['gap_min']:.0%} · "
+             f"idade máx. {opcoes['idade_max_dias']} dia(s)")
+    if watchlist is None:
+        print("⚠️ preco_checkout: ligado, mas não há watchlist legível — o preço de "
+              "checkout mora em `checkout_prices` dela; os posts publicam o preço "
+              "da API (ver docs/runbooks/shopee-preco.md)")
+        return True
+    entradas = watchlist.checkout_prices
+    if not entradas:
+        print("⚠️ preco_checkout: ligado e a seção `checkout_prices` está vazia — "
+              "rode /shopee-checkout-refresh (os posts publicam o preço da API)")
+        return True
+    dentro = len(shopee_checkout.frescos(entradas, date.today(),
+                                         opcoes["idade_max_dias"]))
+    marca = "✅" if dentro else "⚠️"
+    print(f"{marca} preco_checkout: ligado · {dentro} de {len(entradas)} preços "
+          f"dentro do teto de idade · {regua} · seção de "
+          f"{watchlist.section_date(shopee_checkout.SECAO).isoformat()}"
+          + ("" if dentro else " — rode /shopee-checkout-refresh"))
     return True
 
 

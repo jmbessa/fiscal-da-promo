@@ -1992,3 +1992,53 @@ def test_preco_real_a_mao_nao_grava_o_desarme(monkeypatch, tmp_path):
     db = StateDB(tmp_path / "s.db")
     assert db.day_flag(preco_real.CHAVE_DESARMADO) == ""
     db.close()
+
+
+# --- Fase 5R: o item do preço de checkout que vem do CUBO ---------------------
+
+def test_o_doctor_cala_sobre_o_preco_de_checkout_desligado(capsys):
+    assert cli._doctor_preco_checkout({}, None) is True
+    assert "preco_checkout" not in capsys.readouterr().out
+
+
+def test_o_doctor_avisa_sem_watchlist_mas_NAO_fica_vermelho(capsys):
+    """Mesmo critério do data feed da 5L: seção ausente não quebra nada — o post
+    publica o preço da API, como antes desta fase —, e um ❌ num sistema que
+    está entregando é como se ensina o dono a ignorar o ❌."""
+    assert cli._doctor_preco_checkout({"preco_checkout": {"enabled": True}}, None) is True
+    saida = capsys.readouterr().out
+    assert "⚠️ preco_checkout" in saida and "watchlist" in saida
+
+
+def test_o_doctor_avisa_secao_vazia_ou_vencida(capsys):
+    from datetime import date, timedelta
+
+    from afiliado.watchlist import CheckoutPrice, Watchlist
+    cfg = {"preco_checkout": {"enabled": True}}
+    hoje = date.today()
+    assert cli._doctor_preco_checkout(cfg, Watchlist(generated_at=hoje,
+                                                     valid_days=14)) is True
+    assert "/shopee-checkout-refresh" in capsys.readouterr().out
+
+    velha = hoje - timedelta(days=30)
+    vencida = Watchlist(generated_at=hoje, valid_days=14,
+                        checkout_prices={"1": CheckoutPrice(100, velha)},
+                        section_dates={"checkout_prices": velha})
+    assert cli._doctor_preco_checkout(cfg, vencida) is True
+    saida = capsys.readouterr().out
+    assert "⚠️" in saida and "0 de 1" in saida
+
+
+def test_o_doctor_conta_quantos_precos_ainda_valem(capsys):
+    from datetime import date, timedelta
+
+    from afiliado.watchlist import CheckoutPrice, Watchlist
+    hoje = date.today()
+    wl = Watchlist(generated_at=hoje, valid_days=14,
+                   checkout_prices={"fresco": CheckoutPrice(100, hoje),
+                                    "velho": CheckoutPrice(100, hoje - timedelta(days=9))},
+                   section_dates={"checkout_prices": hoje})
+    assert cli._doctor_preco_checkout({"preco_checkout": {"enabled": True}}, wl) is True
+    saida = capsys.readouterr().out
+    assert "✅ preco_checkout" in saida and "1 de 2" in saida
+    assert "15%" in saida and "3 dia" in saida

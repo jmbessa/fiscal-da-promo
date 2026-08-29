@@ -5,7 +5,8 @@ from functools import partial
 
 import httpx
 
-from afiliado import copywriter, llm, message, pricing, selection, state, validate
+from afiliado import (copywriter, llm, message, pricing, selection, shopee_checkout,
+                      state, validate)
 from afiliado.channels.base import Channel
 from afiliado.errors import SourceError
 from afiliado.models import Post
@@ -446,6 +447,16 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         warn(f"⚠️ Watchlist vencida há {watchlist.days_old()} dias — rode /watchlist-refresh")
         watchlist = watchlist.facts_only()
 
+    # Fase 5R — o preço de CHECKOUT vindo do cubo `ShbMartItem` do JoomPulse.
+    # Montado aqui e não na CLI porque ele precisa das duas coisas que só
+    # existem neste ponto: a watchlist já resolvida (é dela que sai a seção
+    # `checkout_prices`) e o dia LOCAL do run, que é contra quem a idade do
+    # dado é medida. None quando o interruptor está desligado ou não há
+    # watchlist — e None é o pipeline de hoje, inteiro.
+    preco_do_cubo = shopee_checkout.monta(cfg, watchlist, db.local_today())
+    for aviso in drena_avisos(preco_do_cubo) if preco_do_cubo else []:
+        warn(aviso)
+
     frescas: dict[str, list] = {}
     erros_de_fonte: list[str] = []
     for src in sources:
@@ -635,6 +646,13 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                 offer, _leitura = preco_real.aplica(offer)
                 for aviso in drena_avisos(preco_real):
                     warn(aviso)
+            # Fase 5R: o cubo PREENCHE o que a leitura não carimbou. A ordem é
+            # a precedência: a leitura do navegador é viva e ancorada na frase
+            # da própria página; o cubo é uma foto de até três dias atrás.
+            # `aplica` tem o mesmo contrato — nunca levanta, nunca inventa, e
+            # sem entrada sã a oferta sai idêntica à que entrou.
+            if preco_do_cubo is not None:
+                offer, _motivo = preco_do_cubo.aplica(offer)
             # Uma decisão, tomada uma vez: texto, copy, arte e legendas
             # recebem este veredito e não recalculam nada (C9/C10).
             veredito = pricing.verdict(offer, minimo_pct)

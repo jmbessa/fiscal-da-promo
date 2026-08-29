@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
 
 # O teto de linhas por consulta do Cube.js (medido em 2026-08-28 e reconfirmado
@@ -33,7 +34,7 @@ from pathlib import Path
 # a resposta CRUA não traz mesmo: quem salva é que anexa a consulta.
 LIMITE_PADRAO = 100
 
-__all__ = ["LIMITE_PADRAO", "linhas", "campo", "dia", "carrega"]
+__all__ = ["LIMITE_PADRAO", "linhas", "campo", "dia", "centavos", "carrega"]
 
 
 def linhas(bruto) -> tuple[list[dict], int]:
@@ -91,6 +92,23 @@ def dia(valor) -> date | None:
         return date.fromisoformat(valor[:10])
     except ValueError:
         return None
+
+
+def centavos(valor) -> int | None:
+    """BRL -> centavos com `Decimal` e ROUND_FLOOR; None para o que não é preço.
+
+    Sempre para BAIXO, como no resto do projeto: referência, piso ou preço de
+    checkout arredondado para cima vira desconto (ou selo) inventado. Zero e
+    negativo não são preço — devolvem None, e a linha é descartada em vez de
+    virar uma mínima de R$ 0,00.
+    """
+    try:
+        bruto = Decimal(str(valor)) * 100
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if bruto <= 0:
+        return None
+    return int(bruto.to_integral_value(rounding=ROUND_FLOOR))
 
 
 def carrega(caminhos: list[str]) -> list:

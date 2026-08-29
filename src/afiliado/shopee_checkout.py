@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from afiliado import joompulse, shopee_regua
+from afiliado import joompulse
 from afiliado.models import Offer
 from afiliado.preco_real import COM_CUPOM
 from afiliado.pricing import setting
@@ -53,7 +53,7 @@ from afiliado.watchlist import CheckoutPrice, Watchlist, load_watchlist
 
 CUBO = "ShbMartItem"
 SECAO = "checkout_prices"
-WATCHLIST_PADRAO = shopee_regua.WATCHLIST_PADRAO
+WATCHLIST_PADRAO = "data/watchlist.json"
 
 # A condição que o rótulo publica. É a MESMA constante da fase 5P — o rótulo
 # não é reinventado aqui, só a origem do número é outra. E é "com cupom", não
@@ -117,14 +117,17 @@ LONGE_DEMAIS = ("o preço do cubo está {gap:.1%} abaixo do vivo, além do teto 
 JA_LIDO = ("a leitura do navegador (fase 5P) já carimbou o preço de checkout — "
            "ela é viva e ancorada na frase da página, e vence a foto do cubo")
 
-AVISO_SECAO_VENCIDA = (
-    "⚠️ preco_checkout: a seção `checkout_prices` da watchlist é de {data} e o "
-    "teto de idade é de {teto} dia(s) — nenhum preço de checkout pode ser "
-    "publicado hoje. Rode /shopee-checkout-refresh (os posts seguem com o preço "
-    "da API, como sempre)")
+AVISO_SEM_PRECO = (
+    "⚠️ preco_checkout: ligado, mas NENHUM dos {total} preço(s) de "
+    "`checkout_prices` está dentro do teto de {teto} dia(s) — os posts de hoje "
+    "publicam o preço da API, como sempre. Rode /shopee-checkout-refresh")
+AVISO_SECAO_VAZIA = (
+    "⚠️ preco_checkout: ligado e a seção `checkout_prices` da watchlist está "
+    "vazia — a coleta nunca rodou. Os posts publicam o preço da API, como "
+    "sempre. Rode /shopee-checkout-refresh")
 
 __all__ = ["PrecoDeCheckout", "precos_do_bruto", "pagina_cheia", "mesclar",
-           "avalia", "aplica", "monta", "config_de", "alvos", "main",
+           "avalia", "aplica", "monta", "config_de", "alvos", "frescos", "main",
            "CUBO", "SECAO", "CONDICAO", "GAP_MAX", "GAP_MIN", "IDADE_MAX_DIAS",
            "FORA_DA_SHOPEE", "SEM_ENTRADA", "SEM_IDADE", "VELHO", "NAO_E_MENOR",
            "PERTO_DEMAIS", "LONGE_DEMAIS", "JA_LIDO"]
@@ -167,7 +170,7 @@ def precos_do_bruto(brutos: list, hoje: date
             item_id = str(_campo(linha, "itemId") or "").strip()
             if not item_id:
                 continue
-            preco = shopee_regua.centavos(_campo(linha, "price"))
+            preco = joompulse.centavos(_campo(linha, "price"))
             if preco is None:
                 recusados[item_id] = "o cubo não devolveu um preço utilizável"
                 continue
@@ -277,7 +280,7 @@ class PrecoDoCubo:
         self.recusas: dict[str, int] = {}
         self.idade_maxima = 0
         self.warnings: list[str] = []
-        self._avisa_secao_vencida()
+        self._avisa_se_nao_ha_o_que_publicar()
 
     def aplica(self, offer: Offer) -> tuple[Offer, str]:
         entrada = self.watchlist.checkout_price(offer.item_id)
@@ -290,17 +293,24 @@ class PrecoDoCubo:
         return dataclasses.replace(offer, price_checkout_cents=cents,
                                    price_checkout_label=CONDICAO), ""
 
-    def _avisa_secao_vencida(self) -> None:
-        """A coleta parou? O run diz. Sem isto, a seção envelheceria em silêncio
-        e as peças voltariam ao preço de catálogo sem ninguém saber por quê —
+    def _avisa_se_nao_ha_o_que_publicar(self) -> None:
+        """A coleta nunca rodou, ou parou? O run diz — uma vez por dia, pelo
+        mesmo `warn_once` dos canais. Sem isto a seção envelheceria em silêncio
+        e as peças voltariam ao preço de catálogo sem ninguém saber por quê,
         que é a classe de defeito que este projeto persegue desde a 5J."""
-        if not self.watchlist.checkout_prices:
-            return
-        data = self.watchlist.section_date(SECAO)
+        entradas = self.watchlist.checkout_prices
         teto = self.limiares.get("idade_max_dias", IDADE_MAX_DIAS)
-        if (self.hoje - data).days > teto:
-            self.warnings.append(AVISO_SECAO_VENCIDA.format(data=data.isoformat(),
-                                                            teto=teto))
+        if not entradas:
+            self.warnings.append(AVISO_SECAO_VAZIA)
+        elif not frescos(entradas, self.hoje, teto):
+            self.warnings.append(AVISO_SEM_PRECO.format(total=len(entradas), teto=teto))
+
+
+def frescos(entradas: dict, hoje: date, teto: int) -> set:
+    """Os itens cuja raspagem ainda cabe no teto de idade. É a conta que o
+    `doctor`, o aviso do run e a escolha dos alvos fazem — uma só."""
+    return {item_id for item_id, e in entradas.items()
+            if e.measured_at is not None and (hoje - e.measured_at).days <= teto}
 
 
 def config_de(cfg: dict) -> dict:
@@ -341,13 +351,14 @@ def alvos(db: StateDB, cfg: dict, watchlist: Watchlist | None, hoje: date,
     Não toca a rede: o estoque de candidatas já está no `state.db`. É a mesma
     fila do `/shopee-regua-refresh`, com outro filtro de "já tem".
     """
+    from afiliado import shopee_regua           # noqa: PLC0415 - o pipeline importa
+                                                #  este módulo; a fila importa o
+                                                #  pipeline. O ciclo só não existe
+                                                #  porque este import é preguiçoso.
     teto = config_de(cfg)["idade_max_dias"]
-    fresco = set()
-    if watchlist is not None:
-        fresco = {item_id for item_id, e in watchlist.checkout_prices.items()
-                  if e.measured_at is not None and (hoje - e.measured_at).days <= teto}
+    servidos = frescos(watchlist.checkout_prices, hoje, teto) if watchlist else set()
     return [o.item_id for o in shopee_regua.fila(db, cfg, watchlist, fonte)
-            if o.item_id not in fresco][:n]
+            if o.item_id not in servidos][:n]
 
 
 # -- a CLI ----------------------------------------------------------------------
@@ -374,6 +385,7 @@ def _coletar(args, parser: argparse.ArgumentParser) -> int:
     if args.dry_run:
         print(f"(dry-run) {len(precos)} preço(s) NÃO gravados em {watchlist}")
         return 0
+    from afiliado import shopee_regua           # noqa: PLC0415 - ver `alvos`
     atual = json.loads(watchlist.read_text(encoding="utf-8"))
     shopee_regua.escrever(watchlist, mesclar(atual, precos, hoje))
     print(f"{len(precos)} preço(s) de checkout gravados em {watchlist} "

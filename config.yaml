@@ -341,6 +341,40 @@ preco_real:
   # vezes por dia contra um bloqueio é o que custa a conta.
   max_falhas: 3
 
+# Fase 5R — O PREÇO QUE O SEGUIDOR VÊ, vindo do CUBO. A OITAVA rota, e a que
+# funciona: `ShbMartItem.price` do JoomPulse É o preço exibido, com cupom.
+#
+# Sem navegador, sem sessão, sem risco para a conta do dono — e 100 itens por
+# consulta. O dado NÃO vem daqui: ele mora em `checkout_prices` na
+# `data/watchlist.json` e quem o enche é o skill /shopee-checkout-refresh.
+# Ligado com a seção vazia, nada muda: toda oferta cai na recusa "o cubo não
+# tem preço de checkout para este anúncio" e publica o preço da API, como
+# sempre.
+#
+# OS TRÊS LIMIARES, com os números que os escolheram (medidos em 2026-08-29
+# sobre 100 itens do topo da fila real, o preço do cubo contra o do estoque):
+# 88 tinham o cubo MENOR; dos 88, 70 ficam em até 15% e se empilham nos degraus
+# de cupom da Shopee (14 em ~5%, 18 em ~10%, 6 em exatamente 14,50%), com um
+# cotovelo claro entre 14,57% e 15,34%; acima dele os valores são espalhados e
+# a cauda vai a 55,8% — R$ 199,90 virando R$ 88,27 não é cupom, é o preço tendo
+# mudado desde a raspagem. A medição do dono, em 10 itens conferidos contra a
+# tela, deu a mesma faixa (5% a 14,5%).
+preco_checkout:
+  enabled: true
+  # O quanto o preço do cubo pode ficar ABAIXO do preço vivo do `refresh_price`.
+  # Acima do teto não é cupom; abaixo do piso é ruído de arredondamento, e um
+  # "com cupom" colado a uma diferença de centavos afirma um cupom que
+  # provavelmente não existe.
+  gap_max_pct: 15
+  gap_min_pct: 1
+  # A idade máxima da RASPAGEM (`itemLastSeenDate`), não do arquivo. O cubo é
+  # reconstruído todo dia, mas com a última raspagem de CADA item: na amostra a
+  # mediana foi de 4 dias e o máximo de 30, e só 27 dos 100 tinham sido vistos
+  # nas últimas 24 h. Preço de ontem apresentado como o de hoje é o erro do
+  # `buy_box_item_id` com outra roupa — por isso a idade é guarda, e a seção
+  # vencida vira aviso ao chat de operações.
+  idade_max_dias: 3
+
 validation:
   # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio
   # link de afiliado (igual a um destes domínios ou subdomínio dele) + ausência

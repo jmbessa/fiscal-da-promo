@@ -527,6 +527,29 @@ def test_o_expoente_inverte_de_verdade_um_par_mais_proximo():
     assert [o.item_id for o in selection.order_by_ev([caro, popular], CFG)] == ["pop", "caro"]
 
 
+def test_o_expoente_zero_cega_o_ev_para_a_comissao():
+    """Fase 5S: por que o `commission_exp` NÃO é a saída para o preço alto.
+
+    A medição sobre o estoque real diz que entre 0,3 e 1,0 o expoente quase não
+    move o preço do que sobe ao topo (mediana dos 60 primeiros a teto 150:
+    R$ 101 a R$ 114). O único valor que muda a paisagem é 0,0 — e ele muda
+    porque `comissão ** 0` é 1 para QUALQUER comissão positiva: o EV para de
+    ver comissão e vira popularidade × desconto puros.
+
+    Este teste trava exatamente isso, para ninguém "resolver o preço" zerando o
+    expoente sem saber o que está desligando: com 0,0 uma comissão de R$ 1,00 e
+    outra de R$ 100,00 valem o MESMO score, e `min_ev_brl` (que é lido nessa
+    escala) deixa de conseguir separá-las."""
+    cfg0 = {**CFG, "selection": {**CFG["selection"],
+                                 "ev_weights": {"popularity": 0.3, "discount": 0.5,
+                                                "commission_exp": 0.0}}}
+    mixuruca = make_offer(item_id="a", commission_brl=1.0, sales=100)
+    gorda = make_offer(item_id="b", commission_brl=100.0, sales=100)
+    assert selection.ev_score(mixuruca, cfg0) == selection.ev_score(gorda, cfg0)
+    # com o expoente de produção elas continuam distinguíveis
+    assert selection.ev_score(gorda, CFG) > selection.ev_score(mixuruca, CFG) * 20
+
+
 def test_ev_com_comissao_zero_nao_explode():
     assert selection.ev_score(make_offer(commission_brl=0.0, commission_pct=0.0), CFG) == 0.0
 

@@ -414,8 +414,10 @@ figurinha de link). As três alternativas caíram na imagem:
   dono pediu.
 
 Alinhado pela linha de base do preço, o rótulo custa **zero altura** e cabe no
-guarda horizontal que a pill já tinha. Pior caso publicável (`price_max_brl` =
-1000, ou seja R$ 999,99, com referência riscada de R$ 1.999,99): pill de 906 px
+guarda horizontal que a pill já tinha. Pior caso de LARGURA (preço de quatro
+dígitos, R$ 999,99, com referência riscada de R$ 1.999,99 — folga deliberada: a
+fase 5S baixou `price_max_brl` para 150, e a arte não pode voltar a quebrar se
+alguém subir o teto de novo): pill de 906 px
 no story — 30 px dentro da largura útil, 15 px de margem sobrando; 803 px no
 feed. Onde não couber, quem cede é a referência riscada, nunca o rótulo.
 

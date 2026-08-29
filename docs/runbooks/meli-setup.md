@@ -1,4 +1,4 @@
-# Runbook — Setup Mercado Livre (fase 3B/5B — pool curado com régua + preço do buy box + links em lote)
+# Runbook — Setup Mercado Livre (fase 5M — preço e link do MESMO anúncio)
 
 Checklist para habilitar a fonte de ofertas do Mercado Livre (`sources.meli`
 em `config.yaml`, desligada por padrão).
@@ -15,25 +15,29 @@ A descoberta de itens **não** usa mais a busca pública do ML — ela devolve
 
 ```
 pool curado (data/meli_offers.json) — gerado por /meli-pool-refresh (JoomPulse)
-        │  fetch_offers: leitura local, sem rede; VALIDA cada entrada
-        │  (régua completa: mediana, p25, janela, mínima, buy box) e conta
-        │  no aviso, por motivo, o que pulou
+        │  fetch_offers: leitura local, sem rede; VALIDA cada entrada e conta
+        │  no aviso, por motivo, o que pulou. A régua curada é validada e
+        │  DESCARTADA (fase 5M): a oferta nasce em modo B.
         ▼
-   seleção/ranking (igual às outras fontes)
-        │
+   seleção/ranking (igual às outras fontes; o preço da fila é a mediana do
+        │  pool, uma ESTIMATIVA — o preço de verdade só existe no refresh)
         ▼
-   refresh_price: GET /products/{id}/items — preço vivo do anúncio que
-        │         vence o BUY BOX (buy_box_item_id do pool), imediatamente
-        │         antes de publicar. Anúncio ausente da lista → oferta
-        │         descartada ("sem buy box"); NUNCA o menor preço entre os
-        │         vendedores. O preço vivo entra no price_log (o histórico
-        │         próprio do ML é só de preços vivos).
+   refresh_price: GET /products/{id}/items — preço vivo do anúncio LINKADO
+        │         mais barato que passa no piso de qualidade, imediatamente
+        │         antes de publicar. Nenhum anúncio linkado vivo → oferta
+        │         descartada; NUNCA o preço de um anúncio sem link.
+        │         O preço vivo entra no price_log.
         ▼
    pricing.verdict: regra do quartil (modo A/B) + selo estrito, uma vez;
         │           texto, arte, legendas e copy recebem o veredito pronto
         ▼
-   resolve_affiliate_link: lê data/meli_links.json (pool de links)
+   resolve_affiliate_link: o link DAQUELE anúncio, de data/meli_links.json
 ```
+
+**A garantia da fase 5M:** o preço publicado e o link do post são do mesmo
+objeto — o mesmo anúncio, o mesmo vendedor —, então o número do story e o
+número que o seguidor vê ao chegar são o mesmo, por construção, e não por
+estimativa. Ver a seção "2026-08-28" no fim deste arquivo.
 
 ### Endpoints confirmados contra a API real
 
@@ -47,13 +51,22 @@ pool curado (data/meli_offers.json) — gerado por /meli-pool-refresh (JoomPulse
     com e sem `?attributes=buy_box_winner`, 3 produtos do pool) — este app
     não recebe o vencedor por aqui.
   - `GET /products/{productId}/items` — usado por `refresh_price`; traz o
-    preço por vendedor (até 100 por página, `paging.total`). O pipeline lê
-    SÓ o item cujo `item_id` é o `buy_box_item_id` do pool (o `buyBoxId` do
-    JoomPulse — confirmado presente na lista real: MLB7125449388 a
-    R$ 104,90 entre 37 vendedores de MLB66637233 cujo menor preço era
-    R$ 58,90). `original_price` quase sempre é `null` — não dá para
-    calcular desconto por aqui. **A ordem da lista NÃO é o buy box** (ver
-    "Buy box ao vivo" abaixo): `results[0]` não serve de vencedor.
+    preço por vendedor (até 100 por página, `paging.total`). Desde a fase 5M
+    o pipeline lê os anúncios para os quais TEMOS LINK e publica o mais
+    barato entre eles que passa no piso de qualidade. `original_price` é
+    nulo em 1502 dos 1717 anúncios medidos — não dá para calcular desconto
+    por aqui. **A ordem da lista NÃO é o buy box**: `results[0]` não serve
+    de vencedor.
+
+    Campos por anúncio, medidos em 2026-08-28 sobre os 53 produtos do pool
+    (1717 anúncios, listas inteiras): `condition` ("new" em 1717/1717),
+    `official_store_id` (preenchido em 220), `shipping` (`free_shipping` em
+    843; `logistic_type` = xd_drop_off 679, drop_off 594, cross_docking 283,
+    fulfillment 133; `cost` é uma cotação sem CEP — 44,62 na maioria),
+    `listing_type_id` (gold_special 1122, gold_pro 595), `tags`, `tier`
+    (VAZIO em todos), `sale_terms`, `seller_id`, `seller_address`.
+    **NÃO existe campo de quantidade/estoque** — nenhum dos 1717 anúncios
+    traz `available_quantity` ou equivalente.
 
 ### Buy box ao vivo (2026-08-26, rodada de correção da 5B)
 
@@ -69,19 +82,15 @@ pool (`buyBoxId` do JoomPulse lido no MESMO dia):
 | MLB26796581 Creatina Dark Lab 500g | MLB4812143184 — **R$ 49,90** | MLB4812143184 @ 49,90 ✅ | MLB4812143184 @ 49,90 ✅ (único vendedor) |
 | MLB68104527 Kit Body Splash | MLB4645102377 — **R$ 109,90** (R$ 93,41 no Pix; de 140) | MLB4991164827 @ 89,00 ❌ (a página mostra `results[1]`) | MLB4683756059 — **ausente** da lista (9 vendedores) ❌ |
 
-Conclusões que o código segue:
+Conclusões (a decisão que elas geraram foi REVISTA na fase 5M — ver a seção
+final deste arquivo; o buy box saiu do desenho):
 
-- `results[0]` bateu em 2 de 3 — a lista não é "ordenada por buy box";
-  `refresh_price` continua lendo o anúncio do pool, nunca `results[0]`.
+- `results[0]` bateu em 2 de 3 — a lista não é "ordenada por buy box", e
+  nunca serviu de vencedor.
 - O anúncio do pool pode deixar de vencer (linha 1) ou sumir (linha 3) no
-  mesmo dia em que o JoomPulse o reportou. O que dá para garantir é a IDADE
-  da verificação: o leitor exige `buy_box_checked_at` (na falta, vale
-  `generated_at`) com **no máximo 7 dias**; vencido, a entrada é ignorada com
-  motivo "buy box não verificado há N dias". O skill `/meli-pool-refresh`
-  tem um "Passo semanal — checar buy box" (4 consultas) que renova a data.
-- O buy box que a página mostra pode depender de CEP/sessão; o pipeline
-  publica o preço do anúncio que nomeia, e o descarte "sem buy box" (anúncio
-  fora da lista) continua agrupado no resumo de ops.
+  mesmo dia em que o JoomPulse o reportou. A resposta da 5B foi uma validade
+  de 7 dias sobre `buy_box_checked_at`; a da 5M é não depender do buy box.
+- O buy box que a página mostra pode depender de CEP/sessão.
 - **Bloqueados (403, não usar)**: `/sites/MLB/search`, `/items/{id}`.
 - **Geração de link de afiliado**: não há API pública — é o endpoint interno
   do painel (`/affiliate-program/api/v2/affiliates/createLink`), autenticado
@@ -159,8 +168,10 @@ do anúncio que vence o buy box. Formato:
    "sales": 13337, "rating": 4.8}]}
 ```
 
-- `buy_box_checked_at` — data em que o `buyBoxId` foi lido. Vale **7 dias**
-  (ver "Buy box ao vivo"); ausente, vale `generated_at`.
+- `buy_box_item_id` / `buy_box_checked_at` — **não são mais lidos** (fase
+  5M). Ficam no arquivo como procedência da régua curada e como chave da série
+  de preço no JoomPulse; nada no pipeline depende deles, e a entrada não
+  expira mais por causa da data.
 - `price_ref_cents` — **mediana** das médias semanais do anúncio do buy box
   (nunca a foto de um dia: no pool antigo a "referência" era o preço de UM
   vendedor num dia, e 9 de 38 itens tinham ref ≥ 2,5× a mínima — C7). Vira
@@ -180,7 +191,15 @@ do anúncio que vence o buy box. Formato:
   é ≥ a menor diária e o selo sairia para um preço acima de um que existiu.
   E, no run, o piso curado ainda cede ao nosso próprio price_log quando ele
   viu mais barato (a observação própria só baixa o piso).
-- `buy_box_item_id` — o anúncio cujo preço o pipeline publica.
+**Atenção (fase 5M): os cinco campos de régua acima são validados na carga e
+depois DESCARTADOS** — `Offer.price_ref_cents` e companhia nascem zerados. A
+régua curada é o histórico do anúncio que vencia o buy box, e o preço
+publicado passou a ser o do anúncio linkado mais barato: são vendedores
+diferentes, e comparar um com o outro é o que produziria um selo mentiroso.
+Os números continuam no arquivo (são medianas reais de 13 semanas) e a
+validação continua pegando curadoria quebrada; quem sustenta régua para o ML
+agora é o nosso `price_log`.
+
 - `sales` é o contador **VITALÍCIO** do próprio Mercado Livre (`catalogSales`) —
   o "+250 mil vendidos" do anúncio, e por isso `Offer.sales_e_faixa` é verdadeiro
   e `Offer.sales_window_days` é 0. NÃO é `catalogOrderCount1m` (a estimativa
@@ -200,10 +219,8 @@ fora de `selection.price_min_brl..price_max_brl` (`fora da faixa de preço` —
 o item a R$ 19,90 do pool antigo morria em silêncio em todo run);
 `price_p25_cents > price_ref_cents` (`p25 acima da referência`);
 `price_historic_min_cents > price_p25_cents` (`mínima acima do p25` — sinal
-de que o vencedor do buy box mudou e a mínima é de outro anúncio); sem
-`buy_box_item_id` (`sem buy box`); `buy_box_checked_at` com mais de 7 dias
-(`buy box não verificado há N dias`) ou inválida/no futuro (`data do buy box
-inválida`); `product_id` repetido. O aviso sai assim,
+de que o vencedor do buy box mudou e a mínima é de outro anúncio);
+`product_id` repetido. O aviso sai assim,
 no `doctor` e no resumo de ops: `3 entrada(s) do pool ignorada(s) (2 fora da
 faixa de preço, 1 sem p25)`. Um pool no formato antigo é rejeitado inteiro
 (`38 entrada(s) do pool ignorada(s) (38 sem p25)`) — não é zero silencioso.
@@ -275,32 +292,55 @@ resultado bruto salvo em `data/joompulse_raw/<skill>/<data>/` ANTES da próxima
 consulta, cursor em `data/joompulse_raw/<skill>/cursor.json`, e retomada sem
 repetir consulta. Registre aqui o próximo "limit exceeded" com data e número.
 
-## 4. Pool de links de afiliado (`data/meli_links.json`)
+## 4. Pool de links de afiliado (`data/meli_links.json`) — um por ANÚNCIO
 
 Não existe API oficial de geração de link de afiliado no Mercado Livre —
 diferente da Shopee, cuja mutação GraphQL gera o link automaticamente. O
 endpoint real é interno do painel de afiliados (confirmado por teste manual:
-aceita lote, idempotente por produto+tag, devolve o mesmo link do painel) e
+aceita lote, idempotente por URL+tag, devolve o mesmo link do painel) e
 autentica por **sessão via cookies do navegador**, não por OAuth.
+
+Desde a fase 5M o pool mapeia **anúncio**, não produto:
+
+```json
+{"version": 2, "generated_at": "2026-08-28", "tag": "ofiscaldapromo",
+ "products": {"MLB18725310": {
+    "items": {"MLB7381404798": "https://meli.la/aaaa"},
+    "product_link": "https://meli.la/1ULuAEY"}}}
+```
+
+- `items` é o que publica. `product_link` guarda os 55 links por produto da
+  fase 5C (etiqueta `jmbessa`): continuam válidos, mas **não publicam nada** —
+  eles abrem o catálogo, onde quem escolhe o vendedor é o Mercado Livre.
+- Leia/escreva sempre por `afiliado.meli_links.ler_pool` / `escrever_pool`; o
+  formato antigo (`{product_id: link}`) é migrado na leitura.
 
 - [ ] `meli.tag` em `config.yaml` precisa ser uma etiqueta **já cadastrada**
       no painel de afiliados (linkbuilder) — tag inexistente faz o item
-      falhar (`total_error`) sem quebrar o lote inteiro.
+      falhar (`total_error`) sem quebrar o lote inteiro. Hoje:
+      `ofiscaldapromo`.
 - [ ] Rode o skill **`/meli-links-refresh`** (`.claude/skills/meli-links-refresh/`)
-      sempre que o pool curado (`data/meli_offers.json`) trouxer produtos
-      novos, ou quando o `doctor`/o resumo do run avisar pool vazio/vencido.
-      Ele lê os `product_id` do pool que ainda não têm link, pede a sessão
-      do painel (cookies + `x-csrf-token`, via ferramentas do Chrome ou
-      colados do DevTools) e chama `gerar_links` (`src/afiliado/meli_links.py`)
-      em lotes, mesclando o resultado em `data/meli_links.json` sem nunca
-      sobrescrever um link já existente.
-- [ ] **Rotina mensal:** a sessão do painel expira; rode `/meli-links-refresh`
-      pelo menos uma vez por mês (ou sempre que o skill reportar sessão
-      expirada) para recolher cookies frescos e cobrir os produtos que
-      entraram no pool desde a última rodada.
-- [ ] Item sem entrada no pool de links é descartado silenciosamente pelo
-      pipeline (comportamento já existente: promove a próxima oferta da
-      fila) — não é um erro que derruba o run.
+      sempre que o pool curado (`data/meli_offers.json`) mudar, quando o
+      `doctor`/o resumo do run avisar cobertura baixa, e uma vez por mês. Ele
+      lê `/products/{id}/items` de cada produto, escolhe os **3 anúncios mais
+      baratos que passam no piso de qualidade** (`anuncios_para_linkar` — a
+      mesma função que a publicação usa), pede a sessão do painel (cookies +
+      `x-csrf-token`) e chama `gerar_links` em lotes, mesclando o resultado
+      sem nunca sobrescrever um link existente.
+- [ ] **Por que 3 por produto:** medido em 2026-08-28 (53 produtos, 1717
+      anúncios) — 34 de 35 anúncios lidos em 26/08 ainda estavam na lista 2
+      dias depois (97,1%; ~90% em 7 dias, ~65% em 30). Com 3 links a chance de
+      os três sumirem numa semana é 0,09%, contra 10% com um só; e em 27 dos
+      52 produtos com anúncio elegível os 3 mais baratos JÁ SÃO a lista
+      elegível inteira. O 4º e o 5º custariam +40% de links (170 contra 121)
+      para cobrir 1 produto a mais.
+- [ ] **Rotina mensal:** a sessão do painel expira E os anúncios envelhecem
+      (~65% sobrevivem a 30 dias). Rode `/meli-links-refresh` pelo menos uma
+      vez por mês, e sempre depois de `/meli-pool-refresh`.
+- [ ] Produto sem nenhum anúncio linkado é descartado silenciosamente pelo
+      pipeline (promove a próxima oferta da fila) — não é um erro que derruba
+      o run. Em 2026-08-28 o painel recusou 11 dos 64 produtos do pool
+      (programa de afiliados indisponível para eles).
 - [ ] **O arquivo não vem com o repositório.** Em 2026-08-26 ele não existia
       em nenhum checkout e nunca tinha sido commitado, enquanto este runbook
       dizia "é commitado" — resultado: com `sources.meli: true` num clone
@@ -310,10 +350,11 @@ autentica por **sessão via cookies do navegador**, não por OAuth.
       de afiliado, não segredo), e sem o commit a VPS e o Actions continuam
       sem link nenhum. Só os **cookies da sessão** nunca são gravados em
       arquivo nem commitados (ver o skill).
-- [ ] O que o `doctor` mostra desde a fase 5C: `X de Y produto(s) do pool com
-      link`. Cobertura ZERO com a fonte ligada é ❌ (o ML não publicaria
+- [ ] O que o `doctor` mostra: `X de Y produto(s) do pool com anúncio
+      linkado`. Cobertura ZERO com a fonte ligada é ❌ (o ML não publicaria
       nada); cobertura parcial é ⚠️. E o run avisa uma vez por dia no chat de
-      operações quando menos da metade do pool tem link.
+      operações quando menos da metade do pool tem anúncio linkado. Produto
+      que só tem `product_link` conta como ZERO — ele não publica.
 
 ## 5. Configurar e ligar
 
@@ -387,3 +428,153 @@ workflow ganha um passo de escrita de volta no secret com um PAT:
       com `GH_TOKEN: ${{ secrets.GH_PAT }}` no `env:`.
 - [ ] Um PAT com escrita em secrets é uma chave que abre o repositório
       inteiro — só crie se o `client_credentials` realmente parar.
+
+---
+
+## 2026-08-28 — o `buy_box_item_id` NÃO é o vencedor do buy box
+
+O dono viu dois stories com preço muito acima do real e o Mercado Livre foi
+**desligado** (`sources.meli: false`). Isto é o que a investigação mediu.
+
+### Os dois casos, com `/products/{id}/items` paginado INTEIRO
+
+| produto | publicamos | nosso anúncio | vendedores | faixa real | mediana | a página mostra |
+|---|---|---|---|---|---|---|
+| MLB19603205 (creatina) | R$ 80,00 | existe, custa R$ 80,00 | 277 | R$ 35,90 – R$ 6.999 | R$ 64,90 | **R$ 39,90** |
+| MLB22983247 (colchão) | R$ 209,87 | existe, custa R$ 209,87 | 137 | R$ 109 – R$ 414,90 | R$ 175 | **R$ 113** |
+
+**`refresh_price` funcionou nos dois.** Ele leu o preço vivo do anúncio
+gravado, que é exatamente o que foi projetado para fazer. Quem está errado é a
+premissa: o `buy_box_item_id` não é o vencedor do buy box — é só *um* vendedor,
+e nos dois casos um caro.
+
+Uma primeira leitura minha disse que o anúncio da creatina tinha sumido da
+lista e que os R$ 80 eram a mediana do pool. **Estava errada**: a sonda só via
+os 100 primeiros de 277. Paginando, o anúncio está lá. Fica registrado porque a
+conclusão muda o conserto: não há bug de fallback para consertar.
+
+### Por que não dá para saber o vencedor
+
+- `GET /products/{id}` → `buy_box_winner` **sempre `null`** (medido em 3
+  produtos em 26/08 e de novo em 28/08).
+- `GET /products/{id}/items` → o campo **`tier` vem vazio** nos 89 anúncios
+  sondados; a ordem da lista não é o buy box (`results[0]` bateu com a página
+  em 2 de 3).
+- `buyBoxId` do JoomPulse → **envelhece**. Renovei 33 entradas na manhã de
+  28/08 e os dois stories errados saíram no mesmo dia.
+
+### O que a medição diz sobre as alternativas
+
+Erro contra o preço que a página mostra:
+
+| regra | creatina | colchão |
+|---|---|---|
+| anúncio do JoomPulse (hoje) | **+100%** | **+86%** |
+| mediana dos vendedores | +63% | +55% |
+| **o mais barato** | **−10%** | **−3,5%** |
+
+O mais barato é, de longe, o melhor estimador — e erra para BAIXO, que é o lado
+em que o seguidor não se sente enganado. Mas erra: o histórico da fase 3B
+registra um caso de "post dizia R$ 32 e o clique mostrava R$ 45".
+
+### Decisão do dono: caminho 2 — publicar o mais barato e LINKAR o anúncio
+
+As três opções eram: (1) publicar o mais barato e aceitar ~10% de erro para
+baixo; (2) publicar o mais barato e linkar o ANÚNCIO, não o catálogo; (3)
+manter desligado. Não havia opção "publicar o preço do vencedor" — esse número
+não é obtível.
+
+O dono escolheu a **2**, e é o que a fase 5M implementou. Ela resolve a
+discrepância em vez de reduzi-la: o preço e o link passam a ser do mesmo
+objeto.
+
+---
+
+## 2026-08-28 (fase 5M) — o que foi construído, e o que foi medido
+
+### O desenho
+
+1. `data/meli_links.json` passa a mapear **anúncio**
+   (`{version: 2, products: {produto: {items: {anúncio: link}, product_link}}}`).
+   Os 55 links por produto da fase 5C viraram `product_link`: guardados,
+   válidos, e inertes — eles abrem o catálogo.
+2. `/meli-links-refresh` cunha, para cada produto, os **3 anúncios mais
+   baratos que passam no piso de qualidade** (`anuncios_para_linkar`).
+3. `refresh_price` lê `/products/{id}/items`, considera **só os anúncios
+   linkados**, aplica o piso e publica o **mais barato** deles, gravando qual
+   é em `Offer.anuncio_id`. Nenhum sobreviveu → `SourceError`, oferta
+   descartada.
+4. `resolve_affiliate_link` devolve o link **daquele** anúncio.
+5. A oferta do ML nasce **sem régua** e publica em modo B (ver M4 abaixo).
+
+### As medições que sustentam os números (2026-08-28)
+
+Sonda real: os 53 produtos do pool, `/products/{id}/items` paginado inteiro —
+**1717 anúncios**. Mediana de 4 anúncios por produto; 11 produtos com apenas 1;
+6 com mais de 100; o maior tem 277.
+
+| pergunta | número |
+|---|---|
+| anúncio sobrevive quanto tempo? | 34/35 dos `buyBoxId` de 26/08 ainda na lista em 28/08 (2 dias, 97,1%) → ~90% em 7 dias, ~65% em 30 |
+| quanto custa cair para o 2º linkado? | +5,3% na mediana (p75 +13,1%) |
+| e para o 3º? | +16,8% na mediana |
+| quantos links com N=3? | 121 (3 lotes de 50 no painel); N=5 daria 170 |
+| N=3 cobre a lista inteira de quantos? | 27 dos 52 produtos com anúncio elegível |
+| P(os 3 linkados sumirem numa semana) | 0,09% (com 1 link só: ~10%) |
+
+### Piso de qualidade: novo E (Full OU loja oficial OU frete grátis)
+
+| piso | anúncios | produtos sem opção | encarece (mediana / p75) |
+|---|---|---|---|
+| só `condition: new` | 1717/1717 | 0/53 | +0,0% / +0,0% |
+| **Full OU oficial OU frete grátis** | **1003/1717** | **1/53** | **+0,0% / +8,6%** |
+| Full OU loja oficial | 274/1717 | 1/53 | +0,0% / +16,7% |
+| só frete grátis | 843/1717 | 15/53 | +8,4% / +18,6% |
+| só `gold_pro` | 595/1717 | 21/53 | +10,6% / +36,2% |
+
+O que o piso escolhido compra: em **12 dos 53 produtos** o anúncio mais barato
+é um item barato com frete caro pago pelo comprador (R$ 8,00 + R$ 44,62 de
+frete = 558% do preço; R$ 17,99 + R$ 44,62; R$ 20,00 + R$ 44,62...). Com o
+piso, esse caso vira **zero**. `shipping.cost` é uma cotação sem CEP (44,62 na
+maioria dos casos), então ele não serve de número — serve de sinal.
+
+### O que NÃO dá para checar: estoque
+
+O card do link de afiliado dizia "Último disponível", e o anúncio mais barato
+pode ter 1 unidade. **Não há como exigir um mínimo:** nenhum dos 1717 anúncios
+traz `available_quantity` (ou qualquer campo de quantidade/estoque), e
+`GET /items/{id}`, que o traria, é 403 para o token de aplicação. O que
+mitiga, e não resolve: a lista é lida segundos antes de publicar, então um
+anúncio esgotado já saiu dela e o pipeline cai para o próximo linkado.
+
+### M4 — a régua do pool é de outro anúncio
+
+`price_ref_cents`/`p25`/mínima do pool são o histórico do anúncio que vencia o
+buy box. Com o preço vindo de OUTRO anúncio, um "De:" contra essa mediana ou
+um selo "menor preço dos últimos 12 meses (verificado)" comparariam o preço do
+vendedor A com a mínima do vendedor B. Então a oferta do ML **nasce com os
+cinco campos zerados** e publica em modo B, o caminho que a fase 5J abriu.
+
+A régua volta sozinha quando o nosso `price_log` — que agora registra o preço
+do anúncio escolhido — tiver `selection.ref_min_observations` (14) dias
+distintos. Isso é lento pelo mesmo motivo da 5J: o preço só entra no log
+quando a oferta é escolhida para publicar, e o dedupe de 30 dias a tira da
+fila em seguida.
+
+Duas consequências a saber:
+
+- o `doctor` e o resumo de ops passam a imprimir sempre
+  `🏷️ Mercado Livre: 0 de N entrada(s) com régua curada` — é o desenho, não um
+  defeito;
+- `selection.max_above_ref` (não anunciar item mais caro que o típico) deixa de
+  valer para o ML enquanto não houver régua própria. O que segura no lugar: o
+  preço publicado é sempre o MENOR do conjunto linkado (a mediana dos
+  vendedores fica +50,8% acima do mais barato, medido) e
+  `validate.check_price` continua aplicando `price_min_brl..price_max_brl`.
+
+### O que o buy box deixou de ser
+
+`buy_box_item_id` e `buy_box_checked_at` saíram do leitor. A validade de 7 dias
+protegia a premissa "o preço vem do anúncio do buy box"; sem a premissa, ela só
+faria o pool inteiro parar de publicar 7 dias depois de cada refresh. O "Passo
+semanal — checar buy box" do `/meli-pool-refresh` **não deve mais ser rodado**.

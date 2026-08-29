@@ -43,36 +43,14 @@ def _sem_rede(request: httpx.Request) -> httpx.Response:
 
 
 def _dia_do_pool(raw: dict) -> date:
-    """O "hoje" em que este pool é contemporâneo: a MAIS RECENTE entre a
-    geração e as datas de verificação do buy box.
+    """O "hoje" em que este pool é contemporâneo — a data de geração.
 
-    Congelar só em `generated_at` parecia bastar até o passo semanal do buy box
-    rodar: ele carimba `buy_box_checked_at` de hoje sem regerar o arquivo (é o
-    procedimento documentado — o vencedor do buy box muda mais rápido que
-    título e histórico). Com o relógio parado na geração, essas datas ficam no
-    FUTURO e o leitor rejeita a entrada por data inválida — a suíte acusava um
-    pool saudável. A régua é o que este teste protege; a idade do arquivo,
-    não."""
-    datas = [date.fromisoformat(raw["generated_at"])]
-    datas += [date.fromisoformat(o["buy_box_checked_at"]) for o in raw["offers"]
-              if o.get("buy_box_checked_at")]
-    return max(datas)
-
-
-def test_o_dia_do_pool_acompanha_a_checagem_semanal_do_buy_box():
-    """O passo semanal carimba `buy_box_checked_at` sem regerar o arquivo.
-
-    Aconteceu de verdade em 2026-08-28: 31 entradas renovadas contra um
-    `generated_at` de 2026-08-26 fizeram o leitor recusar TODAS por "data do
-    buy box inválida", e a suíte apontou para o dado quando o errado era o
-    relógio do teste."""
-    raw = {"generated_at": "2026-08-26",
-           "offers": [{"buy_box_checked_at": "2026-08-28"},
-                      {"buy_box_checked_at": "2026-08-27"},
-                      {}]}
-    assert _dia_do_pool(raw) == date(2026, 8, 28)
-    # Sem checagem posterior, o dia continua sendo o da geração.
-    assert _dia_do_pool({"generated_at": "2026-08-26", "offers": [{}]}) == date(2026, 8, 26)
+    A única validade que resta é a do ARQUIVO (`generated_at` + `valid_days`).
+    Até a fase 5M havia uma segunda, de 7 dias, sobre o `buy_box_checked_at`
+    de cada entrada, e este helper tinha de acompanhar a MAIS RECENTE das
+    duas; o buy box saiu do leitor junto com a premissa de que o preço vinha
+    do anúncio dele."""
+    return date.fromisoformat(raw["generated_at"])
 
 
 def _congela(monkeypatch, dia: date) -> date:
@@ -131,12 +109,24 @@ def test_meli_produz_candidatas_com_config_real_e_pool_no_formato_novo(tmp_path,
     db.close()
 
 
-def test_toda_oferta_do_meli_nasce_com_referencia_p25_janelas_e_piso(tmp_path, pool_no_prazo):
+def test_toda_oferta_do_meli_nasce_SEM_regua_e_com_preco(tmp_path, pool_no_prazo):
+    """Invertido na fase 5M, e de propósito: a régua curada do pool é do
+    anúncio que vencia o buy box, e o preço publicado passou a ser o do
+    anúncio LINKADO mais barato — outro vendedor. Levar a régua junto faria o
+    selo comparar o preço de A com a mínima de B.
+
+    O que NÃO pode zerar junto é o preço: sem ele o `ev_score` é 0, a oferta
+    cai para o fim da fila e o `min_ev_brl` a mata — o zero silencioso de novo,
+    agora pela porta do ranking. A mediana do pool continua sendo a estimativa
+    com que a oferta entra na fila."""
     offers = _meli_source(tmp_path).fetch_offers(_cfg())
-    assert all(o.price_ref_cents > 0 for o in offers)
-    assert all(o.price_p25_cents > 0 for o in offers)
-    assert all(o.price_window_days >= pricing.MIN_WINDOW_DAYS for o in offers)
-    assert all(o.price_floor_cents > 0 and o.price_floor_window_days > 0 for o in offers)
+    assert offers
+    assert all(o.price_ref_cents == 0 and o.price_p25_cents == 0 for o in offers)
+    assert all(o.price_window_days == 0 for o in offers)
+    assert all(o.price_floor_cents == 0 and o.price_floor_window_days == 0 for o in offers)
+    assert all(o.price_current_cents > 0 for o in offers)
+    assert all(pricing.verdict(o, 10).mode == "B" for o in offers)
+    assert all(pricing.verdict(o, 10).seal == "" for o in offers)
 
 
 def test_desconto_do_vendedor_zerado_nao_derruba_mais_ninguem(tmp_path, pool_no_prazo):
@@ -155,8 +145,8 @@ def test_pool_real_produz_candidatas_com_o_config_real(tmp_path, monkeypatch):
     com o `config.yaml` de produção, tem de virar candidatas.
 
     É aqui que um refresh malfeito aparece: entrada sem p25, mínima acima do
-    p25, preço fora da faixa, buy box não verificado — tudo isso faz o leitor
-    ignorar a entrada COM MOTIVO, e se ele ignorar todas o ML publica zero.
+    p25, preço fora da faixa — tudo isso faz o leitor ignorar a entrada COM
+    MOTIVO, e se ele ignorar todas o ML publica zero.
     Sem este teste, esse zero seria indistinguível de "não havia oferta boa"
     (foi assim nas quatro vezes anteriores).
 
@@ -226,6 +216,99 @@ def test_a_entrada_sem_historico_nao_entra_por_uma_porta_que_a_de_30_reais_nao_u
     for centavos in (300_000, 1999, 0):
         with pytest.raises(ValidationError, match="fora da faixa"):
             validate.check_price(make_offer(**sem_regua, price_current_cents=centavos), cfg)
+
+
+# -- fase 5L: o lote do data feed da Shopee ----------------------------------
+
+def _lote_de_feed(n: int = 500) -> list[dict]:
+    """Um lote INTEIRO do feed, na proporção medida ao vivo em 2026-08-28
+    (`getItemFeedData`, 3 janelas de 500 do "Shopee Oficial BR"):
+
+    - 32% das linhas caem nas cinco raízes que a conta varre; o resto é
+      autopeças (102187, a maior categoria do feed), pets, papelaria...;
+    - 86% dos preços caem na faixa de R$ 20 a R$ 1.000;
+    - `like` vai de 0 a dezenas de milhares (mediana 70);
+    - e NENHUMA traz `commission` ou `sales` — é isso que esta rede protege.
+    """
+    nossas = ["100630", "100636", "100001", "100637", "100632"]
+    outras = ["102187", "100643", "100638", "100629", "100010"]
+    linhas = []
+    for i in range(n):
+        nossa = i % 100 < 32
+        cat = nossas[i % 5] if nossa else outras[i % 5]
+        # 14% fora da faixa: metade barata demais, metade cara demais
+        preco = {0: "9.90", 1: "1499.00"}.get(i % 14, f"{20 + (i % 900)}.90")
+        linhas.append({"columns": json.dumps({
+            "itemid": str(9_000_000 + i), "title": f"Produto do feed {i}",
+            "price": f"{40 + (i % 900)}.90", "sale_price": preco,
+            "discount_percentage": str(i % 60), "item_rating": "4.9",
+            "image_link": f"https://cf.shopee.com.br/file/{i}",
+            "product_link": f"https://shopee.com.br/product/7/{9_000_000 + i}",
+            "product_short link": f"https://shopee.com.br/universal-link/product/7/{i}"
+                                  "?utm_medium=affiliates&utm_source=an_18313221156",
+            "global_catid1": cat, "global_category1": "x", "like": str(i * 7)},
+            ensure_ascii=False), "updateType": None})
+    return linhas
+
+
+def _shopee_so_com_feed(db, linhas: list[dict]):
+    """`ShopeeSource` real cuja BUSCA não devolve nada: o que sobrar no fim do
+    filtro veio do feed, e só dele."""
+    from afiliado.sources.shopee import ShopeeSource
+
+    def handler(request):
+        corpo = json.loads(request.content.decode())
+        if "listItemFeeds" in corpo["query"]:
+            return httpx.Response(200, json={"data": {"listItemFeeds": {"feeds": [
+                {"datafeedId": "1_FULL_2026-08-27", "datafeedName": "Shopee Oficial BR",
+                 "totalCount": 100_000, "date": "2026-08-27", "feedMode": "FULL"}]}}})
+        if "getItemFeedData" in corpo["query"]:
+            return httpx.Response(200, json={"data": {"getItemFeedData": {
+                "rows": linhas,
+                "pageInfo": {"offset": 0, "limit": len(linhas),
+                             "totalCount": 100_000, "hasMore": True}}}})
+        return httpx.Response(200, json={"data": {"productOfferV2": {
+            "nodes": [], "pageInfo": {"hasNextPage": False}}}})
+
+    return ShopeeSource("APPID", "SECRET",
+                        client=httpx.Client(transport=httpx.MockTransport(handler)),
+                        db=db)
+
+
+def test_um_lote_inteiro_do_feed_produz_candidatas_com_o_config_real(tmp_path):
+    """Fase 5L, e é o zero silencioso pela SEXTA vez: a linha do data feed
+    chega sem `commission` e sem `sales` (o feed não tem os campos), e com o
+    `min_ev_brl: 0.50` do config real o piso de EV as leria como "valem zero" e
+    mataria 100% delas — a fase inteira seria um no-op, sem nada falhar."""
+    cfg = load_config(CONFIG_REAL)
+    db = StateDB(tmp_path / "s.db")
+    src = _shopee_so_com_feed(db, _lote_de_feed())
+
+    offers = src.fetch_offers(cfg)
+    assert not src.discovery_stats.feed_warning, src.discovery_stats.feed_warning
+    assert len(offers) == cfg["shopee"]["feed_keep_per_run"] == 10, src.discovery_stats.feed
+    assert all(o.commission_pct == 0.0 and o.sales == 0 for o in offers)
+
+    offers = pricing.enrich_offers(offers, db, None, cfg)
+    candidatas, cortes = selection.filter_offers_with_stats(offers, db, cfg)
+    assert len(candidatas) > 0, (
+        f"{len(offers)} linhas do feed entraram e ZERO sobraram — {cortes.resumo()}")
+    assert cortes.ev == 0, "o piso de EV matou candidata de comissão desconhecida"
+    assert cortes.categoria == 0, "o feed entregou categoria fora do allowlist"
+    db.close()
+
+
+def test_o_feed_sem_a_isencao_do_piso_de_ev_morreria_inteiro(tmp_path):
+    """A prova de que a rede acima é a que segura o zero: com o piso julgando a
+    comissão desconhecida (o comportamento anterior à 5L), sobra ZERO."""
+    cfg = load_config(CONFIG_REAL)
+    db = StateDB(tmp_path / "s.db")
+    offers = _shopee_so_com_feed(db, _lote_de_feed()).fetch_offers(cfg)
+    offers = pricing.enrich_offers(offers, db, None, cfg)
+    piso = float(cfg["selection"]["min_ev_brl"])
+    assert piso > 0
+    assert [o for o in offers if selection.ev_score(o, cfg) >= piso] == []
+    db.close()
 
 
 def test_config_real_nao_tem_mais_portao_de_desconto():

@@ -311,8 +311,9 @@ e a janela pode ser curta.
    "sales": 13337, "rating": 4.8}]}
 ```
    `buy_box_checked_at` é a data em que o `buyBoxId` foi lido (hoje, na
-   geração). O leitor só aceita a entrada por **7 dias** a partir dela — ver
-   "Passo semanal" abaixo.
+   geração). Desde a fase 5M o leitor **não usa** nenhum dos dois campos e a
+   entrada não expira por eles: eles ficam como procedência da régua curada e
+   como chave da série de preço no JoomPulse.
 
    Entrada da onda SEM HISTÓRICO: tudo igual, com os cinco campos de régua
    zerados (os cinco presentes — ausente é erro, e zerar só alguns também):
@@ -329,10 +330,11 @@ e a janela pode ser curta.
 PYTHONPATH=src python -c "import httpx; from afiliado.config import load_config; from afiliado.sources.meli import MeliSource; s=MeliSource('x','y',client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))); o=s.fetch_offers(load_config('config.yaml')); print(len(o),'ofertas validas;', s.pool_warning or 'nenhuma ignorada')"
 ```
    Toda entrada ignorada vem com o motivo (`fora da faixa de preço`, `sem
-   p25`, `mínima acima do p25`, `sem buy box`…) — corrija a curadoria, não o
+   p25`, `mínima acima do p25`, `régua parcial`…) — corrija a curadoria, não o
    leitor.
-3. Rode `/meli-links-refresh` para os `product_id` novos (sem link no pool de
-   links a oferta é descartada no run).
+3. Rode `/meli-links-refresh` para os `product_id` novos — ele cunha os links
+   dos 3 anúncios mais baratos de cada produto. Produto sem anúncio linkado é
+   descartado no run.
 4. Resumo ao usuário: quantos entraram/saíram vs. o pool anterior,
    distribuição `ref / mínima`, quantos caíram por regra, quantos precisaram
    da série diária (Passo 3b) e quantos ficaram de fora por falta de
@@ -342,37 +344,22 @@ PYTHONPATH=src python -c "import httpx; from afiliado.config import load_config;
    com `Co-Authored-By:` do modelo em uso. `data/joompulse_raw/` NÃO entra
    (gitignored). Se o repo tiver remote, perguntar antes de push.
 
-## Passo semanal — checar buy box (4 consultas)
+## Passo semanal — checar buy box: NÃO EXISTE MAIS (fase 5M)
 
-O vencedor do buy box muda, e o anúncio do pool pode **sumir** da lista de
-vendedores (visto ao vivo em 2026-08-26: MLB68104527 — o `buyBoxId` lido no
-mesmo dia já não estava em `/products/{id}/items`; ver a tabela em
-`docs/runbooks/meli-setup.md`). O pipeline então descarta a oferta ("sem buy
-box") — e, pior, quando o anúncio continua na lista mas já não vence, o post
-sairia com um preço que não é o da página. Por isso o leitor só aceita cada
-entrada por **7 dias** a partir de `buy_box_checked_at` (motivo: "buy box não
-verificado há N dias"), e este passo existe para renovar a data.
+Havia aqui um passo de 4 consultas por semana para renovar
+`buy_box_checked_at`, porque o leitor só aceitava a entrada por 7 dias a
+partir dessa data. **Não rode mais.** Desde a fase 5M o preço publicado não é
+o do anúncio do buy box (ele nunca foi o vencedor — era só um vendedor, e nos
+dois stories errados de 2026-08-28 um caro): é o do **anúncio linkado mais
+barato**, lido ao vivo em `/products/{id}/items` imediatamente antes de
+publicar. Nada no pipeline lê `buy_box_item_id` nem `buy_box_checked_at`, e o
+leitor não expira mais por eles — só pela validade do arquivo (30 dias).
 
-**Toda semana** (ou quando o doctor/ops avisar "buy box não verificado"):
-
-1. Refaça **só o Passo 1** (4 consultas, uma por categoria) — salve os brutos
-   e o cursor como em qualquer execução (seção Orçamento).
-2. Para cada entrada do pool cujo `product_id` veio na resposta: grave
-   `buy_box_item_id = buyBoxId` e `buy_box_checked_at = hoje`. Produto que
-   não veio no top da categoria: deixe a entrada como está (ela vence sozinha
-   em 7 dias e o aviso diz por quê).
-3. Conte e informe no resumo quantos `buy_box_item_id` **mudaram**. Para
-   esses, `price_ref/p25/mínima` são do anúncio ANTERIOR (a série do Passo 3
-   é por anúncio): se o orçamento do dia permitir, refaça o Passo 3 (e o
-   Passo 3b, quando a mínima do vencedor novo passar do p25) para eles;
-   senão, registre que ficaram com a
-   régua do vencedor antigo e o preço vivo do novo — a regra do quartil e o
-   selo continuam honestos (o preço publicado é sempre o do anúncio gravado),
-   mas a referência pode estar defasada até a próxima regeneração.
-4. Valide com o leitor (Passo 4.2) e commite: `chore: renova buy box do pool
-   do ML (JoomPulse de <data>)`.
-
-Este passo NÃO regenera título/imagem/histórico — 4 consultas, não 40.
+Os dois campos continuam sendo gravados pelos Passos 1–3 (são a chave da série
+de preço no JoomPulse e documentam de onde a régua curada veio), mas ninguém
+os consulta em produção. **O que precisa de rotina agora é
+`/meli-links-refresh`**: os anúncios linkados envelhecem (~65% sobrevivem a 30
+dias) e é a cobertura de links que decide se o ML publica.
 
 ## Validação na carga (o que o leitor rejeita)
 
@@ -383,11 +370,15 @@ campo com fração de centavo (`4500.5` → `não inteiro`; `2590.0` vale 2590);
 **régua parcial** (uns campos de régua zerados e outros não);
 `price_ref_cents/100` fora de
 `selection.price_min_brl..price_max_brl`; `price_p25_cents >
-price_ref_cents`; `price_historic_min_cents > price_p25_cents`; sem
-`buy_box_item_id`; `buy_box_checked_at` (ou, na falta dele, `generated_at`)
-com mais de 7 dias ("buy box não verificado há N dias") ou inválida/no
-futuro; `product_id` repetido. O aviso vai ao `doctor` e ao resumo de ops:
+price_ref_cents`; `price_historic_min_cents > price_p25_cents`;
+`product_id` repetido. O aviso vai ao `doctor` e ao resumo de ops:
 "3 entrada(s) do pool ignorada(s) (2 fora da faixa de preço, 1 sem p25)".
+
+A régua curada é **validada e depois descartada** (fase 5M): ela é o histórico
+do anúncio do buy box e o preço publicado é de outro anúncio, então a oferta
+nasce sem régua e publica em modo B. Continue gravando os números certos — eles
+ficam no arquivo, a validação segue pegando curadoria quebrada, e a faixa de
+preço ainda é checada sobre a referência.
 
 Desde a fase 5J o leitor **aceita** a entrada com os cinco campos de régua
 presentes e iguais a 0 (a onda barata). Duas consequências que aparecem no
@@ -400,23 +391,25 @@ aviso e no `doctor`:
   R$ 3.000 continua caindo — só cai depois. Ainda assim, mantenha o
   pré-filtro de preço do Passo 1: cada entrada fora da faixa custa uma
   chamada de API e um descarte em todo run;
-- o `doctor` imprime a proporção — "🏷️ Mercado Livre: 12 de 35 entrada(s)
-  com régua curada; 23 em modo B esperando histórico" —, e a mesma linha vai
-  ao resumo de ops a cada run.
+- o `doctor` imprime a proporção — "🏷️ Mercado Livre: 0 de 53 entrada(s)
+  com régua curada; 53 em modo B esperando histórico" —, e a mesma linha vai
+  ao resumo de ops a cada run. **Desde a 5M o primeiro número é sempre 0**:
+  não é defeito do pool, é a régua sendo descartada de propósito.
 
 ## Notas
 
 - Nunca inventar números: todo valor gravado vem de uma linha de consulta
   salva em `data/joompulse_raw/`.
-- O preço vivo publicado é o do `buy_box_item_id` (`refresh_price`), lido em
-  `/products/{id}/items`; se esse anúncio sumir da lista, a oferta é
-  descartada no run ("sem buy box") — não cai para o vendedor mais barato.
-  A ORDEM dessa lista não é o buy box (`results[0]` bateu com a página em 2
-  de 3 produtos ao vivo) — nunca use `results[0]` como vencedor.
+- O preço vivo publicado é o do **anúncio linkado mais barato** que passa no
+  piso de qualidade (`refresh_price`), lido em `/products/{id}/items`; se
+  nenhum anúncio linkado sobrar na lista, a oferta é descartada no run — não
+  cai para um vendedor sem link. Quem cunha os links é `/meli-links-refresh`.
 - A regra do quartil (`pricing.verdict`) só alega desconto quando o preço vivo
   fica ESTRITAMENTE abaixo de `price_p25_cents` com janela ≥ 14 dias; o selo
-  só quando ≤ `price_historic_min_cents`. Referência errada para cima vira
-  desconto inventado — na dúvida, arredonde para baixo.
+  só quando ≤ `price_historic_min_cents`. Desde a 5M nenhuma oferta do ML
+  chega lá com régua do pool (ela é zerada na carga) — a régua que vale é a do
+  nosso `price_log`. Referência errada para cima ainda vira desconto
+  inventado quando ela voltar: na dúvida, arredonde para baixo.
 - Mínima errada para cima vira SELO inventado: `price_historic_min_cents` sai
   de `buyBoxPriceAmountHistoricMin` ou da série DIÁRIA (Passo 3b) — nunca de
   uma média semanal, que é ≥ a menor diária. Sem uma das duas, a entrada fica

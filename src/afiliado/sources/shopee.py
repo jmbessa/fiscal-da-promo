@@ -46,6 +46,36 @@ mutation generateShortLink($url: String!) {
 }
 """
 
+# -- data feed (fase 5L) -------------------------------------------------------
+# `listItemFeeds` e `getItemFeedData` são as outras duas das oito consultas que
+# a API expõe, e nunca tinham sido tocadas. Assinaturas da introspecção viva de
+# 2026-08-28:
+#
+#   listItemFeeds(feedMode: FeedMode): ItemFeedListConnection!
+#     feeds { datafeedId referenceId datafeedName description totalCount date feedMode }
+#   getItemFeedData(datafeedId: String!, offset: Int, limit: Int): ItemFeedDataConnection!
+#     rows { columns updateType }   pageInfo { offset limit totalCount hasMore }
+#
+# `columns` é um JSON de 24 chaves POR LINHA — o catálogo inteiro do vendedor,
+# sem passar pela busca. O que ele NÃO traz: `commission` e `sales`. Ver
+# `docs/runbooks/shopee-preco.md`.
+FEED_LIST_QUERY = """
+query listItemFeeds($mode: FeedMode) {
+  listItemFeeds(feedMode: $mode) {
+    feeds { datafeedId datafeedName totalCount date feedMode }
+  }
+}
+"""
+
+FEED_DATA_QUERY = """
+query getItemFeedData($id: String!, $offset: Int, $limit: Int) {
+  getItemFeedData(datafeedId: $id, offset: $offset, limit: $limit) {
+    rows { columns updateType }
+    pageInfo { offset limit totalCount hasMore }
+  }
+}
+"""
+
 
 # Fase 5A (A4): repetições com backoff em 429, 5xx e erro de conexão/timeout
 # — 1 tentativa + uma repetição por atraso. `HTTPTransport(retries=3)` só
@@ -82,6 +112,27 @@ DEFAULT_KEYWORD_PAGES = 2          # p1 rende 19 inéditos/chamada, p2 ~21–42 
 # dizer a janela (`pricing.format_sales`).
 SALES_WINDOW_DAYS = 30
 
+# -- padrões do data feed (fase 5L), todos medidos em 2026-08-28 --------------
+# Teto por chamada: 500 (`limit: 1000` devolve
+# `error [11001] ... the maximum limit is 500`).
+FEED_MAX_LIMIT = 500
+# NASCE DESLIGADO: quem liga é o config.yaml. Um default > 0 faria toda fonte
+# montada em teste/doctor gastar chamadas de feed sem ninguém pedir.
+DEFAULT_FEED_CALLS_PER_RUN = 0
+DEFAULT_FEED_PAGE_SIZE = FEED_MAX_LIMIT
+# Quantas linhas de cada janela entram no ESTOQUE. O teto existe porque o
+# gargalo do feed não é a API, é o `state.db`: 32% das linhas passam nos
+# portões (medido em 3 janelas de 500 do feed oficial: 161/162/163), e guardar
+# tudo seriam ~9.800 candidatas/dia — com `candidate_max_age_days: 3`, ~29 mil
+# linhas de ~600 bytes num arquivo binário versionado, contra 60 posts/dia.
+DEFAULT_FEED_KEEP_PER_RUN = 10
+# Por CURTIDAS, e não por nota: a nota do feed é 5,0 na mediana (165 de 172
+# linhas acima de 4,5 — ela não separa nada), enquanto o `like` prevê venda.
+# Medido no feed oficial, numa janela de 500: as 12 linhas mais curtidas somam
+# 2.152 vendas nos últimos 30 dias (mediana 33) e as 12 menos curtidas somam 2
+# (mediana 0). O `like` é contagem da própria Shopee, não alegação do vendedor.
+FEED_CURSOR_KEY = "shopee:feed_offset"
+
 
 @dataclass
 class DiscoveryStats:
@@ -92,6 +143,16 @@ class DiscoveryStats:
     # Aviso de configuração (não de run): `calls_per_run` pequeno demais para o
     # plano. Vazio = nada a dizer. Quem o leva ao chat de ops é o pipeline.
     warning: str = ""
+    # Fase 5L: a fatia do DATA FEED, contada à parte da busca — sem isso "8
+    # chamadas · 400 nós" não diria qual das duas superfícies rendeu o quê, e a
+    # comparação entre elas viraria opinião. Vazio = feed desligado.
+    feed: str = ""
+    # O feed falhou e a busca continuou. É aviso (notifica uma vez por dia),
+    # não número do run.
+    feed_warning: str = ""
+
+    def avisos(self) -> list[str]:
+        return [a for a in (self.warning, self.feed_warning) if a]
 
 
 @dataclass(frozen=True)
@@ -217,8 +278,121 @@ class ShopeeSource:
                     stats.eligible += 1
             self._avanca_pagina(sh, fatia, tem_proxima, len(nodes))
         self._avanca_indices(sh, plano)
+        offers += self._fatia_do_feed(sh, seen_ids, stats)
         self.discovery_stats = stats
         return offers
+
+    # -- data feed (fase 5L) -------------------------------------------------
+
+    def _fatia_do_feed(self, sh: dict, ja_vistos: set[str],
+                       stats: DiscoveryStats) -> list[Offer]:
+        """Uma fatia do CATÁLOGO por run, ao lado da varredura — não no lugar
+        dela.
+
+        Por que FULL e não DELTA (medido em 2026-08-28, e é o contrário do que
+        parecia): o DELTA oficial tem 170.217 linhas contra 100.000 do FULL —
+        341 chamadas contra 200 —, e numa janela de 500 dele 229 linhas são
+        `DELETE` (item saindo do catálogo) contra 264 `NEW` e 7 `UPDATE`. Ou
+        seja, o DELTA custa 70% MAIS chamadas para entregar MENOS linha
+        aproveitável. Não existe o caminho barato de manter o estoque fresco
+        pelo DELTA nesta conta; o barato é varrer o FULL devagar.
+
+        A varredura do FULL é um cursor de `offset` persistido, `feed_calls_per_run`
+        janelas por run — o mesmo teto que a 5C impôs à busca, pela mesma razão:
+        as 200 chamadas do catálogo inteiro num run só seriam um martelo contra
+        a conta de afiliado.
+
+        O `datafeedId` carrega a DATA (`..._FULL_2026-08-27`) e o arquivo é
+        regerado todo dia, então ele é relistado a cada run (1 chamada). O
+        preço disso é 1 chamada por run; o preço de cacheá-lo seria varrer um
+        arquivo que não existe mais no meio do ciclo. E, pela mesma razão, o
+        ciclo de 200 janelas NÃO é uma partição do catálogo: é uma amostra
+        rotativa dele.
+
+        Falha do feed NÃO derruba a descoberta: ele é uma superfície A MAIS, e
+        trocar as 8 chamadas que funcionam por um erro de uma consulta nova
+        seria o pior negócio possível. O erro vira aviso (uma vez por dia)."""
+        n = int(_ou_padrao(sh, "feed_calls_per_run", DEFAULT_FEED_CALLS_PER_RUN))
+        if n <= 0:
+            return []
+        try:
+            feed = self._escolhe_feed(sh)
+            linhas, janelas = self._janelas_do_feed(sh, feed, n)
+            chamadas = 1 + janelas
+        except SourceError as exc:
+            stats.feed_warning = f"⚠️ shopee: data feed indisponível ({exc}) — a busca continua"
+            return []
+        permitidas = {str(c) for c in (sh.get("category_ids") or [])}
+        candidatas: list[tuple[int, Offer]] = []
+        vistos = set(ja_vistos)
+        for row in linhas:
+            par = _parse_feed_row(row)
+            if par is None:
+                continue
+            curtidas, offer = par
+            # O feed não tem `productCatId` como argumento: o mesmo allowlist
+            # que a busca aplica na API é aplicado aqui, na linha. Sem ele, 35%
+            # do feed oficial medido são autopeças (categoria 102187) e o teto
+            # por curtidas seria gasto fora das nossas cinco raízes.
+            if permitidas and offer.category not in permitidas:
+                continue
+            if offer.item_id in vistos:
+                continue
+            vistos.add(offer.item_id)
+            candidatas.append((curtidas, offer))
+        candidatas.sort(key=lambda par: par[0], reverse=True)
+        teto = int(_ou_padrao(sh, "feed_keep_per_run", DEFAULT_FEED_KEEP_PER_RUN))
+        mantidas = [o for _, o in (candidatas[:teto] if teto > 0 else candidatas)]
+        # `chamadas` inclui o `listItemFeeds`: o custo do feed é o que ele
+        # gasta, não o que gostaríamos que gastasse.
+        stats.feed = (f"{chamadas} chamadas · {len(linhas)} linhas · "
+                      f"{len(candidatas)} elegíveis · {len(mantidas)} mantidas")
+        return mantidas
+
+    def _escolhe_feed(self, sh: dict) -> dict:
+        """O feed FULL deste run. Sem `feed_name`, o MAIOR — que é o "Shopee
+        Oficial BR" (100.000 itens contra 10.000 do "Shopee Brasil"), e é
+        também o único cuja coluna `like` vem preenchida (no outro ela é 0 em
+        todas as 178 linhas elegíveis da janela medida), sem a qual o teto por
+        curtidas escolheria ao acaso."""
+        data = self._post({"query": FEED_LIST_QUERY, "variables": {"mode": "FULL"}})
+        feeds = [f for f in ((data.get("listItemFeeds") or {}).get("feeds") or [])
+                 if isinstance(f, dict) and f.get("datafeedId")]
+        nome = str(sh.get("feed_name") or "").strip().lower()
+        if nome:
+            feeds = [f for f in feeds if nome in str(f.get("datafeedName") or "").lower()]
+        if not feeds:
+            raise SourceError(
+                f"nenhum feed FULL{f' com {nome!r} no nome' if nome else ''} na conta")
+        return max(feeds, key=lambda f: _inteiro_ou_zero(f.get("totalCount")))
+
+    def _janelas_do_feed(self, sh: dict, feed: dict, n: int) -> tuple[list[dict], int]:
+        """`n` janelas a partir do cursor. `hasMore: false` (ou janela vazia)
+        devolve o cursor ao começo — o feed seguinte é outro arquivo."""
+        limite = min(int(_ou_padrao(sh, "feed_page_size", DEFAULT_FEED_PAGE_SIZE)),
+                     FEED_MAX_LIMIT)
+        total = _inteiro_ou_zero(feed.get("totalCount"))
+        offset = self._inteiro(FEED_CURSOR_KEY, 0)
+        if offset < 0 or (total and offset >= total):
+            offset = 0
+        linhas: list[dict] = []
+        chamadas = 0
+        for _ in range(n):
+            data = self._post({"query": FEED_DATA_QUERY,
+                               "variables": {"id": str(feed["datafeedId"]),
+                                             "offset": offset, "limit": limite}})
+            bloco = data.get("getItemFeedData") or {}
+            rows = [r for r in (bloco.get("rows") or []) if isinstance(r, dict)]
+            info = bloco.get("pageInfo") or {}
+            chamadas += 1
+            linhas += rows
+            if rows and info.get("hasMore"):
+                offset = _inteiro_ou_zero(info.get("offset")) + len(rows)
+            else:
+                offset = 0
+                break
+        self.cursor.set_cursor(FEED_CURSOR_KEY, str(offset))
+        return linhas, chamadas
 
     def _busca(self, sh: dict, fatia: _Fatia) -> tuple[list[dict], bool | None]:
         variables = {"page": fatia.page, "limit": sh["page_size"],
@@ -333,8 +507,8 @@ class ShopeeSource:
         raise SourceError(f"sem link de afiliado para item {offer.item_id}")
 
     def refresh_price(self, offer: Offer) -> Offer:
-        """Preço e comissão AO VIVO do item, uma chamada (`itemId`), logo
-        antes de publicar.
+        """Preço, comissão e VENDAS ao vivo do item, uma chamada (`itemId`),
+        logo antes de publicar.
 
         Com o estoque de candidatas (M1), a oferta pode ter sido descoberta há
         até `candidate_max_age_days` dias: publicar o preço da descoberta seria
@@ -366,6 +540,14 @@ class ShopeeSource:
             price_original_cents=vivo.price_original_cents,
             commission_pct=vivo.commission_pct,
             commission_brl=vivo.commission_brl,
+            # Fase 5L: as VENDAS também. A candidata vinda do data feed chega
+            # com `sales == 0` (o feed não tem o campo) e esta é a única
+            # chamada que ela recebe antes de ir ao ar — sem isto a arte dela
+            # sairia sem prova social para sempre e o `ev_score` perderia o
+            # peso de popularidade. Vem com a JANELA junto (fase 5H: o `sales`
+            # da Shopee são ~30 dias, não o total que o anúncio exibe).
+            sales=vivo.sales,
+            sales_window_days=vivo.sales_window_days,
         )
 
 
@@ -457,6 +639,71 @@ def _parse_node(node: dict) -> Offer | None:
         price_max_cents=_cents_or_zero(node.get("priceMax")),
         commission_brl=_commission_brl(node.get("commission")),
     )
+
+
+def _parse_feed_row(row: dict) -> tuple[int, Offer] | None:
+    """Uma linha do data feed em `(curtidas, Offer)` — ou None quando a linha
+    não é aproveitável.
+
+    A oferta nasce com `commission_pct`, `commission_brl` e `sales` ZERADOS, e
+    isso é o ponto: o feed não tem esses campos. 0 é "ainda não sei" (a mesma
+    convenção do preço desconhecido da 5J), quem os mede é o `refresh_price`
+    imediatamente antes de publicar, e `selection.comissao_desconhecida` é o
+    que impede o piso de EV de matar a candidata no caminho.
+
+    `price` é o "de" do vendedor e `sale_price` o "por" (medido: diferem em 244
+    de 500 linhas, e a diferença bate com `discount_percentage`). Os dois
+    entram como em qualquer oferta da Shopee — e, como sempre, o desconto do
+    vendedor é RÓTULO: quem decide o que o post alega é a régua honesta."""
+    if _e_apagada(row.get("updateType")):
+        return None
+    try:
+        col = json.loads(row.get("columns") or "")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(col, dict) or _e_apagada(col.get("update_type")):
+        return None
+    item_id = str(col.get("itemid") or "").strip()
+    if not item_id:
+        return None
+    atual = _cents_or_zero(col.get("sale_price")) or _cents_or_zero(col.get("price"))
+    if atual <= 0:
+        return None
+    original = _cents_or_zero(col.get("price"))
+    return _inteiro_ou_zero(col.get("like")), Offer(
+        source="shopee",
+        item_id=item_id,
+        title=str(col.get("title") or "").strip(),
+        price_original_cents=max(original, atual),
+        price_current_cents=atual,
+        commission_pct=0.0,
+        image_url=str(col.get("image_link") or "").strip(),
+        product_url=str(col.get("product_link") or "").strip(),
+        # JÁ É link de afiliado (`utm_medium=affiliates&utm_source=an_...`,
+        # medido em 500 de 500 linhas): serve de queda para o
+        # `generateShortLink`. Ele NÃO vira o link publicado por padrão — é uma
+        # URL de ~700 caracteres, contra os ~30 do `shope.ee`, e trocar o
+        # gerador oficial por ela mexeria na atribuição de todo post da loja.
+        offer_link=str(col.get("product_short link") or "").strip(),
+        category=str(col.get("global_catid1") or "").strip(),
+        sales=0,
+        sales_window_days=SALES_WINDOW_DAYS,
+        rating=_parse_rating(col.get("item_rating")),
+        commission_brl=0.0,
+    )
+
+
+def _e_apagada(update_type) -> bool:
+    """Linha de DELETE: item saindo do catálogo (229 de 500 numa janela do
+    DELTA oficial, medido). Publicá-la seria anunciar o que não existe mais."""
+    return str(update_type or "").strip().upper() == "DELETE"
+
+
+def _inteiro_ou_zero(raw) -> int:
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
 
 
 def _cents_or_zero(raw) -> int:

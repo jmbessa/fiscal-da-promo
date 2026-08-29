@@ -725,3 +725,50 @@ def test_a_faixa_continua_valendo_para_quem_tem_preco(tmp_path):
     result, stats = selection.filter_offers_with_stats(com_preco, db, CFG)
     assert result == [] and stats.faixa_preco == 2
     db.close()
+
+
+# -- fase 5L: "comissão ainda não medida" não pode morrer no piso de EV ------
+# A linha do data feed da Shopee chega SEM comissão e SEM vendas (o feed não
+# traz nenhum dos dois): as duas só existem depois do `refresh_price`, que roda
+# imediatamente antes de publicar — muito DEPOIS destes portões. É o defeito da
+# 5J com outro campo: lá o preço 0 significava "ainda não sei" e o piso o lia
+# como "vale zero".
+
+def _sem_comissao(item_id="feed", **kw):
+    return make_offer(source="shopee", item_id=item_id, commission_pct=0.0,
+                      commission_brl=0.0, sales=0, **kw)
+
+
+def test_piso_de_ev_nao_mata_a_oferta_de_comissao_desconhecida(tmp_path):
+    db = StateDB(tmp_path / "s.db")
+    cfg = {**CFG, "selection": {**CFG["selection"], "min_ev_brl": 0.50}}
+    assert selection.ev_score(_sem_comissao(), cfg) == 0.0
+    result, stats = selection.filter_offers_with_stats([_sem_comissao()], db, cfg)
+    assert [o.item_id for o in result] == ["feed"]
+    assert stats.ev == 0
+    db.close()
+
+
+def test_o_piso_continua_valendo_para_quem_tem_comissao_medida(tmp_path):
+    """O portão não foi afrouxado: comissão MEDIDA e baixa continua caindo."""
+    db = StateDB(tmp_path / "s.db")
+    cfg = {**CFG, "selection": {**CFG["selection"], "min_ev_brl": 2.0}}
+    magra = make_offer(item_id="magra", commission_pct=0.5,
+                       price_current_cents=2000, price_original_cents=2000)
+    result, stats = selection.filter_offers_with_stats([magra], db, cfg)
+    assert result == [] and stats.ev == 1
+    db.close()
+
+
+def test_o_prompt_do_ranker_nao_afirma_que_a_comissao_e_zero():
+    """`comissão=R$0.00 (0.0%)` é uma AFIRMAÇÃO falsa para quem ranqueia: a
+    comissão não é zero, é desconhecida — e o prompt manda priorizar retorno
+    esperado. O LLM descartaria toda candidata do feed por um número que
+    ninguém mediu."""
+    linha = selection._rank_prompt([_sem_comissao()], [], 1, None, CFG)
+    assert "R$0.00" not in linha and "0.0%" not in linha
+    assert "a medir" in linha
+    # e quem TEM comissão medida continua sendo apresentado com o número.
+    com = selection._rank_prompt([make_offer(item_id="x", commission_pct=12.0)], [], 1,
+                                 None, CFG)
+    assert "R$30.00" in com and "12.0%" in com

@@ -337,11 +337,18 @@ def _no(item_id: int, cat: int = 100630) -> dict:
 def _api_falsa(chamadas: list, por_pagina: int = 3, ultima_pagina: int = 40):
     """API de mentira com uma janela de `ultima_pagina` páginas por listagem:
     cada (categoria|keyword, página) devolve itens distintos e `hasNextPage`
-    fica falso na última página — como a API real (calls 75/126)."""
+    fica falso na última página — como a API real (calls 75/126).
+
+    Só a BUSCA: as chamadas de data feed (fase 5L) recebem uma resposta vazia
+    e não entram em `chamadas`, para os testes da varredura rotativa medirem o
+    que sempre mediram. Quem exercita o feed é `_api_com_feed`."""
     listagens: dict[str, int] = {}
 
     def handler(request):
-        v = json.loads(request.content.decode())["variables"]
+        corpo = json.loads(request.content.decode())
+        if "ItemFeed" in corpo["query"]:
+            return httpx.Response(200, json={"data": {"listItemFeeds": {"feeds": []}}})
+        v = corpo["variables"]
         chamadas.append(v)
         page = int(v.get("page") or 1)
         chave = f"{v.get('keyword') or ''}|{v.get('productCatId') or ''}"
@@ -605,3 +612,296 @@ def test_refresh_price_ignora_no_de_outro_item():
         return httpx.Response(200, json={"data": {"productOfferV2": {"nodes": [_no(999)]}}})
     with pytest.raises(SourceError, match="saiu da listagem"):
         source_with(handler).refresh_price(make_offer(source="shopee", item_id="123456"))
+
+
+def test_refresh_price_traz_tambem_as_vendas():
+    """Fase 5L: a candidata vinda do data feed chega com `sales == 0` (o feed
+    não tem o campo). Sem trazer as vendas aqui, a arte dela sai sem prova
+    social e o `ev_score` perde o peso de popularidade — para sempre, porque
+    esta é a única chamada que o item recebe antes de ir ao ar."""
+    from tests.test_models import make_offer
+
+    def handler(request):
+        return httpx.Response(200, json={"data": {"productOfferV2": {"nodes": [
+            {**_no(123456), "sales": 4321}]}}})
+
+    do_feed = make_offer(source="shopee", item_id="123456", sales=0, sales_window_days=0)
+    novo = source_with(handler).refresh_price(do_feed)
+    assert novo.sales == 4321
+    # e a janela vem junto: o `sales` da Shopee são ~30 dias (fase 5H), e sem
+    # isto a arte escreveria "4 mil vendidos" como se fosse o total do anúncio.
+    assert novo.sales_window_days == 30
+
+
+# =============================================================================
+# Fase 5L — o data feed (`listItemFeeds` / `getItemFeedData`) como segunda
+# superfície de descoberta. Números medidos ao vivo em 2026-08-28.
+# =============================================================================
+
+def _linha(itemid: int, cat: str = "100630", like: int = 0, preco: str = "49.90",
+           **extra) -> dict:
+    colunas = {
+        "itemid": str(itemid), "title": f"item {itemid}", "price": "99.80",
+        "sale_price": preco, "discount_percentage": "50", "item_rating": "4.8",
+        "image_link": f"https://cf.shopee.com.br/file/{itemid}",
+        "product_link": f"https://shopee.com.br/product/9/{itemid}",
+        "product_short link": f"https://shopee.com.br/universal-link/product/9/{itemid}"
+                              "?utm_medium=affiliates&utm_source=an_18313221156",
+        "global_catid1": cat, "global_category1": "Beauty", "like": str(like),
+    }
+    colunas.update(extra)
+    return {"columns": json.dumps(colunas, ensure_ascii=False), "updateType": None}
+
+
+def _api_com_feed(chamadas: list, linhas=None, total: int = 100_000,
+                  feeds=None, por_pagina: int = 1):
+    """API de mentira que atende as TRÊS consultas: a busca da varredura
+    rotativa, `listItemFeeds` e `getItemFeedData`. Como na conta real, o feed
+    "Oficial" é dez vezes maior que o "Brasil"."""
+    padrao_feeds = [
+        {"datafeedId": "111_FULL_2026-08-27", "datafeedName": "Shopee Brasil - 2022",
+         "totalCount": max(1, total // 10), "date": "2026-08-27", "feedMode": "FULL"},
+        {"datafeedId": "222_FULL_2026-08-27", "datafeedName": "Shopee Oficial BR - 2022",
+         "totalCount": total, "date": "2026-08-27", "feedMode": "FULL"},
+    ]
+
+    def handler(request):
+        corpo = json.loads(request.content.decode())
+        query, v = corpo["query"], corpo.get("variables") or {}
+        chamadas.append({"query": query.split("(")[0].split()[-1], **v})
+        if "listItemFeeds" in query:
+            return httpx.Response(200, json={"data": {"listItemFeeds": {
+                "feeds": padrao_feeds if feeds is None else feeds}}})
+        if "getItemFeedData" in query:
+            offset, limit = int(v.get("offset") or 0), int(v.get("limit") or 500)
+            rows = (linhas if linhas is not None
+                    else [_linha(offset + i) for i in range(min(limit, max(0, total - offset)))])
+            return httpx.Response(200, json={"data": {"getItemFeedData": {
+                "rows": rows,
+                "pageInfo": {"offset": offset, "limit": limit, "totalCount": total,
+                             "hasMore": offset + len(rows) < total}}}})
+        nodes = [_no(700_000 + int(v.get("page") or 1) * 100 + i)
+                 for i in range(por_pagina)]
+        return httpx.Response(200, json={"data": {"productOfferV2": {
+            "nodes": nodes, "pageInfo": {"hasNextPage": True}}}})
+    return handler
+
+
+CFG_FEED = {"shopee": {
+    "sort_types": [2], "list_type": 0, "pages": 40, "page_size": 50,
+    "calls_per_run": 1, "category_ids": ["100630"],
+    "feed_calls_per_run": 1, "feed_page_size": 5, "feed_keep_per_run": 0,
+}}
+
+
+def test_o_feed_nasce_desligado(tmp_path):
+    """`feed_calls_per_run` ausente = nenhuma chamada de feed. A varredura
+    rotativa de hoje não muda de custo por esta fase existir."""
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas), tmp_path)
+    src.fetch_offers(CFG_5C)
+    assert not any(c["query"] in ("listItemFeeds", "getItemFeedData") for c in chamadas)
+    assert src.discovery_stats.feed == ""
+    db.close()
+
+
+def test_a_fatia_do_feed_vira_ofertas(tmp_path):
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas), tmp_path)
+    ofertas = src.fetch_offers(CFG_FEED)
+    tipos = [c["query"] for c in chamadas]
+    assert tipos == ["productOfferV2", "listItemFeeds", "getItemFeedData"]
+    # o maior FULL é o escolhido quando o config não nomeia nenhum
+    assert chamadas[2]["id"] == "222_FULL_2026-08-27"
+    assert chamadas[2]["limit"] == 5 and chamadas[2]["offset"] == 0
+    do_feed = [o for o in ofertas if o.item_id.isdigit() and int(o.item_id) < 700_000]
+    assert len(do_feed) == 5
+    o = do_feed[0]
+    assert o.source == "shopee"
+    assert o.price_current_cents == 4990        # sale_price
+    assert o.price_original_cents == 9980       # price (o "de" do vendedor)
+    assert o.category == "100630"               # global_catid1
+    assert o.rating == 4.8
+    assert o.image_url.startswith("https://cf.shopee.com.br/file/")
+    assert o.product_url.startswith("https://shopee.com.br/product/")
+    assert "utm_medium=affiliates" in o.offer_link
+    db.close()
+
+
+def test_a_oferta_do_feed_chega_sem_comissao_e_sem_vendas(tmp_path):
+    """L1 desta fase: o feed NÃO traz `commission` nem `sales`. Os dois são 0
+    = "ainda não sei" — quem os mede é o `refresh_price`, antes de publicar."""
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas), tmp_path)
+    do_feed = [o for o in src.fetch_offers(CFG_FEED) if int(o.item_id) < 700_000]
+    assert len(do_feed) == 5
+    assert all(o.commission_pct == 0.0 and o.commission_brl == 0.0 for o in do_feed)
+    assert all(o.sales == 0 for o in do_feed)
+    from afiliado import selection
+    assert all(selection.comissao_desconhecida(o) for o in do_feed)
+    db.close()
+
+
+def test_o_feed_so_traz_as_categorias_que_a_fonte_varre(tmp_path):
+    """A varredura filtra por `productCatId` na própria API; o feed não tem
+    esse argumento, então o mesmo `category_ids` é aplicado à linha. Sem isto,
+    35% do feed oficial medido são autopeças (categoria 102187)."""
+    chamadas = []
+    linhas = [_linha(1, cat="100630"), _linha(2, cat="102187"), _linha(3, cat="100636"),
+              _linha(4, cat="999")]
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
+    cfg = {"shopee": {**CFG_FEED["shopee"], "category_ids": ["100630", "100636"]}}
+    ids = {o.item_id for o in src.fetch_offers(cfg) if int(o.item_id) < 700_000}
+    assert ids == {"1", "3"}
+    db.close()
+
+
+def test_o_feed_guarda_as_mais_curtidas(tmp_path):
+    """`feed_keep_per_run` é o teto do que ENTRA no estoque, e o critério é o
+    `like` do próprio feed. Medido em 2026-08-28 no feed oficial: as 12 linhas
+    mais curtidas de uma janela de 500 somam 2.152 vendas (mediana ~33) e as 12
+    menos curtidas somam 2 (mediana 0)."""
+    chamadas = []
+    linhas = [_linha(i, like=i * 10) for i in range(1, 6)]
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
+    cfg = {"shopee": {**CFG_FEED["shopee"], "feed_keep_per_run": 2}}
+    ids = [o.item_id for o in src.fetch_offers(cfg) if int(o.item_id) < 700_000]
+    assert ids == ["5", "4"]
+    db.close()
+
+
+def test_o_cursor_do_feed_retoma_de_onde_parou_e_da_a_volta(tmp_path):
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, total=12), tmp_path)
+    for _ in range(4):
+        src.fetch_offers(CFG_FEED)
+    dados = [c["offset"] for c in chamadas if c["query"] == "getItemFeedData"]
+    assert dados == [0, 5, 10, 0]         # 12 linhas em janelas de 5: a 3ª fecha
+    db.close()
+
+
+def test_feed_calls_per_run_e_o_teto_de_chamadas_do_feed(tmp_path):
+    """O teto por run continua existindo: os 100.000 do FULL saem em 200
+    chamadas, e 200 chamadas num run só é o martelo que a 5C proibiu."""
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, total=10_000), tmp_path)
+    cfg = {"shopee": {**CFG_FEED["shopee"], "feed_calls_per_run": 3}}
+    src.fetch_offers(cfg)
+    dados = [c["offset"] for c in chamadas if c["query"] == "getItemFeedData"]
+    assert dados == [0, 5, 10]
+    assert len([c for c in chamadas if c["query"] == "listItemFeeds"]) == 1
+    db.close()
+
+
+def test_linha_apagada_do_feed_e_ignorada(tmp_path):
+    """No DELTA medido, 229 de 500 linhas são DELETE — item saindo do catálogo.
+    Publicá-lo seria anunciar o que não existe mais."""
+    chamadas = []
+    linhas = [_linha(1), {**_linha(2), "updateType": "DELETE"},
+              _linha(3, update_type="DELETE")]      # o DELTA repete dentro das colunas
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
+    ids = {o.item_id for o in src.fetch_offers(CFG_FEED) if int(o.item_id) < 700_000}
+    assert ids == {"1"}
+    db.close()
+
+
+def test_linha_ilegivel_do_feed_nao_derruba_o_lote(tmp_path):
+    chamadas = []
+    linhas = [{"columns": "{isso não é json", "updateType": None},
+              {"columns": json.dumps({"title": "sem itemid"}), "updateType": None},
+              {"columns": json.dumps({"itemid": "7", "sale_price": "abc"}),
+               "updateType": None},
+              _linha(9)]
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
+    ids = {o.item_id for o in src.fetch_offers(CFG_FEED) if int(o.item_id) < 700_000}
+    assert ids == {"9"}
+    db.close()
+
+
+def test_o_feed_nao_repete_o_que_a_busca_ja_trouxe(tmp_path):
+    chamadas = []
+    linhas = [_linha(700_100), _linha(1)]     # 700100 é o nó que a busca devolve
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
+    ofertas = src.fetch_offers(CFG_FEED)
+    assert [o.item_id for o in ofertas].count("700100") == 1
+    assert {o.item_id for o in ofertas} == {"700100", "1"}
+    db.close()
+
+
+def test_o_feed_que_falha_nao_derruba_a_varredura(tmp_path):
+    """O feed é uma superfície A MAIS. Se `listItemFeeds` cair, a descoberta de
+    hoje continua — e o run diz o que aconteceu, uma vez por dia."""
+    chamadas = []
+
+    def handler(request):
+        corpo = json.loads(request.content.decode())
+        if "ItemFeed" in corpo["query"]:
+            return httpx.Response(200, json={"errors": [{"message": "quota"}]})
+        return _api_com_feed(chamadas)(request)
+
+    src, db = _fonte_com_cursor(handler, tmp_path)
+    ofertas = src.fetch_offers(CFG_FEED)
+    assert [o.item_id for o in ofertas] == ["700100"]      # a busca sobreviveu
+    assert "feed" in src.discovery_stats.feed_warning
+    assert src.discovery_stats.feed_warning in src.discovery_stats.avisos()
+    db.close()
+
+
+def test_feed_sem_nenhum_full_avisa_em_vez_de_quebrar(tmp_path):
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, feeds=[]), tmp_path)
+    src.fetch_offers(CFG_FEED)
+    assert "feed" in src.discovery_stats.feed_warning
+    db.close()
+
+
+def test_feed_name_escolhe_o_feed(tmp_path):
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas), tmp_path)
+    cfg = {"shopee": {**CFG_FEED["shopee"], "feed_name": "Shopee Brasil"}}
+    src.fetch_offers(cfg)
+    assert [c["id"] for c in chamadas if c["query"] == "getItemFeedData"] == [
+        "111_FULL_2026-08-27"]
+    db.close()
+
+
+def test_o_limite_do_feed_e_500(tmp_path):
+    """Medido: `limit: 1000` devolve `error [11001] ... maximum limit is 500`."""
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, total=10_000), tmp_path)
+    cfg = {"shopee": {**CFG_FEED["shopee"], "feed_page_size": 1000}}
+    src.fetch_offers(cfg)
+    assert [c["limit"] for c in chamadas if c["query"] == "getItemFeedData"] == [500]
+    db.close()
+
+
+def test_o_config_real_gasta_duas_chamadas_de_feed_e_guarda_dez(tmp_path):
+    """Com o `config.yaml` DE VERDADE: o feed custa 2 chamadas por run (o
+    `listItemFeeds`, que é relistado todo run porque o `datafeedId` carrega a
+    data, mais UMA janela de 500) e guarda as 10 mais curtidas. A busca segue
+    gastando 8 — o feed entra AO LADO dela, não no lugar."""
+    from afiliado.config import load_config
+    cfg = load_config("config.yaml")
+    chamadas = []
+    linhas = [_linha(i, cat="100630", like=i) for i in range(1, 61)]
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
+    ofertas = src.fetch_offers(cfg)
+    assert len([c for c in chamadas if c["query"] == "productOfferV2"]) == 8
+    assert len([c for c in chamadas if c["query"] != "productOfferV2"]) == 2
+    assert [c["limit"] for c in chamadas if c["query"] == "getItemFeedData"] == [500]
+    do_feed = [o for o in ofertas if int(o.item_id) <= 60]
+    assert [o.item_id for o in do_feed] == [str(i) for i in range(60, 50, -1)]
+    assert "10 mantidas" in src.discovery_stats.feed
+    db.close()
+
+
+def test_as_estatisticas_separam_o_feed_da_busca(tmp_path):
+    chamadas = []
+    src, db = _fonte_com_cursor(_api_com_feed(chamadas, total=10_000), tmp_path)
+    cfg = {"shopee": {**CFG_FEED["shopee"], "feed_keep_per_run": 2}}
+    src.fetch_offers(cfg)
+    stats = src.discovery_stats
+    assert stats.calls == 1 and stats.eligible == 1        # a busca, intocada
+    assert "2 chamadas" in stats.feed and "5 linhas" in stats.feed
+    assert "2 mantidas" in stats.feed
+    db.close()

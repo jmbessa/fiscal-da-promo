@@ -235,6 +235,16 @@ def test_caption_modo_a_usa_a_nossa_referencia():
     assert "R$ 350,00" not in caption
 
 
+def test_caption_acompanha_o_rotulo_da_shopee(rotulo):
+    """Fase 5K/5N: enquanto a arte do feed desenha "SEM CUPOM" na pill, a
+    legenda pública diz o mesmo, colada no mesmo número; desligado, nenhuma das
+    duas diz. O ML fica de fora nos dois estados."""
+    caption = _caption_for(price_current_cents=1890)
+    assert f"R$ 18,90 {rotulo}".rstrip() in caption
+    assert ("sem cupom" in caption) is bool(rotulo)
+    assert "sem cupom" not in _caption_for(price_current_cents=1890, source="meli")
+
+
 def test_caption_modo_b_sem_referencia_nao_alega_desconto():
     caption = _caption_for(price_original_cents=35000, price_current_cents=4900,
                            rating=4.9, sales=30000)

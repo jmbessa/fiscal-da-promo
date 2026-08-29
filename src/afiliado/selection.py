@@ -50,6 +50,22 @@ class FilterStats:
         return texto
 
 
+def comissao_desconhecida(offer: Offer) -> bool:
+    """A comissão desta oferta AINDA NÃO FOI MEDIDA — não é "vale zero".
+
+    Fase 5L. É como a linha do data feed da Shopee chega: o feed traz título,
+    preço, nota, imagem e link, e NÃO traz `commission` nem `sales`. Os dois
+    só existem depois do `refresh_price`, que roda imediatamente antes de
+    publicar — bem depois dos portões e do ranking.
+
+    Mesma convenção de `price_current_cents == 0` (fase 5J) e de todo campo
+    numérico deste projeto: 0 é "desconhecido". A API de afiliados nunca
+    devolveu taxa 0 para item listado (30 de 30 itens do feed sorteados em
+    2026-08-28 voltaram com `commissionRate` entre 3% e 24%), então tratar o
+    par zerado como ignorância não abre porta para oferta que não paga."""
+    return offer.commission_pct <= 0 and offer.commission_brl <= 0
+
+
 def _allowed_categories(cfg: dict, source: str) -> set[str]:
     """IDs de categoria permitidos para uma fonte, a partir de
     `selection.category_ids`. Aceita lista (formato legado: vale para todas
@@ -119,8 +135,14 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
         # Ela já paga o preço disso no RANKING: `ev_score` 0 a joga para o fim
         # da fila, atrás de qualquer oferta com régua; quem a puxa de volta é a
         # cota por fonte (`next_index_by_quota`), quando o ML está atrasado.
+        #
+        # Fase 5L: a mesma isenção para a comissão DESCONHECIDA
+        # (`comissao_desconhecida`) — a linha do data feed não traz `commission`
+        # e o piso a leria como "vale zero". Sem isto, TODA candidata vinda do
+        # feed morreria aqui, em silêncio, e a fase seria um no-op.
         acima_do_piso = [o for o in result
-                         if o.price_current_cents <= 0 or ev_score(o, cfg) >= piso]
+                         if o.price_current_cents <= 0 or comissao_desconhecida(o)
+                         or ev_score(o, cfg) >= piso]
         cortes["ev"] = len(result) - len(acima_do_piso)
         result = acima_do_piso
     return result, FilterStats(**cortes)
@@ -408,14 +430,24 @@ def _janela_de_vendas(offer: Offer) -> str:
             else f"últimos {offer.sales_window_days} dias")
 
 
+def _comissao_no_prompt(offer: Offer) -> str:
+    """A comissão como o ranker deve lê-la. Fase 5L: `comissão=R$0.00 (0.0%)`
+    é uma AFIRMAÇÃO falsa quando o número nunca foi medido — e o prompt manda
+    priorizar retorno esperado, então o LLM descartaria toda candidata do feed
+    por um zero que ninguém apurou."""
+    if comissao_desconhecida(offer):
+        return "comissão=a medir (conferida ao vivo antes de publicar)"
+    return (f"comissão=R${(offer.price_current_cents / 100) * (offer.commission_pct / 100):.2f} "
+            f"({offer.commission_pct:.1f}%)")
+
+
 def _rank_prompt(candidates: list[Offer], recent_titles: list[str], n: int,
                  watchlist: Watchlist | None = None, cfg: dict | None = None) -> str:
     linhas = "\n".join(
         f"- id={o.item_id} | {o.title} | categoria={o.category} | "
         f"desconto verificado={_desconto_alegavel(o, cfg)}% | "
         f"vendas={o.sales} ({_janela_de_vendas(o)}) | "
-        f"comissão=R${(o.price_current_cents / 100) * (o.commission_pct / 100):.2f} "
-        f"({o.commission_pct:.1f}%)"
+        + _comissao_no_prompt(o)
         + (" | em alta: sim" if watchlist is not None and o.item_id in watchlist.hot_items else "")
         for o in candidates)
     recentes = "\n".join(f"- {t}" for t in recent_titles) or "(nenhum)"

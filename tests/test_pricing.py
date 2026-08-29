@@ -192,7 +192,8 @@ def test_promocao_genuina_10pct_dos_dias_a_menos_20_e_modo_a(tmp_path):
     assert out.price_ref_cents == 5000 and out.price_p25_cents == 5000
     assert v == ("A", 20)
     veredito = pricing.verdict(out, 10)
-    assert pricing.price_line(out, veredito) == ("De: R$ 50,00 | Por: R$ 40,00 (20% OFF)", "")
+    assert pricing.price_line(out, veredito) == (
+        "De: R$ 50,00 | Por: R$ 40,00 (20% OFF)", "")
     # hoje é a mínima dos 30 dias observados: o selo diz exatamente isso
     assert veredito.seal == "🏷️ Menor preço dos últimos 30 dias (verificado)"
 
@@ -256,6 +257,152 @@ def test_selo_e_modo_a_convivem():
         "A", 27, "🏷️ Menor preço dos últimos 3 meses (verificado)", 90)
 
 
+# -- "sem cupom" (rótulo da fase 5K, desligado na 5N) --------------------------
+#
+# A REGRA tem dois estados e os testes afirmam os dois: LIGADO, só a Shopee
+# leva o rótulo; DESLIGADO (o padrão desde a fase 5N, decisão do dono), ninguém
+# leva — nem a Shopee. Ver a fixture `rotulo` em `tests/conftest.py`.
+# O que a peça publica HOJE está nos testes de `price_line`/`price_line_html`
+# logo abaixo, que mostram o texto inteiro sem rótulo nenhum.
+
+
+def test_sem_cupom_e_so_da_shopee_e_so_quando_ligado():
+    """O rótulo qualifica o preço da Shopee, onde o desconto de Pix+cupom é de
+    CHECKOUT e nenhuma superfície da API o expõe (`docs/runbooks/shopee-preco.md`).
+    O preço do ML é o do anúncio do buy box — o mesmo que a página mostra.
+
+    `mostrar=` exercita os dois estados sem tocar no módulo; é o único ponto de
+    todo o programa que decide isto."""
+    assert pricing.sem_cupom(make_offer(), mostrar=True) == "sem cupom"
+    assert pricing.sem_cupom(make_offer(source="meli"), mostrar=True) == ""
+    assert pricing.sem_cupom(make_offer(), mostrar=False) == ""
+    assert pricing.sem_cupom(make_offer(source="meli"), mostrar=False) == ""
+
+
+def test_sem_cupom_sem_parametro_obedece_a_constante(rotulo):
+    """Quem chama em produção não passa `mostrar` — e recebe o que o
+    interruptor mandar. É este teste que liga o parâmetro à constante."""
+    assert pricing.sem_cupom(make_offer()) == rotulo
+    assert pricing.sem_cupom(make_offer(source="meli")) == ""
+
+
+def test_preco_publicado_cola_o_rotulo_no_numero(rotulo):
+    shopee = pricing.preco_publicado(make_offer(price_current_cents=68999))
+    assert shopee == f"R$ 689,99 {rotulo}".rstrip()
+    assert pricing.preco_publicado(
+        make_offer(price_current_cents=68999, source="meli")) == "R$ 689,99"
+
+
+def test_price_line_da_shopee_leva_o_rotulo_so_com_ele_ligado(rotulo):
+    """O caso real de 2026-08-28: o story publicou R$ 689,99 e o dono viu
+    R$ 611,80 no anúncio — a página cobra 611,80 no Pix COM cupom e 689,99 sem.
+    Ligado, o rótulo cola no preço nos dois modos, como na arte; desligado,
+    some dos dois — e o número publicado não muda."""
+    sufixo = f" {rotulo}" if rotulo else ""
+    modo_a = make_offer_ref(79900, price_current_cents=68999)
+    assert pricing.price_line(modo_a, pricing.verdict(modo_a, 10))[0] == (
+        f"De: R$ 799,00 | Por: R$ 689,99{sufixo} (13% OFF)")
+    modo_b = make_offer(price_current_cents=68999, rating=4.9, sales=45950)
+    assert pricing.price_line(modo_b, NO_CLAIM)[0] == f"R$ 689,99{sufixo}"
+
+
+def test_price_line_do_ml_nao_leva_rotulo(rotulo):
+    """Nem com o interruptor ligado: a fixture roda os dois estados e o texto
+    do ML é o mesmo nos dois."""
+    modo_a = make_offer_ref(79900, price_current_cents=68999, source="meli")
+    assert pricing.price_line(modo_a, pricing.verdict(modo_a, 10))[0] == (
+        "De: R$ 799,00 | Por: R$ 689,99 (13% OFF)")
+    modo_b = make_offer(price_current_cents=68999, source="meli")
+    assert pricing.price_line(modo_b, NO_CLAIM)[0] == "R$ 689,99"
+
+
+def test_price_line_html_poe_o_rotulo_fora_do_negrito(rotulo):
+    """O negrito é do NÚMERO: o rótulo é letra miúda e não pode disputar com o
+    preço, que é o herói do bloco. Desligado, o `<b>` fica exatamente onde
+    estava — tirar o rótulo não mexe na marcação."""
+    sufixo = f" {rotulo}" if rotulo else ""
+    modo_b = make_offer(price_current_cents=68999)
+    assert pricing.price_line_html(modo_b, NO_CLAIM)[0] == f"<b>R$ 689,99</b>{sufixo}"
+    modo_a = make_offer_ref(79900, price_current_cents=68999)
+    assert pricing.price_line_html(modo_a, pricing.verdict(modo_a, 10))[0] == (
+        f"De: <s>R$ 799,00</s> | Por: <b>R$ 689,99</b>{sufixo} (13% OFF)")
+
+
+# -- Fase 5P: o rótulo INVERTIDO, quando o navegador leu o preço de checkout ---
+#
+# O rótulo da 5N ("sem cupom") é a versão NEGATIVA do mesmo fato e está
+# desligado. Este é o outro: só existe quando temos o número REAL da página, e
+# diz o que ele exige. Os dois nunca convivem — o preço publicado é um só, e ele
+# tem uma condição só.
+
+
+def _com_checkout(**kw):
+    """A oferta do caso real: catálogo R$ 599,00, checkout R$ 523,48 com cupom."""
+    base = dict(price_current_cents=59900, price_checkout_cents=52348,
+                price_checkout_label="com cupom")
+    base.update(kw)
+    return make_offer(**base)
+
+
+def test_o_rotulo_do_preco_e_a_condicao_lida_e_engole_o_sem_cupom(rotulo):
+    """Com leitura, o rótulo é a condição da página nos DOIS estados do
+    interruptor da 5N: publicar "R$ 523,48 sem cupom" seria dizer o contrário do
+    que o número significa."""
+    assert pricing.rotulo_do_preco(_com_checkout()) == "com cupom"
+
+
+def test_sem_leitura_o_rotulo_continua_sendo_o_da_5n(rotulo):
+    assert pricing.rotulo_do_preco(make_offer()) == rotulo
+    assert pricing.rotulo_do_preco(make_offer(source="meli")) == ""
+
+
+def test_preco_publicado_com_leitura_e_o_numero_da_pagina(rotulo):
+    assert pricing.preco_publicado(_com_checkout()) == "R$ 523,48 com cupom"
+
+
+def test_price_line_com_leitura_no_modo_b(rotulo):
+    offer = _com_checkout(rating=4.9, sales=45950, sales_window_days=30)
+    assert pricing.price_line(offer, NO_CLAIM) == (
+        "R$ 523,48 com cupom", "⭐ 4,9 · 45 mil vendidos no último mês")
+
+
+def test_price_line_html_com_leitura_deixa_a_condicao_fora_do_negrito(rotulo):
+    assert pricing.price_line_html(_com_checkout(), NO_CLAIM)[0] == (
+        "<b>R$ 523,48</b> com cupom")
+
+
+def test_a_leitura_nao_abre_alegacao_de_desconto_que_o_catalogo_nao_ganhou():
+    """O PORTÃO continua sendo o preço de catálogo contra o p25 da nossa série
+    — que é uma série de preços de catálogo. Deixar o preço de cupom entrar aí
+    faria a regra do quartil da fase 5B alegar desconto todo dia em que houvesse
+    cupom, que é justamente o padrão "promoção recorrente" que ela recusa."""
+    # Catálogo 599,00 em cima do p25 de 590,00: modo B. O checkout de 523,48
+    # passaria folgado no quartil — e não é ele quem decide.
+    offer = _com_checkout(price_ref_cents=75000, price_p25_cents=59000,
+                          price_window_days=90)
+    assert pricing.verdict(offer, 10).mode == "B"
+
+
+def test_no_modo_a_o_percentual_fecha_a_conta_dos_numeros_exibidos():
+    """"De: R$ 750,00 | Por: R$ 523,48 com cupom (30% OFF)": 30 é a conta de
+    750,00 para 523,48. O portão foi decidido com o de catálogo (20%), e o
+    número que a peça mostra é o que a peça consegue justificar."""
+    offer = _com_checkout(price_ref_cents=75000, price_p25_cents=75000,
+                          price_window_days=90)
+    veredito = pricing.verdict(offer, 10)
+    assert (veredito.mode, veredito.discount_pct) == ("A", 30)
+    assert pricing.price_line(offer, veredito)[0] == (
+        "De: R$ 750,00 | Por: R$ 523,48 com cupom (30% OFF)")
+
+
+def test_o_selo_continua_lendo_o_preco_de_catalogo():
+    """O selo diz "menor preço dos últimos N dias" sobre a série que medimos, e
+    a série é de preços de catálogo. Com o de cupom, todo item com cupom viraria
+    mínima histórica."""
+    offer = _com_checkout(price_floor_cents=55000, price_floor_window_days=90)
+    assert pricing.verdict(offer, 10).seal == ""
+
+
 # -- price_line --------------------------------------------------------------
 
 def test_price_line_modo_a_desconto_verificado():
@@ -303,7 +450,8 @@ def test_price_line_obedece_ao_veredito_e_nao_recalcula():
     # A oferta tem 27% verificável, mas quem manda é o veredito recebido.
     offer = make_offer_ref(2600, price_current_cents=1890)
     assert pricing.price_line(offer, NO_CLAIM)[0] == "R$ 18,90"
-    assert pricing.price_line(offer, Verdict("A", 27, ""))[0] == "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)"
+    assert pricing.price_line(offer, Verdict("A", 27, ""))[0] == (
+        "De: R$ 26,00 | Por: R$ 18,90 (27% OFF)")
 
 
 # -- price_line_html (Telegram) ------------------------------------------------

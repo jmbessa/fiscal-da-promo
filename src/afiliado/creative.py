@@ -5,10 +5,11 @@ Gera a arte de story (1080×1920) e de feed (1080×1350) a partir de um `Offer`
 e do `Verdict` já decidido (`pricing.verdict`): fundo navy com brilho
 radial, cabeçalho com mascote (ver `afiliado.brand`), card branco com a foto
 do produto (badge "-N%" só em modo A), título, pill de preço (referência
-riscada só em modo A), meta (vendas/fonte) e — quando o veredito traz o
-selo — o selo "menor preço verificado" com a mesma janela do texto. A arte
-NÃO recalcula modo nem selo: é o que faz Telegram, story e feed concordarem
-(C9). `story_plan`/`feed_plan` expõem o que será desenhado, para teste.
+riscada só em modo A; "SEM CUPOM" à direita do preço só na Shopee — fase 5K,
+DESLIGADO desde a 5N, ver `_pill_nota`), meta (vendas/fonte) e — quando o
+veredito traz o selo — o selo "menor preço verificado" com a mesma janela do
+texto. A arte NÃO recalcula modo nem selo: é o que faz Telegram, story e feed
+concordarem (C9). `story_plan`/`feed_plan` expõem o que será desenhado, para teste.
 `copy` faz parte da interface pública para uso futuro (o texto do post é
 montado à parte, em message.py) — esta fase não desenha `CopyParts` na arte.
 """
@@ -76,6 +77,14 @@ STORY_META_GAP = 88     # respiro entre o preço e a linha de avaliações
 STORY_SELO_GAP = 28
 FEED_META_GAP = 64     # 88 no story x (1350/1920): o feed tem 570px a menos
 FEED_SELO_GAP = 24
+
+# Fase 5K — o corpo do rótulo "SEM CUPOM" dentro da pill do preço. Mesmo
+# tamanho da linha de meta de cada formato, porque é a mesma VOZ: mono, caixa
+# alta, letra miúda que qualifica o número (a sans é a voz humana — título,
+# preço, CTA; a mono é a voz do sistema — meta, selo, handle). Continuam aqui
+# com o rótulo desligado (5N): eles medem o rótulo, não decidem se ele sai.
+STORY_NOTA_SIZE = 30
+FEED_NOTA_SIZE = 27
 
 DOWNLOAD_TIMEOUT = 20
 
@@ -346,38 +355,130 @@ def _draw_title(draw: ImageDraw.ImageDraw, canvas_width: int, top: float, dims: 
 
 # --- Pill de preço (align-self: flex-start) -----------------------------------
 
+def _pill_nota(offer: Offer) -> str:
+    """O rótulo à DIREITA do preço na pill: a frase que qualifica o número.
+
+    Fase 5P: quando o navegador leu o preço de checkout, é a CONDIÇÃO dele
+    ("COM CUPOM", "NO PIX COM CUPOM") — o mesmo slot, o mesmo alinhamento, o
+    sentido oposto ao da 5N. Sem leitura é o "SEM CUPOM" das ofertas da Shopee,
+    "" no resto (fase 5K) — e "" em tudo enquanto `pricing.MOSTRAR_SEM_CUPOM`
+    estiver desligado, que é o estado desde a fase 5N.
+
+    Com ele vazio o slot da direita não existe: `nota_bloco` é 0 e a pill volta
+    a medir preço + padding, exatamente como antes da 5K (verificado nos
+    previews da 5N). Nada aqui reserva espaço para um rótulo que não vem.
+
+    Quem decide é `pricing.sem_cupom`, junto do resto da régua — aqui só a
+    forma (caixa alta, como o selo). A colocação foi escolhida olhando os
+    previews de 2026-08-28 e continua valendo para quem religar o rótulo; as
+    três alternativas caíram na imagem:
+
+    - na LINHA DE META ("· sem cupom"): ela não tem guarda horizontal (fase
+      5H) e passou a encostar na margem; no pior caso o texto era cortado pela
+      borda do canvas. Pior ainda, no feed em modo A com selo a meta é
+      DERRUBADA pelo guarda de overflow — e o rótulo sumia com ela;
+    - em LINHA PRÓPRIA sob a pill: come o respiro entre o preço e a meta, que o
+      dono pediu e que foi aumentado de propósito (`STORY_META_GAP`);
+    - em SEGUNDA LINHA dentro da pill: engorda a pill em ~50 px e o guarda de
+      overflow passa a derrubar o SELO no feed com título longo.
+
+    À direita do preço, alinhado pela linha de base, ele custa ZERO altura
+    (cabe na que o preço já ocupa) e entra no guarda horizontal que a pill já
+    tinha — onde falta espaço quem cede é a referência riscada, não ele.
+
+    "COM CUPOM" mede exatamente o mesmo que "SEM CUPOM" (162 px no story, 144 no
+    feed), então a medição da 5K vale inteira. "NO PIX COM CUPOM" mede 288 px e
+    não cabe no pior caso publicável junto do riscado — e é aí que o guarda faz
+    o que sempre fez: corta o riscado, nunca a condição."""
+    return pricing.rotulo_do_preco(offer).upper()
+
+
 def _pill_left(offer: Offer, verdict: Verdict) -> tuple[str, bool]:
     """(texto à esquerda do preço na pill, se ele é riscado) — pelo veredito.
 
     Modo A (desconto verificado): a NOSSA referência, riscada — nunca o "de"
-    do vendedor. Modo B: NADA — a pill é só o preço, grande; nota, vendas e
-    loja ficam na linha de meta logo abaixo (`_draw_meta`), exatamente como
-    no modo A, sem duplicar a prova social.
+    do vendedor.
+
+    Modo B COM preço de checkout (fase 5R): o preço de CATÁLOGO, riscado. É a
+    BASE da porcentagem que o badge mostra, e sem ela o seguidor vê um "-12%"
+    que não pode conferir. Continua não sendo o "de" do vendedor: é a nossa
+    medição de hoje, o mesmo número que a página escreve como "ou R$ 599,00 sem
+    cupom" — os dois números do par são observados por nós, que é exatamente a
+    condição para o percentual poder ser publicado.
+
+    Modo B sem leitura: NADA — a pill é só o preço, grande; nota, vendas e loja
+    ficam na linha de meta logo abaixo (`_draw_meta`), sem duplicar a prova
+    social. É o comportamento de sempre, e é o da maioria das peças.
     """
     if verdict.mode == "A":
         return format_brl(offer.price_ref_cents), True
+    if offer.checkout_discount_pct > 0:
+        return format_brl(offer.price_current_cents), True
     return "", False
+
+
+def _badge_pct(offer: Offer, verdict: Verdict) -> int:
+    """A porcentagem do badge do card — UMA por peça, sempre a mais forte que é
+    verdadeira, e nunca a do vendedor.
+
+    Modo A: a do veredito, que já é a da referência para o preço PUBLICADO
+    (5P) — ela é sempre maior que a de checkout, porque a referência é maior
+    que o catálogo (`1 - c/x` cresce com x).
+
+    Modo B: a de CHECKOUT, quando existe. Este é o pedido do dono da fase 5R —
+    "precisamos evidenciar a porcentagem de desconto nos stories" —, e até aqui
+    a peça de modo B com preço de checkout não mostrava porcentagem nenhuma: o
+    badge só existia no modo A. Sem leitura, 0, e o badge não é desenhado.
+    """
+    return verdict.discount_pct or offer.checkout_discount_pct
 
 
 def _price_pill_dims(
     draw: ImageDraw.ImageDraw, offer: Offer, orig_size: int, cur_size: int,
     pad_y: int, pad_x: int, gap: int, pill_left: tuple[str, bool] = ("", False),
-    max_width: int | None = None,
+    max_width: int | None = None, nota_size: int = 0,
 ) -> dict:
     left_text, strike = pill_left
     orig_font = _font("sans", orig_size, 600 if strike else 500)
     cur_font = _font("sans", cur_size, 800)
-    cur_text = format_brl(offer.price_current_cents)
+    # `published_price_cents`: o de checkout quando a fase 5P o leu, o de
+    # catálogo quando não. A pill e o texto do Telegram leem o MESMO campo — é
+    # o que impede arte e legenda de mostrarem números diferentes.
+    cur_text = format_brl(offer.published_price_cents)
     cur_bbox = draw.textbbox((0, 0), cur_text, font=cur_font)
     orig_asc, orig_desc = orig_font.getmetrics()
     cur_asc, cur_desc = cur_font.getmetrics()
     cur_w = cur_bbox[2] - cur_bbox[0]
 
+    # Slot da direita: o rótulo "SEM CUPOM" (fase 5K). `nota_size == 0` é quem
+    # não tem slot nenhum — o carrossel e o story usam os tamanhos do formato.
+    # Rótulo vazio (`_pill_nota` -> "", o padrão desde a 5N) tem o MESMO efeito
+    # de `nota_size == 0`: `nota_bloco` = 0 e a pill não guarda espaço nenhum.
+    nota_text = _pill_nota(offer) if nota_size > 0 else ""
+    nota_font = _font("mono", nota_size, 500) if nota_text else None
+    nota_bbox = draw.textbbox((0, 0), nota_text, font=nota_font) if nota_text else (0, 0, 0, 0)
+    nota_w = nota_bbox[2] - nota_bbox[0]
+    nota_asc = nota_font.getmetrics()[0] if nota_text else 0
+    # O que o rótulo tira da largura disponível: ele e o respiro antes dele.
+    nota_bloco = (gap + nota_w) if nota_text else 0
+
     # Guarda horizontal: a pill nunca pode passar da largura útil do canvas.
+    # O rótulo entra na conta ANTES do riscado: onde não cabe tudo, quem cede é
+    # a referência riscada, nunca o rótulo.
+    #
+    # E ela cede INTEIRA — não é truncada (fase 5P). Até aqui o guarda chamava
+    # `_hard_truncate`, e com a condição longa no pior caso publicável isso
+    # produzia um riscado "R$ 7…" ao lado de "R$ 523,48" (visto no preview de
+    # 2026-08-28): um número pela metade, riscado, que o seguidor lê como "de
+    # R$ 7". Preço cortado não é decoração degradada, é informação FALSA — ao
+    # contrário de um título cortado, que é onde `_hard_truncate` continua
+    # servindo. Sem a referência a peça ainda diz o desconto: o badge de -N% e o
+    # veredito continuam lá.
     if left_text and max_width is not None:
-        disponivel = max_width - 2 * pad_x - gap - cur_w
-        left_text = (_hard_truncate(draw, left_text, orig_font, disponivel)
-                     if disponivel > 0 else "")
+        disponivel = max_width - 2 * pad_x - gap - cur_w - nota_bloco
+        medida = draw.textbbox((0, 0), left_text, font=orig_font)
+        if (medida[2] - medida[0]) > disponivel:
+            left_text = ""
 
     if left_text:
         orig_bbox = draw.textbbox((0, 0), left_text, font=orig_font)
@@ -389,13 +490,18 @@ def _price_pill_dims(
         orig_bbox, orig_w = (0, 0, 0, 0), 0
         content_h = cur_asc + cur_desc
         content_w = cur_w
+    # `content_h` NÃO cresce com o rótulo: ele compartilha a linha de base do
+    # preço e é muito menor que ele. É isso que faz a colocação custar zero
+    # altura — e é por isso que ela não derruba meta nem selo.
     return {
         "orig_font": orig_font, "cur_font": cur_font,
         "orig_text": left_text, "cur_text": cur_text, "strike": strike,
         "orig_bbox": orig_bbox, "cur_bbox": cur_bbox,
         "orig_asc": orig_asc, "cur_asc": cur_asc,
         "orig_w": orig_w, "cur_w": cur_w,
-        "width": content_w + 2 * pad_x, "height": content_h + 2 * pad_y,
+        "nota_font": nota_font, "nota_text": nota_text, "nota_bbox": nota_bbox,
+        "nota_asc": nota_asc, "nota_w": nota_w,
+        "width": content_w + nota_bloco + 2 * pad_x, "height": content_h + 2 * pad_y,
         "pad_y": pad_y, "pad_x": pad_x, "gap": gap,
     }
 
@@ -420,6 +526,14 @@ def _draw_price_pill(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, 
     cur_bbox = dims["cur_bbox"]
     cur_y = baseline - dims["cur_asc"]
     draw.text((cur_x - cur_bbox[0], cur_y - cur_bbox[1]), dims["cur_text"], font=cur_font, fill=INK)
+    if dims["nota_text"]:
+        # Mesma linha de base do preço e a mesma tinta apagada do riscado: a
+        # pill fica com o número no meio e uma letra miúda de cada lado.
+        nota_bbox = dims["nota_bbox"]
+        nota_x = cur_x + dims["cur_w"] + dims["gap"]
+        nota_y = baseline - dims["nota_asc"]
+        draw.text((nota_x - nota_bbox[0], nota_y - nota_bbox[1]), dims["nota_text"],
+                  font=dims["nota_font"], fill=PRICE_DIM_INK)
     return y + h
 
 
@@ -571,7 +685,8 @@ def _draw_selo(draw: ImageDraw.ImageDraw, x: float, y: float, dims: dict, radius
 def _story_body_dims(draw, offer, verdict, title_size, title_weight, title_lines_cap,
                       include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, STORY_TITLE_WIDTH, title_lines_cap, title_weight)
-    price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, pill_left, STORY_TITLE_WIDTH)
+    price = _price_pill_dims(draw, offer, 36, 96, 20, 30, 24, pill_left, STORY_TITLE_WIDTH,
+                             STORY_NOTA_SIZE)
     y = 1050 + title["height"] + 34 + price["height"]
     meta = None
     if include_meta:
@@ -587,7 +702,8 @@ def _story_body_dims(draw, offer, verdict, title_size, title_weight, title_lines
 def _feed_body_dims(draw, offer, verdict, title_size, title_weight, title_lines_cap,
                      include_meta, include_selo, pill_left=("", False)):
     title = _title_dims(draw, offer, title_size, FEED_TITLE_WIDTH, title_lines_cap, title_weight)
-    price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, pill_left, FEED_TITLE_WIDTH)
+    price = _price_pill_dims(draw, offer, 32, 84, 18, 28, 22, pill_left, FEED_TITLE_WIDTH,
+                             FEED_NOTA_SIZE)
     y = 790 + title["height"] + 24 + price["height"]
     meta = None
     if include_meta:
@@ -699,8 +815,10 @@ def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,
     else:
         pad_y, pad_x = 26, 40
         font = _font("sans", 42, 700)
-    label = "MERCADO LIVRE" if offer.source == "meli" else "SHOPEE"
-    text = CTA_FIGURINHA if cta_figurinha else f"→  LINK NA {label}"
+    # A preposição vem JUNTO do nome: "na Shopee" mas "NO Mercado Livre". Elas
+    # estavam separadas e todo story do ML dizia "LINK NA MERCADO LIVRE".
+    destino = "NO MERCADO LIVRE" if offer.source == "meli" else "NA SHOPEE"
+    text = CTA_FIGURINHA if cta_figurinha else f"→  LINK {destino}"
     bbox = draw.textbbox((0, 0), text, font=font)
     w = (bbox[2] - bbox[0]) + 2 * pad_x
     h = (bbox[3] - bbox[1]) + 2 * pad_y
@@ -753,11 +871,18 @@ def _draw_story_footer(draw: ImageDraw.ImageDraw, width: int, handle: str | None
     # única instrução do story — e o teste real mostrou que a versão discreta
     # (contorno sobre navy) some ao lado da figurinha azul do Instagram.
     figurinha = geo.get("cta_figurinha", False)
+    # METADE DA ALTURA, nunca 999: raio maior que o lado curto faz o Pillow
+    # devolver uma ELIPSE. O comentário do fecho do carrossel dizia que "nas
+    # pills largas do story isso nunca apareceu" — apareceu: o botão dourado,
+    # que é a ÚNICA instrução do story no modo figurinha e a área que o dono
+    # pediu para tocar, saía oval (medido no preview de 2026-08-28: 63 px de
+    # largura preenchida no topo, contra 417 com o raio certo).
+    raio = (y1 - y0) / 2
     if figurinha:
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=999, fill=GOLD)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=raio, fill=GOLD)
         cor_texto = INK
     else:
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=999, outline=PILL_BORDER,
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=raio, outline=PILL_BORDER,
                                width=2, fill=SURFACE)
         cor_texto = TEXT
     bbox = geo["cta_bbox"]
@@ -815,7 +940,7 @@ def _story_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
     title, price, meta, selo = _story_body_options(
         draw, offer, verdict, footer["cta_box"][1] - 36, pill_left)
     return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
-            "pill_left": pill_left, "badge_pct": verdict.discount_pct}
+            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict)}
 
 
 def _feed_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
@@ -826,7 +951,7 @@ def _feed_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
     title, price, meta, selo = _feed_body_options(
         draw, offer, verdict, footer["divider_y"] - 36, pill_left)
     return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
-            "pill_left": pill_left, "badge_pct": verdict.discount_pct}
+            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict)}
 
 
 def _resumo(plan: dict) -> dict:
@@ -834,6 +959,7 @@ def _resumo(plan: dict) -> dict:
         "selo": plan["selo"]["text"] if plan["selo"] is not None else "",
         "badge_pct": plan["badge_pct"],
         "riscado": plan["pill_left"][0],
+        "sem_cupom": plan["price"]["nota_text"],
         "title_lines": list(plan["title"]["lines"]),
         "meta": plan["meta"] is not None,
     }
@@ -842,7 +968,8 @@ def _resumo(plan: dict) -> dict:
 def story_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict:
     """O que `render_story` vai desenhar para este veredito — sem baixar a
     imagem nem pintar: `selo` (rótulo, ou "" quando não há), `badge_pct`,
-    `riscado` (a referência riscada na pill, ou ""), `title_lines`, `meta`.
+    `riscado` (a referência riscada na pill, ou ""), `sem_cupom` (o rótulo à
+    direita do preço, ou ""), `title_lines`, `meta`.
     É o hook que prova, por teste e não por pixel, que arte, texto e
     legendas concordam (mesmo `Verdict` -> selo em todos ou em nenhum)."""
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
@@ -1505,7 +1632,7 @@ def _oferta_plan(draw: ImageDraw.ImageDraw, post: Post, indice: int, total: int,
     return {
         "tipo": "oferta", "indice": indice, "total": total,
         "item_id": post.offer.item_id, "source": post.offer.source,
-        "preco": format_brl(post.offer.price_current_cents),
+        "preco": format_brl(post.offer.published_price_cents),
         **_resumo(plan),
     }
 
@@ -1582,7 +1709,8 @@ def _render_fecho(handle: str | None) -> bytes:
     x0, y0 = (largura - cta_w) / 2, plan["cta_top"]
     # `radius` é METADE DA ALTURA, não 999: com um raio maior que o lado curto
     # o Pillow devolve uma elipse, e a pill do fecho saía oval (preview de
-    # 2026-08-27). Nas pills largas do story isso nunca apareceu.
+    # 2026-08-27). O mesmo defeito estava no rodapé do story e no contador do
+    # carrossel, achados em 2026-08-28 — a regra vale para TODA pill.
     draw.rounded_rectangle([x0, y0, x0 + cta_w, y0 + cta_h], radius=cta_h / 2, fill=GOLD)
     bbox = plan["cta_bbox"]
     draw.text((x0 + 44 - bbox[0], y0 + 26 - bbox[1]), CTA_CARROSSEL,
@@ -1600,7 +1728,7 @@ def _draw_contador(draw: ImageDraw.ImageDraw, largura: int, indice: int, total: 
     h = (bbox[3] - bbox[1]) + 2 * 14
     x0 = largura - FEED_PAD - w
     y0 = 64 + (62 - h) / 2                     # centrado no avatar do cabeçalho
-    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=999,
+    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=h / 2,
                            fill=SURFACE, outline=PILL_BORDER, width=2)
     draw.text((x0 + 20 - bbox[0], y0 + 14 - bbox[1]), texto, font=font, fill=MUTED)
 

@@ -29,7 +29,6 @@ aqui sozinha, e reprova enquanto não declarar a janela dela.
 import importlib
 import inspect
 import pkgutil
-from datetime import date
 
 import pytest
 
@@ -112,7 +111,7 @@ def test_a_oferta_do_meli_carrega_o_contador_vitalicio():
             "price_ref_cents": 2590, "price_p25_cents": 2428, "price_window_days": 91,
             "price_historic_min_cents": 1699, "price_min_window_days": 365,
             "sales": 1_000_000, "rating": 4.8}
-    offer, motivo = _parse_pool_offer(item, 4.0, {}, date(2026, 8, 28), date(2026, 8, 28))
+    offer, motivo = _parse_pool_offer(item, 4.0, {})
     assert motivo == "" and offer is not None
     assert offer.sales == 1_000_000
     assert offer.sales_window_days == JANELAS["meli"] == 0

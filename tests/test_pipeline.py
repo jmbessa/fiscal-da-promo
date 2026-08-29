@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -150,16 +151,17 @@ def test_summary_text_agrupa_a_partir_de_quatro():
     assert "MLB0" not in text
 
 
-def test_summary_text_agrupa_sem_buy_box():
-    # Rodada de correção da 5B (Fix 1): o "sem buy box" de refresh_price varia
-    # só nos ids e na contagem de vendedores — continua agrupado no resumo.
-    descartes = [(f"Produto {i}", f"meli: sem buy box — anúncio MLB712544938{i} não está "
-                                  f"entre os {30 + i} vendedores de MLB6663723{i}")
+def test_summary_text_agrupa_o_descarte_por_falta_de_anuncio_linkado():
+    # Fase 5M: o descarte de `refresh_price` varia só no id do produto e na
+    # contagem de vendedores — continua agrupado no resumo, em vez de virar
+    # 40 linhas iguais.
+    descartes = [(f"Produto {i}", f"meli: nenhum anúncio linkado de MLB6663723{i} está "
+                                  f"à venda entre os {30 + i} vendedores")
                  for i in range(4)]
     text = pipeline.RunSummary(discarded=descartes).text()
-    assert ("• 4× meli: sem buy box — anúncio MLB não está entre os vendedores de MLB "
+    assert ("• 4× meli: nenhum anúncio linkado de MLB está à venda entre os vendedores "
             "(ex.: Produto 0)") in text
-    assert "MLB7125449380" not in text
+    assert "MLB66637230" not in text
 
 
 def test_descartes_guardam_rotulo_e_motivo_separados(tmp_path, monkeypatch):
@@ -1259,19 +1261,21 @@ class FatiaDeDescoberta(FakeSource):
     """Fonte que devolve uma fatia diferente a cada run, como a varredura
     rotativa da Shopee."""
 
-    def __init__(self, fatias):
+    def __init__(self, fatias, **stats_extra):
         self._fatias = list(fatias)
-        self.discovery_stats = pipeline_stats(0, 0, 0)
+        self._stats_extra = stats_extra
+        self.discovery_stats = pipeline_stats(0, 0, 0, **stats_extra)
 
     def fetch_offers(self, cfg):
         lote = self._fatias.pop(0) if self._fatias else []
-        self.discovery_stats = pipeline_stats(8, len(lote) * 2, len(lote))
+        self.discovery_stats = pipeline_stats(8, len(lote) * 2, len(lote),
+                                              **self._stats_extra)
         return lote
 
 
-def pipeline_stats(calls, nodes, eligible):
+def pipeline_stats(calls, nodes, eligible, **kw):
     from afiliado.sources.shopee import DiscoveryStats
-    return DiscoveryStats(calls, nodes, eligible)
+    return DiscoveryStats(calls, nodes, eligible, **kw)
 
 
 def test_a_candidata_de_um_run_anterior_continua_publicavel(tmp_path, monkeypatch):
@@ -1299,6 +1303,37 @@ def test_resumo_registra_a_fatia_de_descoberta(tmp_path, monkeypatch):
     assert summary.discovery == [
         "🔎 shopee: 8 chamadas · 6 nós · 3 elegíveis · 3 novos no estoque (3 no total)"]
     assert "🔎 shopee: 8 chamadas" in summary.text()
+    db.close()
+
+
+def test_resumo_registra_a_fatia_do_data_feed_a_parte(tmp_path, monkeypatch):
+    """Fase 5L: as duas superfícies de descoberta têm custos e rendimentos
+    diferentes, e uma linha só ("8 chamadas · 400 nós") não diria qual rendeu o
+    quê — a comparação entre elas viraria opinião."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta(
+        [[make_offer(item_id="0")]],
+        feed="2 chamadas · 500 linhas · 161 elegíveis · 10 mantidas")
+    summary = pipeline.run(CFG_ESTOQUE, [fonte], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert "📦 shopee: 2 chamadas · 500 linhas · 161 elegíveis · 10 mantidas" in summary.discovery
+    db.close()
+
+
+def test_o_feed_que_falhou_avisa_sem_engolir_o_aviso_do_plano(tmp_path, monkeypatch):
+    """Os dois avisos da descoberta são independentes: um é erro de CONFIG da
+    busca, o outro é o feed fora do ar. Antes o pipeline lia só `warning`."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    fonte = FatiaDeDescoberta(
+        [[make_offer(item_id="0")]],
+        warning="⚠️ shopee: calls_per_run=5 corta o plano",
+        feed_warning="⚠️ shopee: data feed indisponível (quota) — a busca continua")
+    summary = pipeline.run(CFG_ESTOQUE, [fonte], [FakeChannel()], db,
+                           validator=no_network_validator)
+    assert any("calls_per_run" in a for a in summary.warnings)
+    assert any("data feed indisponível" in a for a in summary.warnings)
     db.close()
 
 
@@ -1355,7 +1390,7 @@ def test_pool_de_links_do_meli_pela_metade_vira_aviso(tmp_path, monkeypatch):
 
     summary = pipeline.run(CFG, [MeliComPoucosLinks([make_offer(item_id="x", source="meli")])],
                            [FakeChannel()], db, validator=no_network_validator)
-    assert ("⚠️ meli: só 1 de 10 produtos têm link — rode /meli-links-refresh"
+    assert ("⚠️ meli: só 1 de 10 produtos têm anúncio linkado — rode /meli-links-refresh"
             in summary.warnings)
     db.close()
 
@@ -1858,8 +1893,17 @@ def _shopee_contada(handler_extra=None):
 
     from afiliado.sources.shopee import ShopeeSource
 
-    contagem = {"descoberta": 0, "refresh": 0, "link": 0}
+    contagem = {"descoberta": 0, "refresh": 0, "link": 0, "feed": 0}
     proximo = [1000]
+
+    def linha_do_feed(item_id: int) -> dict:
+        return {"columns": json.dumps({
+            "itemid": str(item_id), "title": f"Feed {item_id} bom e barato",
+            "price": "99.90", "sale_price": "59.90", "item_rating": "4.9",
+            "image_link": "https://cf.shopee.com.br/file/feed.jpg",
+            "product_link": f"https://shopee.com.br/product/1/{item_id}",
+            "product_short link": "https://shopee.com.br/universal-link/product/1/x",
+            "global_catid1": "100636", "like": str(item_id)}), "updateType": None}
 
     def no(item_id: int) -> dict:
         return {"itemId": item_id, "productName": f"Produto {item_id} bom e barato",
@@ -1882,6 +1926,19 @@ def _shopee_contada(handler_extra=None):
             contagem["refresh"] += 1
             return httpx.Response(200, json={"data": {"productOfferV2": {
                 "nodes": [no(int(variables["itemId"]))]}}})
+        if "listItemFeeds" in query:
+            contagem["feed"] += 1
+            return httpx.Response(200, json={"data": {"listItemFeeds": {"feeds": [
+                {"datafeedId": "1_FULL_2026-08-27", "datafeedName": "Shopee Oficial BR",
+                 "totalCount": 100_000, "date": "2026-08-27", "feedMode": "FULL"}]}}})
+        if "getItemFeedData" in query:
+            contagem["feed"] += 1
+            offset = int(variables.get("offset") or 0)
+            rows = [linha_do_feed(500_000 + offset + i)
+                    for i in range(int(variables.get("limit") or 500))]
+            return httpx.Response(200, json={"data": {"getItemFeedData": {
+                "rows": rows, "pageInfo": {"offset": offset, "limit": len(rows),
+                                           "totalCount": 100_000, "hasMore": True}}}})
         contagem["descoberta"] += 1
         nodes = []
         for _ in range(50):
@@ -1904,14 +1961,16 @@ def _config_de_producao(posts_per_run: int) -> dict:
             "validation": {"allowed_domains": ["shope.ee"]}}
 
 
-def test_um_run_gasta_8_chamadas_de_descoberta_mais_2_por_oferta(tmp_path, monkeypatch):
-    """A conta que escolheu a cadência: 8 (descoberta) + 2 por oferta publicada
-    (`refresh_price` + `generateShortLink`).
+def test_um_run_gasta_8_chamadas_de_busca_mais_2_de_feed_mais_2_por_oferta(
+        tmp_path, monkeypatch):
+    """A conta que escolheu a cadência, agora com as DUAS superfícies de
+    descoberta: 8 (busca) + 2 (data feed: `listItemFeeds` + uma janela de 500)
+    + 2 por oferta publicada (`refresh_price` + `generateShortLink`).
 
-    A 15 min são 61 disparos/dia: 61×8 + 60×2 = **608 chamadas/dia** por
-    tarefa, ~1.216 com a de `stories` junto — contra os ~1.920/dia que o
-    cliente da VPS (5 min) já fazia, e sem nenhum 429 nas 147 chamadas medidas
-    em 2026-08-26."""
+    A 15 min são 61 disparos/dia: 61×10 + 60×2 = **730 chamadas/dia** por
+    tarefa (eram 608 antes da 5L), ~1.460 com a de `stories` junto — contra os
+    ~1.920/dia que o cliente da VPS (5 min) já fazia, e sem nenhum 429 nas 147
+    chamadas medidas em 2026-08-26."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     _congela(monkeypatch, 20, 0)
     db = StateDB(tmp_path / "s.db")
@@ -1922,15 +1981,16 @@ def test_um_run_gasta_8_chamadas_de_descoberta_mais_2_por_oferta(tmp_path, monke
                            validator=no_network_validator, checa_cadencia=False)
     assert len(summary.published) == 4
     assert contagem["descoberta"] == cfg["shopee"]["calls_per_run"] == 8
+    assert contagem["feed"] == 1 + cfg["shopee"]["feed_calls_per_run"] == 2
     assert contagem["refresh"] == contagem["link"] == len(summary.published)
     db.close()
 
 
 def test_a_descoberta_acontece_mesmo_no_run_que_nao_publica_nada(tmp_path, monkeypatch):
-    """O detalhe que a conta precisava confirmar: as 8 chamadas NÃO dependem do
-    estoque de candidatas nem de haver canal aberto. `fetch_offers` roda antes
-    do teste de canal aberto, então todo disparo custa 8 — inclusive os do fim
-    do dia, com o teto já gasto."""
+    """O detalhe que a conta precisava confirmar: as 10 chamadas NÃO dependem
+    do estoque de candidatas nem de haver canal aberto. `fetch_offers` roda
+    antes do teste de canal aberto, então todo disparo custa 10 — inclusive os
+    do fim do dia, com o teto já gasto."""
     monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
     _congela(monkeypatch, 23, 3)
     db = StateDB(tmp_path / "s.db")
@@ -1940,7 +2000,7 @@ def test_a_descoberta_acontece_mesmo_no_run_que_nao_publica_nada(tmp_path, monke
     summary = pipeline.run(_config_de_producao(posts_per_run=4), [src], [CanalComTeto()], db,
                            validator=no_network_validator, checa_cadencia=False)
     assert summary.published == []
-    assert contagem["descoberta"] == 8
+    assert contagem["descoberta"] == 8 and contagem["feed"] == 2
     assert contagem["refresh"] == contagem["link"] == 0
     db.close()
 
@@ -1950,3 +2010,197 @@ def test_a_fracao_do_dia_e_zero_antes_e_um_depois_da_janela():
     assert pipeline.fracao_do_dia(datetime(2026, 8, 26, 23, 59), "08:00", "23:15") == 1.0
     meio = pipeline.fracao_do_dia(datetime(2026, 8, 26, 15, 37), "08:00", "23:15")
     assert 0.49 < meio < 0.51
+
+
+# --- Fase 5P: a leitura do preço de checkout, quando ela está ligada -----------
+#
+# O leitor é OPCIONAL (`preco_real=None`, o padrão) e todos os testes acima
+# rodam sem ele — que é o pipeline de hoje, e é o estado para o qual toda falha
+# da leitura cai. Estes cinco cobrem o que muda quando o dono liga o interruptor.
+
+
+class LeitorFalso:
+    """O leitor de checkout com um roteiro fixo. Conta as chamadas porque "só
+    leia para a oferta que VAI publicar" é requisito de custo: uma página de
+    navegador por leitura, contra milhares de candidatas no estoque."""
+
+    def __init__(self, cents=52348, condicao="com cupom"):
+        self.cents, self.condicao = cents, condicao
+        self.vistos = []
+        self.warnings = []
+
+    def aplica(self, offer):
+        from afiliado.preco_real import Leitura
+        self.vistos.append(offer.item_id)
+        if not self.cents:
+            return offer, Leitura(motivo="nada")
+        return (dataclasses.replace(offer, price_checkout_cents=self.cents,
+                                    price_checkout_label=self.condicao),
+                Leitura(price_cents=self.cents, condicao=self.condicao))
+
+
+def _cfg_um_post():
+    return {**CFG, "selection": {**CFG["selection"], "posts_per_run": 1}}
+
+
+def test_o_post_publica_o_preco_lido_com_a_condicao(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_um_post(),
+                 [FakeSource([make_offer(price_current_cents=59900)])], [ch], db,
+                 validator=no_network_validator, preco_real=LeitorFalso())
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 52348
+    assert "R$ 523,48" in post.message_text and "com cupom" in post.message_text
+    db.close()
+
+
+def test_a_leitura_so_acontece_para_quem_vai_publicar(tmp_path, monkeypatch):
+    """≈60 leituras por dia, não uma por candidata do estoque."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    leitor = LeitorFalso()
+    offers = [make_offer(item_id=str(i)) for i in range(20)]
+    pipeline.run({**CFG, "selection": {**CFG["selection"], "posts_per_run": 2}},
+                 [FakeSource(offers)], [FakeChannel()], db,
+                 validator=no_network_validator, preco_real=leitor)
+    assert len(leitor.vistos) == 2
+    db.close()
+
+
+def test_o_price_log_guarda_o_preco_de_catalogo_e_nao_o_de_cupom(tmp_path, monkeypatch):
+    """A série que produz a mediana, o p25 e o piso do selo tem de continuar
+    homogênea. Um preço de cupom dentro dela faria a régua da 5B alegar
+    desconto todo dia em que houvesse cupom — o padrão "promoção recorrente"
+    que ela existe para não certificar."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    pipeline.run(_cfg_um_post(),
+                 [FakeSource([make_offer(price_current_cents=59900)])],
+                 [FakeChannel()], db, validator=no_network_validator,
+                 preco_real=LeitorFalso())
+    assert db.price_history("shopee", "123456", 1) == [59900]
+    db.close()
+
+
+def test_os_avisos_do_leitor_chegam_ao_chat_de_operacoes(tmp_path, monkeypatch):
+    """Mesmo dreno dos canais (`drena_avisos`): um desarme que ninguém vê é um
+    dia inteiro de leitura desligada em silêncio."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    leitor = LeitorFalso(cents=0)
+    leitor.warnings.append("⚠️ preco_real: leitura DESARMADA")
+    summary = pipeline.run(_cfg_um_post(), [FakeSource([make_offer()])],
+                           [FakeChannel()], db, validator=no_network_validator,
+                           preco_real=leitor)
+    assert any("DESARMADA" in a for a in summary.warnings)
+    db.close()
+
+
+def test_sem_leitor_o_pipeline_e_o_de_hoje(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_um_post(),
+                 [FakeSource([make_offer(price_current_cents=59900)])], [ch], db,
+                 validator=no_network_validator)
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 0
+    assert "R$ 599,00" in post.message_text
+    db.close()
+
+
+# --- Fase 5R: o preço de checkout que vem do CUBO, e não do navegador ----------
+#
+# Mesmo carimbo (`Offer.price_checkout_cents`), mesma condição ("com cupom"),
+# outra origem. O interruptor é `preco_checkout.enabled` e o dado mora na
+# watchlist — sem seção, o pipeline é exatamente o de hoje.
+
+def _cfg_cubo(**extra):
+    return {**_cfg_um_post(), "preco_checkout": {"enabled": True, **extra}}
+
+
+def _wl_checkout(cents=52348, medido_em=None, item_id="123456"):
+    from afiliado.watchlist import CheckoutPrice
+    hoje = date.today()
+    return Watchlist(generated_at=hoje, valid_days=14,
+                     checkout_prices={item_id: CheckoutPrice(cents, medido_em or hoje)},
+                     section_dates={"checkout_prices": hoje})
+
+
+def test_o_post_publica_o_preco_do_cubo_com_a_condicao(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_cubo(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator, watchlist=_wl_checkout())
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 52348
+    assert "R$ 523,48" in post.message_text and "com cupom" in post.message_text
+    # o catálogo continua sendo a série do price_log — a régua da 5B não vê cupom
+    assert db.price_history("shopee", "123456", 1) == [59900]
+    db.close()
+
+
+def test_o_cubo_desligado_no_config_nao_muda_nada(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_um_post(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator, watchlist=_wl_checkout())
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 0 and "R$ 599,00" in post.message_text
+    db.close()
+
+
+def test_a_guarda_do_cubo_vale_dentro_do_run(tmp_path, monkeypatch):
+    """Preço do cubo longe demais do vivo: o post publica o da API, como hoje."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_cubo(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator,
+                 watchlist=_wl_checkout(cents=20000))
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 0 and "R$ 599,00" in post.message_text
+    db.close()
+
+
+def test_a_leitura_do_navegador_vence_o_cubo(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    ch = FakeChannel()
+    pipeline.run(_cfg_cubo(), [FakeSource([make_offer(price_current_cents=59900)])],
+                 [ch], db, validator=no_network_validator, watchlist=_wl_checkout(),
+                 preco_real=LeitorFalso(cents=51000, condicao="no Pix com cupom"))
+    (post,) = ch.sent
+    assert post.offer.price_checkout_cents == 51000
+    assert "no Pix com cupom" in post.message_text
+    db.close()
+
+
+def test_a_secao_vencida_avisa_o_chat_de_operacoes(tmp_path, monkeypatch):
+    """A coleta parou e ninguém percebeu é a classe de defeito que este projeto
+    persegue desde a 5J: as peças voltariam ao preço de catálogo em silêncio."""
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    from afiliado.watchlist import CheckoutPrice
+    velha = date.today() - timedelta(days=30)
+    wl = Watchlist(generated_at=date.today(), valid_days=14,
+                   checkout_prices={"123456": CheckoutPrice(52348, velha)},
+                   section_dates={"checkout_prices": velha})
+    summary = pipeline.run(_cfg_cubo(), [FakeSource([make_offer()])], [FakeChannel()],
+                           db, validator=no_network_validator, watchlist=wl)
+    assert any("preco_checkout" in a and "NENHUM" in a for a in summary.warnings)
+    db.close()
+
+
+def test_a_secao_vazia_avisa_que_a_coleta_nunca_rodou(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    wl = Watchlist(generated_at=date.today(), valid_days=14)
+    summary = pipeline.run(_cfg_cubo(), [FakeSource([make_offer()])], [FakeChannel()],
+                           db, validator=no_network_validator, watchlist=wl)
+    assert any("nunca rodou" in a for a in summary.warnings)
+    db.close()

@@ -6,14 +6,52 @@ from pathlib import Path
 
 from afiliado.models import Offer
 
+# As seções de OPINIÃO — o que a semana achou. São elas que vencem
+# (`is_stale`) e as únicas que `facts_only` descarta; `price_refs` e
+# `price_floors` são FATOS datados e sobrevivem ao vencimento (C11).
+SECOES_DE_OPINIAO = ("category_boosts", "hot_items")
+
+
+def _data(valor) -> date | None:
+    """`date` a partir de uma string ISO; None para ausente/inválido.
+
+    Data inválida NÃO derruba o arquivo nem inventa um dia: a seção (ou a
+    entrada) simplesmente volta a herdar a data de quem está acima dela."""
+    if not isinstance(valor, str):
+        return None
+    try:
+        return date.fromisoformat(valor)
+    except ValueError:
+        return None
+
 
 @dataclass(frozen=True)
 class PriceFloor:
     """Mínima curada com a janela que a mediu. `window_days` ausente no
     arquivo carrega 0 (não 365): o selo diz "últimos N dias" e não pode
-    inventar N — com 0, `pricing.verdict` não emite selo nenhum."""
+    inventar N — com 0, `pricing.verdict` não emite selo nenhum.
+
+    `measured_at` é o dia em que ESTA entrada foi medida (fase 5O). None
+    significa "herda a data da seção" — a seção é semeada em ondas, e uma
+    data só por seção envelheceria junto entradas medidas em dias
+    diferentes."""
     min_price_cents: int
     window_days: int
+    measured_at: date | None = None
+
+
+@dataclass(frozen=True)
+class CheckoutPrice:
+    """O preço EXIBIDO do anúncio — o de checkout, com cupom —, medido pelo
+    JoomPulse (fase 5R) e a data em que a Shopee foi RASPADA (não a do run).
+
+    `measured_at` é a metade da guarda que não é o preço: o cubo é uma foto por
+    item, e a raspagem de um item pode ter dias (medido em 2026-08-29 sobre 100
+    itens: mediana de 4 dias, máximo de 30). Entrada sem data é entrada sem
+    idade, e sem idade ela NÃO é publicada — apresentar o preço de ontem como o
+    de hoje é o erro do `buy_box_item_id` com outra roupa."""
+    price_cents: int
+    measured_at: date | None = None
 
 
 @dataclass(frozen=True)
@@ -22,10 +60,13 @@ class PriceRef:
     (`p25_cents`) e a janela real em dias. Entrada sem p25 carrega 0 — e
     sem p25 o post nunca alega desconto (conservador por construção). Idem
     para `window_days`: ausente vira 0 (não 90) e a regra do quartil, que
-    exige >= 14 dias MEDIDOS, nunca dispara por um default silencioso."""
+    exige >= 14 dias MEDIDOS, nunca dispara por um default silencioso.
+
+    `measured_at`: ver `PriceFloor`."""
     ref_cents: int
     window_days: int
     p25_cents: int = 0
+    measured_at: date | None = None
 
 
 @dataclass(frozen=True)
@@ -36,9 +77,32 @@ class Watchlist:
     hot_items: dict[str, float] = field(default_factory=dict)      # item_id -> boost
     price_floors: dict[str, PriceFloor] = field(default_factory=dict)
     price_refs: dict[str, PriceRef] = field(default_factory=dict)
+    # Fase 5R — o preço de checkout do JoomPulse. É FATO datado, como as duas
+    # seções acima: sobrevive ao vencimento da opinião (`facts_only`) e tem a
+    # data dele em `measured_at`.
+    checkout_prices: dict[str, CheckoutPrice] = field(default_factory=dict)
+    section_dates: dict[str, date] = field(default_factory=dict)
+
+    def section_date(self, secao: str) -> date:
+        """A data da seção — `generated_at` quando ela não tem a sua.
+
+        Fase 5O: o arquivo tinha UMA data e proveniência misturada. Semear a
+        régua da Shopee não revisa os `hot_items`, e regravar `generated_at`
+        afirmaria que sim. Cada seção passa a poder dizer o dia em que foi
+        feita; arquivo sem `section_dates` (o formato antigo, o que está em
+        produção) se comporta exatamente como antes."""
+        return self.section_dates.get(secao, self.generated_at)
 
     def days_old(self, today: date | None = None) -> int:
-        return ((today or date.today()) - self.generated_at).days
+        """A idade da OPINIÃO: a seção de boost mais velha.
+
+        É o número que vira "Watchlist vencida há N dias" e o que decide
+        `is_stale` — e por isso não pode ser a data de `price_refs`. Se
+        fosse, semear a régua (que não olha para os boosts) renovaria a
+        validade dos boosts em silêncio, que é justamente o problema que a
+        data por seção existe para não ter."""
+        mais_velha = min(self.section_date(s) for s in SECOES_DE_OPINIAO)
+        return ((today or date.today()) - mais_velha).days
 
     def is_stale(self, today: date | None = None) -> bool:
         return self.days_old(today) > self.valid_days
@@ -61,6 +125,9 @@ class Watchlist:
     def price_ref(self, item_id: str) -> PriceRef | None:
         return self.price_refs.get(item_id)
 
+    def checkout_price(self, item_id: str) -> CheckoutPrice | None:
+        return self.checkout_prices.get(item_id)
+
 
 def load_watchlist(path: str | Path) -> Watchlist | None:
     """None se o arquivo não existe ou é inválido — o pipeline segue sem watchlist.
@@ -80,6 +147,10 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
         raw_price_floors = raw_price_floors if isinstance(raw_price_floors, dict) else {}
         raw_price_refs = raw.get("price_refs")
         raw_price_refs = raw_price_refs if isinstance(raw_price_refs, dict) else {}
+        raw_checkout = raw.get("checkout_prices")
+        raw_checkout = raw_checkout if isinstance(raw_checkout, dict) else {}
+        raw_section_dates = raw.get("section_dates")
+        raw_section_dates = raw_section_dates if isinstance(raw_section_dates, dict) else {}
         return Watchlist(
             generated_at=date.fromisoformat(raw["generated_at"]),
             valid_days=int(raw.get("valid_days", 14)),
@@ -87,13 +158,21 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
             hot_items={str(k): float(v.get("boost", 1.0)) if isinstance(v, dict) else float(v)
                        for k, v in raw_hot_items.items()},
             price_floors={str(k): PriceFloor(int(v["min_price_cents"]),
-                                             int(v.get("window_days") or 0))
+                                             int(v.get("window_days") or 0),
+                                             _data(v.get("measured_at")))
                           for k, v in raw_price_floors.items()
                           if isinstance(v, dict) and "min_price_cents" in v},
             price_refs={str(k): PriceRef(int(v["ref_cents"]), int(v.get("window_days") or 0),
-                                         int(v.get("p25_cents") or 0))
+                                         int(v.get("p25_cents") or 0),
+                                         _data(v.get("measured_at")))
                         for k, v in raw_price_refs.items()
                         if isinstance(v, dict) and "ref_cents" in v},
+            checkout_prices={str(k): CheckoutPrice(int(v["price_cents"]),
+                                                   _data(v.get("measured_at")))
+                             for k, v in raw_checkout.items()
+                             if isinstance(v, dict) and "price_cents" in v},
+            section_dates={str(k): _data(v) for k, v in raw_section_dates.items()
+                           if _data(v) is not None},
         )
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None

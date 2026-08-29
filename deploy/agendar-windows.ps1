@@ -152,11 +152,37 @@ if (-not $AfiliadoExe) {
         if (Test-Path -LiteralPath $palpite -PathType Leaf) { $AfiliadoExe = $palpite }
     }
 }
+
+# Terceira tentativa: perguntar ao Python onde ele instala console scripts.
+# `pip install -e .` num Python sem venv (o caso desta maquina) poe o
+# afiliado.exe num diretorio que NAO esta no PATH, entao as duas buscas acima
+# falham e o script exigia -AfiliadoExe com o caminho completo. Passar esse
+# caminho pelo shell derrubou a instalacao duas vezes (a barra invertida some
+# no Bash): a deteccao que evita o argumento vale mais que o argumento.
+if (-not $AfiliadoExe) {
+    try {
+        $dir = (& python -c "import sysconfig;print(sysconfig.get_path('scripts'))" 2>$null | Select-Object -First 1)
+        if ($dir) {
+            $palpite = Join-Path $dir.Trim() "afiliado.exe"
+            if (Test-Path -LiteralPath $palpite -PathType Leaf) { $AfiliadoExe = $palpite }
+        }
+    }
+    catch { }   # Python ausente ou mudo: cai no throw abaixo, com instrucao.
+}
 if (-not $AfiliadoExe -or -not (Test-Path -LiteralPath $AfiliadoExe -PathType Leaf)) {
     throw ("afiliado.exe não encontrado. Instale o projeto ('pip install -e .') na pasta " +
            "principal e rode de novo, ou passe -AfiliadoExe com o caminho completo.")
 }
 $AfiliadoExe = (Resolve-Path -LiteralPath $AfiliadoExe).Path
+
+# O atalho que esconde a janela. Mora ao lado deste script; se sumir, a tarefa
+# seria criada apontando para o nada e falharia a cada 15 min em silêncio — o
+# modo de falha que esta fase inteira existe para acabar.
+$VbsOculto = Join-Path $PSScriptRoot "afiliado-oculto.vbs"
+if (-not (Test-Path -LiteralPath $VbsOculto -PathType Leaf)) {
+    throw "não achei $VbsOculto — ele acompanha este script e é quem roda o afiliado.exe sem janela."
+}
+$VbsOculto = (Resolve-Path -LiteralPath $VbsOculto).Path
 
 # O `.env` é AVISO, não erro: ele pode não existir ainda na primeira instalação,
 # e a tarefa criada continua correta. O que não pode é o dono descobrir isso
@@ -202,8 +228,17 @@ $configuracao = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
 
 # Sem credencial: `Interactive` é o único modo que o Agendador aceita sem
-# guardar senha. O preço é que as tarefas só rodam com o usuário conectado —
-# que é o que se quer aqui (IP e sessão residenciais estáveis).
+# guardar senha E sem elevação.
+#
+# O S4U ("executar estando o usuário conectado ou não") foi tentado em
+# 2026-08-28 porque roda em sessão não interativa e resolveria a janela por
+# construção. **Recusado nesta máquina**: `Register-ScheduledTask` devolveu
+# "Acesso negado" (HRESULT 0x80070005) — registrar tarefa S4U exige elevação.
+# Não o traga de volta sem resolver isso primeiro; o efeito é o script inteiro
+# falhar no PRIMEIRO registro.
+#
+# A janela, que era o motivo da tentativa, foi resolvida por outro caminho:
+# `afiliado-oculto.vbs` (ver `Register-TarefaDoFiscal` abaixo).
 $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
@@ -211,7 +246,12 @@ function Register-TarefaDoFiscal {
     param([string]$Nome, [string]$Argumentos, [string]$Inicio, [int]$Cadencia,
           [string]$Descricao)
 
-    $acao = New-ScheduledTaskAction -Execute $AfiliadoExe -Argument $Argumentos `
+    # A janela: quem executa é o `wscript.exe` rodando `afiliado-oculto.vbs`,
+    # que chama o `afiliado.exe` com WindowStyle 0. Ver o cabeçalho do .vbs —
+    # o caminho direto (S4U, sem janela por natureza) exige ELEVAÇÃO e foi
+    # recusado nesta máquina com "Acesso negado" (0x80070005).
+    $acao = New-ScheduledTaskAction -Execute "wscript.exe" `
+        -Argument ("`"$VbsOculto`" `"$AfiliadoExe`" $Argumentos") `
         -WorkingDirectory $ProjetoDir
     $gatilho = New-GatilhoRepetido -Inicio $Inicio -Cadencia $Cadencia
     # `-Force` é o que torna o script idempotente: mesma tarefa, atualizada.
@@ -219,6 +259,7 @@ function Register-TarefaDoFiscal {
         -Settings $configuracao -Principal $principal -Description $Descricao -Force | Out-Null
     Write-Host "ok: $Nome — $Inicio, a cada $Cadencia min até $FimDaJanela"
     Write-Host "    $AfiliadoExe $Argumentos"
+    Write-Host "    (sem janela, via deploy/afiliado-oculto.vbs)"
     Write-Host "    iniciar em: $ProjetoDir"
 }
 

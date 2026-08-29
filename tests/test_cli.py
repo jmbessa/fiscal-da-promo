@@ -4,8 +4,10 @@ import json
 import pytest
 import os
 
-from afiliado import cli, pipeline
+from afiliado import cli, pipeline, preco_real
+from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
+from tests.test_models import make_offer
 
 
 def test_run_dry_invokes_pipeline(monkeypatch, tmp_path):
@@ -449,6 +451,55 @@ def test_doctor_usa_o_retorno_do_send_text(monkeypatch, capsys):
     assert "✅ Telegram: mensagem de teste enviada" in capsys.readouterr().out
 
 
+class _ShopeeComFeed:
+    """Dublê que devolve a fatia de descoberta com a linha do data feed."""
+
+    def __init__(self, feed: str = "", feed_warning: str = ""):
+        from afiliado.sources.shopee import DiscoveryStats
+        self.discovery_stats = DiscoveryStats(calls=1, nodes=0, eligible=0,
+                                              feed=feed, feed_warning=feed_warning)
+        self.cfg_visto: dict = {}
+
+    def fetch_offers(self, cfg):
+        self.cfg_visto = cfg["shopee"]
+        return []
+
+
+def test_doctor_confere_o_data_feed_junto_com_a_busca(monkeypatch, capsys):
+    """Fase 5L: o feed é a segunda superfície de descoberta e só falava pelo
+    resumo do run, uma vez por dia. O doctor o exercita — e com o
+    `feed_calls_per_run` do config, não com um número inventado."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    fonte = _ShopeeComFeed(feed="2 chamadas · 500 linhas · 160 elegíveis · 10 mantidas")
+    monkeypatch.setattr(cli, "_shopee", lambda db=None: fonte)
+
+    assert cli.doctor(cfg) == 0
+    out = capsys.readouterr().out
+    assert "📦 Data feed: 2 chamadas · 500 linhas · 160 elegíveis · 10 mantidas" in out
+    assert fonte.cfg_visto["feed_calls_per_run"] == cfg["shopee"]["feed_calls_per_run"]
+
+
+def test_doctor_avisa_do_feed_fora_do_ar_sem_ficar_vermelho(monkeypatch, capsys):
+    """Feed quebrado NÃO é doctor vermelho: a busca continua publicando, e
+    pintar de ❌ um sistema que está entregando ensina a ignorar o ❌."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_shopee", lambda db=None: _ShopeeComFeed(
+        feed_warning="⚠️ shopee: data feed indisponível (quota) — a busca continua"))
+
+    assert cli.doctor(cfg) == 0
+    assert "data feed indisponível" in capsys.readouterr().out
+
+
+def test_doctor_calado_sobre_o_feed_quando_ele_esta_desligado(monkeypatch, capsys):
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "_shopee", lambda db=None: _ShopeeComFeed())
+    cli.doctor(cfg)
+    assert "Data feed" not in capsys.readouterr().out
+
+
 def test_doctor_imprime_a_validacao_do_pool_do_meli(monkeypatch, tmp_path, capsys):
     # Teste obrigatório 8: o doctor roda a mesma validação do pool que o run
     # e imprime o resultado — quantas valem e por que as outras caíram.
@@ -468,8 +519,8 @@ def test_doctor_imprime_a_validacao_do_pool_do_meli(monkeypatch, tmp_path, capsy
     # `sources.meli` do config real faria o resultado depender de um
     # interruptor de produção — foi o que quebrou quando o ML foi ligado.
     cfg.setdefault("sources", {})["meli"] = True
-    links = tmp_path / "l.json"
-    links.write_text('{"A": "https://meli.la/x"}', encoding="utf-8")
+    from tests.test_meli import write_links
+    links = write_links(tmp_path / "l.json", {"A": {"MLB1": "https://meli.la/x"}})
 
     def token_ok(request):
         return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
@@ -775,10 +826,9 @@ def test_o_aviso_do_art_host_so_chega_uma_vez_por_dia(tmp_path, monkeypatch):
 # --- Fase 5C (M5/A6): o doctor olha o pool de links do ML --------------------
 
 def _doctor_com_meli(monkeypatch, tmp_path, links: dict | None, ligado: bool):
-    import json
-
+    """`links` no formato da fase 5M: `{product_id: {item_id: link}}`."""
     import httpx
-    from tests.test_meli import write_pool
+    from tests.test_meli import write_links, write_pool
     cfg = _doctor_base(monkeypatch)
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
     pool = write_pool(tmp_path / "pool.json", [
@@ -789,7 +839,7 @@ def _doctor_com_meli(monkeypatch, tmp_path, links: dict | None, ligado: bool):
     cfg["sources"] = {"shopee": True, "meli": ligado}
     links_path = tmp_path / "links.json"
     if links is not None:
-        links_path.write_text(json.dumps(links), encoding="utf-8")
+        write_links(links_path, links)
     meli = cli.MeliSource("cid", "sec", token_path=tmp_path / "t.json",
                           links_path=links_path,
                           client=httpx.Client(transport=httpx.MockTransport(
@@ -810,18 +860,33 @@ def test_doctor_falha_com_ml_ligado_e_nenhum_link(monkeypatch, tmp_path, capsys)
 
 
 def test_doctor_conta_quantos_produtos_do_pool_tem_link(monkeypatch, tmp_path, capsys):
-    cfg = _doctor_com_meli(monkeypatch, tmp_path, links={"A": "https://meli.la/a"},
+    cfg = _doctor_com_meli(monkeypatch, tmp_path, links={"A": {"MLB1": "https://meli.la/a"}},
                            ligado=True)
     assert cli.doctor(cfg) == 0
-    assert "⚠️ Mercado Livre: 1 de 2 produto(s) do pool com link" in capsys.readouterr().out
+    assert ("⚠️ Mercado Livre: 1 de 2 produto(s) do pool com anúncio linkado"
+            in capsys.readouterr().out)
 
 
 def test_doctor_com_pool_de_links_completo(monkeypatch, tmp_path, capsys):
     cfg = _doctor_com_meli(monkeypatch, tmp_path,
-                           links={"A": "https://meli.la/a", "B": "https://meli.la/b"},
+                           links={"A": {"MLB1": "https://meli.la/a"},
+                                  "B": {"MLB2": "https://meli.la/b"}},
                            ligado=True)
     assert cli.doctor(cfg) == 0
-    assert "✅ Mercado Livre: 2 de 2 produto(s) do pool com link" in capsys.readouterr().out
+    assert ("✅ Mercado Livre: 2 de 2 produto(s) do pool com anúncio linkado"
+            in capsys.readouterr().out)
+
+
+def test_doctor_conta_zero_para_o_produto_que_so_tem_o_link_antigo(monkeypatch, tmp_path,
+                                                                   capsys):
+    """Fase 5M: o link de catálogo continua no arquivo, mas não publica preço —
+    a cobertura precisa dizer isso em vez de esconder atrás de um ✅."""
+    cfg = _doctor_com_meli(monkeypatch, tmp_path,
+                           links={"A": {"MLB1": "https://meli.la/a"}, "B": {}},
+                           ligado=True)
+    assert cli.doctor(cfg) == 0
+    assert ("⚠️ Mercado Livre: 1 de 2 produto(s) do pool com anúncio linkado"
+            in capsys.readouterr().out)
 
 
 def test_doctor_com_pool_de_ofertas_vazio_diz_a_causa(monkeypatch, tmp_path, capsys):
@@ -841,21 +906,26 @@ def test_doctor_com_pool_de_ofertas_vazio_diz_a_causa(monkeypatch, tmp_path, cap
 
 
 def test_doctor_conta_quanto_do_pool_tem_regua_curada(monkeypatch, tmp_path, capsys):
-    """Fase 5J (J4): quantas entradas do pool têm régua curada e quantas estão
-    em modo B esperando o nosso price_log. Sem este número, "o ML só publica
-    modo B" vira descoberta de semanas depois."""
+    """Fase 5J (J4): quantas entradas do pool têm régua e quantas estão em modo
+    B esperando o nosso price_log. Sem este número, "o ML só publica modo B"
+    vira descoberta de semanas depois.
+
+    Desde a 5M (M4) o primeiro número é ZERO por construção — a régua curada é
+    do anúncio do buy box e o preço é do anúncio linkado —, e o doctor precisa
+    dizer isso em vez de calar."""
     from tests.test_meli import SEM_HISTORICO, write_pool
     cfg = _doctor_com_meli(monkeypatch, tmp_path,
-                           links={"A": "https://meli.la/a", "B": "https://meli.la/b",
-                                  "C": "https://meli.la/c"}, ligado=True)
+                           links={"A": {"MLB1": "https://meli.la/a"},
+                                  "B": {"MLB2": "https://meli.la/b"},
+                                  "C": {"MLB3": "https://meli.la/c"}}, ligado=True)
     cfg["meli"]["offers_path"] = str(write_pool(tmp_path / "misto.json", [
         {"product_id": "A", "title": "t", "price_ref_cents": 5000},
         {"product_id": "B", "title": "t", **SEM_HISTORICO},
         {"product_id": "C", "title": "t", **SEM_HISTORICO},
     ]))
     assert cli.doctor(cfg) == 0
-    assert ("🏷️ Mercado Livre: 1 de 3 entrada(s) com régua curada; "
-            "2 em modo B esperando histórico") in capsys.readouterr().out
+    assert ("🏷️ Mercado Livre: 0 de 3 entrada(s) com régua curada; "
+            "3 em modo B esperando histórico") in capsys.readouterr().out
 
 
 def test_doctor_com_ml_desligado_nao_falha_por_falta_de_link(monkeypatch, tmp_path, capsys):
@@ -1748,3 +1818,227 @@ def test_o_doctor_reprova_quando_o_agendador_esta_vazio(monkeypatch, capsys):
     monkeypatch.setattr(cli, "estado_da_tarefa", lambda nome: "")
     assert cli.doctor(cfg) == 1
     assert "❌ Agendador" in capsys.readouterr().out
+
+
+# --- Fase 5P: o interruptor e o comando de exercitar à mão --------------------
+
+def _cfg_com(tmp_path, extra: str = "") -> str:
+    cfg_file = tmp_path / "config.yaml"
+    texto = (open("config.yaml", encoding="utf-8").read()
+             .replace("data/state.db", str(tmp_path / "s.db").replace("\\", "/"))
+             .replace("data/watchlist.json",
+                      str(tmp_path / "sem-watchlist.json").replace("\\", "/")))
+    cfg_file.write_text(texto + extra, encoding="utf-8")
+    return str(cfg_file)
+
+
+def _run_capturando_o_leitor(monkeypatch, cfg_file: str) -> dict:
+    monkeypatch.setenv("SHOPEE_APP_ID", "id")
+    monkeypatch.setenv("SHOPEE_APP_SECRET", "secret")
+    chamado = {}
+
+    def fake_run(cfg, sources, channels, db, **kw):
+        chamado["preco_real"] = kw.get("preco_real")
+        chamado["avisos"] = list(kw.get("warnings_iniciais") or [])
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    assert cli.main(["run", "--dry-run", "--config", cfg_file]) == 0
+    return chamado
+
+
+def test_o_config_de_producao_nasce_com_a_leitura_desligada(monkeypatch, tmp_path):
+    """O interruptor do `config.yaml` real, que é o que a produção lê. Esta
+    fase mexe na superfície de maior risco do projeto: ligar é decisão do dono,
+    depois de ver a leitura bater com a tela dele."""
+    assert _run_capturando_o_leitor(monkeypatch, _cfg_com(tmp_path))["preco_real"] is None
+
+
+def test_ligada_no_config_o_leitor_chega_ao_pipeline(monkeypatch, tmp_path):
+    perfil = str(tmp_path / "perfil").replace("\\", "/")
+    chamado = _run_capturando_o_leitor(
+        monkeypatch, _cfg_com(tmp_path, f"\npreco_real:\n  enabled: true\n"
+                                        f"  profile_dir: {perfil}\n"))
+    assert isinstance(chamado["preco_real"], preco_real.LeitorDePreco)
+
+
+def test_ligada_com_o_perfil_do_dono_nao_monta_e_avisa_o_ops(monkeypatch, tmp_path):
+    """A recusa chega ao chat de operações no PRIMEIRO run, junto dos outros
+    avisos de montagem — ligar apontando para o Chrome do dono não pode
+    simplesmente funcionar, e também não pode falhar em silêncio."""
+    monkeypatch.setattr(preco_real.Path, "home", staticmethod(lambda: tmp_path))
+    chrome = tmp_path / "AppData/Local/Google/Chrome/User Data"
+    chrome.mkdir(parents=True)
+    chamado = _run_capturando_o_leitor(
+        monkeypatch, _cfg_com(tmp_path, "\npreco_real:\n  enabled: true\n"
+                                        f"  profile_dir: {str(chrome).replace(chr(92), '/')}\n"))
+    assert chamado["preco_real"] is None
+    assert any("navegador real" in a for a in chamado["avisos"])
+
+
+def test_preco_real_a_mao_imprime_a_leitura(monkeypatch, tmp_path, capsys):
+    """O comando que o dono roda ANTES de ligar o interruptor: ele diz o que
+    leria, e roda mesmo com a leitura desligada no config."""
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: (
+                            "R$523,48\nou R$599,00 sem cupom em outros métodos "
+                            "de pagamento", 11.4)))
+    codigo = cli.main(["preco-real", "https://shopee.com.br/product/1/9",
+                       "--preco", "599,00", "--config", _cfg_com(tmp_path)])
+    saida = capsys.readouterr().out
+    assert codigo == 0
+    assert "R$ 523,48 com cupom" in saida
+    assert "11,4 s" in saida
+
+
+def test_preco_real_a_mao_diz_o_motivo_quando_nao_le(monkeypatch, tmp_path, capsys):
+    """E diz o que o post publicaria mesmo assim — que é o preço da API, como
+    hoje. Sai com código 1 para um script saber a diferença."""
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: ("Login Necessário", 0.9)))
+    codigo = cli.main(["preco-real", "https://shopee.com.br/product/1/9",
+                       "--preco", "599,00", "--config", _cfg_com(tmp_path)])
+    saida = capsys.readouterr().out
+    assert codigo == 1
+    assert preco_real.INTERSTICIO in saida
+    assert "R$ 599,00" in saida
+
+
+def test_preco_real_a_mao_aceita_uma_pagina_salva(monkeypatch, tmp_path, capsys):
+    """`file://…` é URL, não itemId — é como se exercita o parser contra uma
+    página salva sem tocar a Shopee. Tratá-lo como itemId mandava o comando
+    procurar no estoque de candidatas e falhar com a mensagem errada."""
+    vistos = []
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: (
+                            vistos.append(url) or
+                            "R$523,48\nou R$599,00 sem cupom em outros métodos", 2.0)))
+    codigo = cli.main(["preco-real", "file:///c:/tmp/anuncio.html", "--preco", "599,00",
+                       "--config", _cfg_com(tmp_path)])
+    assert codigo == 0
+    assert vistos == ["file:///c:/tmp/anuncio.html"]
+    assert "R$ 523,48 com cupom" in capsys.readouterr().out
+
+
+def test_preco_real_a_mao_procura_o_item_no_estoque(monkeypatch, tmp_path, capsys):
+    """Sem "://" o alvo é itemId, e a URL e a âncora saem do estoque de
+    candidatas do `state.db` — sem chamar API nenhuma."""
+    cfg_file = _cfg_com(tmp_path)
+    db = StateDB(tmp_path / "s.db")
+    db.upsert_candidates([make_offer(item_id="777", price_current_cents=59900,
+                                     product_url="https://shopee.com.br/product/1/777")])
+    db.close()
+    vistos = []
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: (
+                            vistos.append(url) or
+                            "R$523,48\nou R$599,00 sem cupom em outros métodos", 5.0)))
+    assert cli.main(["preco-real", "777", "--config", cfg_file]) == 0
+    assert vistos == ["https://shopee.com.br/product/1/777"]
+    assert "R$ 523,48 com cupom" in capsys.readouterr().out
+
+
+def test_preco_real_a_mao_diz_o_que_fazer_quando_o_item_nao_esta_no_estoque(
+        monkeypatch, tmp_path, capsys):
+    assert cli.main(["preco-real", "999", "--config", _cfg_com(tmp_path)]) == 1
+    assert "não está no estoque" in capsys.readouterr().out
+
+
+def test_o_doctor_cala_sobre_a_leitura_desligada(capsys):
+    """Desligada é o estado normal: um item por run sobre algo que não roda é
+    ruído, e ruído é como se ensina o dono a ignorar o doctor."""
+    assert cli._doctor_preco_real({}) is True
+    assert "preco_real" not in capsys.readouterr().out
+
+
+def test_o_doctor_reprova_a_leitura_ligada_com_o_perfil_do_dono(tmp_path, monkeypatch,
+                                                                capsys):
+    monkeypatch.setattr(preco_real.Path, "home", staticmethod(lambda: tmp_path))
+    chrome = tmp_path / "AppData/Local/Google/Chrome/User Data/Default"
+    chrome.mkdir(parents=True)
+    assert cli._doctor_preco_real(
+        {"preco_real": {"enabled": True, "profile_dir": str(chrome)}}) is False
+    assert "navegador real" in capsys.readouterr().out
+
+
+def test_o_doctor_reprova_a_leitura_ligada_sem_playwright(tmp_path, monkeypatch, capsys):
+    """Ligada sem o extra, toda leitura se desarma no primeiro item e o dia
+    inteiro publica o preço da API achando que está lendo."""
+    monkeypatch.setattr(cli, "_tem_playwright", lambda: False)
+    assert cli._doctor_preco_real(
+        {"preco_real": {"enabled": True,
+                        "profile_dir": str(tmp_path / "perfil")}}) is False
+    assert ".[preco]" in capsys.readouterr().out
+
+
+def test_o_doctor_aprova_a_leitura_ligada_e_diz_onde_o_perfil_fica(tmp_path,
+                                                                   monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_tem_playwright", lambda: True)
+    perfil = tmp_path / "perfil"
+    assert cli._doctor_preco_real(
+        {"preco_real": {"enabled": True, "profile_dir": str(perfil)}}) is True
+    saida = capsys.readouterr().out
+    assert "✅ preco_real" in saida and str(perfil) in saida
+
+
+def test_preco_real_a_mao_nao_grava_o_desarme(monkeypatch, tmp_path):
+    """Ele é uma sonda: três execuções à mão não podem desarmar a leitura do
+    dia seguinte da produção."""
+    monkeypatch.setattr(cli.preco_real, "navegador_playwright",
+                        lambda *a, **kw: (lambda url, pronto: ("Login Necessário", 0.5)))
+    cfg_file = _cfg_com(tmp_path)
+    cli.main(["preco-real", "https://shopee.com.br/product/1/9", "--preco", "10,00",
+              "--config", cfg_file])
+    db = StateDB(tmp_path / "s.db")
+    assert db.day_flag(preco_real.CHAVE_DESARMADO) == ""
+    db.close()
+
+
+# --- Fase 5R: o item do preço de checkout que vem do CUBO ---------------------
+
+def test_o_doctor_cala_sobre_o_preco_de_checkout_desligado(capsys):
+    assert cli._doctor_preco_checkout({}, None) is True
+    assert "preco_checkout" not in capsys.readouterr().out
+
+
+def test_o_doctor_avisa_sem_watchlist_mas_NAO_fica_vermelho(capsys):
+    """Mesmo critério do data feed da 5L: seção ausente não quebra nada — o post
+    publica o preço da API, como antes desta fase —, e um ❌ num sistema que
+    está entregando é como se ensina o dono a ignorar o ❌."""
+    assert cli._doctor_preco_checkout({"preco_checkout": {"enabled": True}}, None) is True
+    saida = capsys.readouterr().out
+    assert "⚠️ preco_checkout" in saida and "watchlist" in saida
+
+
+def test_o_doctor_avisa_secao_vazia_ou_vencida(capsys):
+    from datetime import date, timedelta
+
+    from afiliado.watchlist import CheckoutPrice, Watchlist
+    cfg = {"preco_checkout": {"enabled": True}}
+    hoje = date.today()
+    assert cli._doctor_preco_checkout(cfg, Watchlist(generated_at=hoje,
+                                                     valid_days=14)) is True
+    assert "/shopee-checkout-refresh" in capsys.readouterr().out
+
+    velha = hoje - timedelta(days=30)
+    vencida = Watchlist(generated_at=hoje, valid_days=14,
+                        checkout_prices={"1": CheckoutPrice(100, velha)},
+                        section_dates={"checkout_prices": velha})
+    assert cli._doctor_preco_checkout(cfg, vencida) is True
+    saida = capsys.readouterr().out
+    assert "⚠️" in saida and "0 de 1" in saida
+
+
+def test_o_doctor_conta_quantos_precos_ainda_valem(capsys):
+    from datetime import date, timedelta
+
+    from afiliado.watchlist import CheckoutPrice, Watchlist
+    hoje = date.today()
+    wl = Watchlist(generated_at=hoje, valid_days=14,
+                   checkout_prices={"fresco": CheckoutPrice(100, hoje),
+                                    "velho": CheckoutPrice(100, hoje - timedelta(days=9))},
+                   section_dates={"checkout_prices": hoje})
+    assert cli._doctor_preco_checkout({"preco_checkout": {"enabled": True}}, wl) is True
+    saida = capsys.readouterr().out
+    assert "✅ preco_checkout" in saida and "1 de 2" in saida
+    assert "15%" in saida and "3 dia" in saida

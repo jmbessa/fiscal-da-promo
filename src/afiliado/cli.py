@@ -5,12 +5,13 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 import httpx
 
-from afiliado import (categorias, config, creative, flagrante, llm, pipeline, pricing,
-                      selection)
+from afiliado import (categorias, config, creative, flagrante, llm, pipeline, preco_real,
+                      pricing, selection, shopee_checkout)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import GRAPH_HOSTS, graph_error
 from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
@@ -128,6 +129,18 @@ def _build_parser() -> argparse.ArgumentParser:
                             "flagrante: gráfico do 'de' que não se sustenta, "
                             "despachado ao chat de operações SEM publicar")
     pfeed.add_argument("--config", default="config.yaml")
+    # Fase 5P: exercitar a leitura do preço de checkout À MÃO, com a leitura
+    # ainda DESLIGADA no config. É o instrumento da decisão: o dono roda isto,
+    # compara com a tela do celular dele e só então liga o interruptor.
+    ppreco = sub.add_parser("preco-real",
+                            help="lê no navegador o preço de checkout de UM anúncio "
+                                 "e imprime o que o post publicaria (não publica nada)")
+    ppreco.add_argument("alvo", help="URL do anúncio, ou o itemId (procurado no "
+                                     "estoque de candidatas do state.db)")
+    ppreco.add_argument("--preco", default="",
+                        help="o preço da API em reais (ex.: 599,00) — obrigatório "
+                             "quando o alvo é uma URL; é a ÂNCORA da leitura")
+    ppreco.add_argument("--config", default="config.yaml")
     return p
 
 
@@ -241,6 +254,23 @@ def _build_sources(cfg: dict, db: StateDB | None = None) -> tuple[list, list[str
         else:
             sources.append(meli)
     return sources, avisos
+
+
+def _build_preco_real(cfg: dict, db: StateDB | None, avisos: list[str]):
+    """O leitor de preço de checkout (fase 5P), ou None — que é o padrão.
+
+    Mesmo contrato de `_build_channels`: o que impede a leitura de subir vira
+    AVISO no stdout e no resumo de operações, nunca uma exceção. O `db` vai
+    junto porque é nele que o desarme sobrevive ao processo, e os avisos que o
+    leitor já traz (um dia que amanheceu desarmado) são drenados aqui — senão
+    eles ficariam presos no objeto num run que não publicou nada."""
+    leitor, recusas = preco_real.monta(cfg, estado=db)
+    for texto in recusas:
+        _aviso(avisos, texto)
+    if leitor is not None:
+        for texto in pipeline.drena_avisos(leitor):
+            _aviso(avisos, texto)
+    return leitor
 
 
 def _env(name: str) -> str:
@@ -494,7 +524,8 @@ def _doctor_links_do_meli(meli: MeliSource, offers: list, cfg: dict) -> bool:
     elif not meli.links_file_exists:
         situacao = f"pool de links ausente ({caminho})"
     else:
-        situacao = f"{com_link} de {total} produto(s) do pool com link ({caminho})"
+        situacao = (f"{com_link} de {total} produto(s) do pool com anúncio linkado "
+                    f"({caminho})")
     if ligado and com_link == 0:
         print(f"❌ Mercado Livre: {situacao} — o ML não vai publicar nada. "
               f"Rode {acao} (ver docs/runbooks/meli-setup.md)")
@@ -604,12 +635,24 @@ def _doctor_agendador(consulta=None) -> bool:
 def doctor(cfg: dict) -> int:
     ok = True
     try:
-        # Uma chamada só (a p1 de uma raiz): o doctor confere credencial e
-        # parsing, não faz varredura — e sem StateDB não mexe no cursor do run.
-        offers = _shopee().fetch_offers(
+        # Uma chamada de BUSCA (a p1 de uma raiz) mais a fatia do data feed
+        # como o config a define: o doctor confere credencial e parsing, não
+        # faz varredura — e sem StateDB não mexe no cursor do run.
+        fonte = _shopee()
+        offers = fonte.fetch_offers(
             {**cfg, "shopee": {**cfg["shopee"], "calls_per_run": 1, "pages": 1}})
         print(f"✅ Shopee: {len(offers)} ofertas; primeira: "
               f"{offers[0] if offers else '(vazio — confira sort_types/list_type)'}")
+        # Fase 5L: o feed é a SEGUNDA superfície de descoberta e, sem esta
+        # linha, só falaria pelo resumo do run — uma vez por dia. Feed quebrado
+        # não pinta o doctor de vermelho: a busca continua publicando, e um ❌
+        # num sistema que está entregando é a maneira mais rápida de ensinar o
+        # dono a ignorar o ❌.
+        stats = getattr(fonte, "discovery_stats", None)
+        if getattr(stats, "feed", ""):
+            print(f"📦 Data feed: {stats.feed}")
+        if getattr(stats, "feed_warning", ""):
+            print(stats.feed_warning)
     except Exception as exc:
         ok = False
         print(f"❌ Shopee: {exc}")
@@ -714,12 +757,95 @@ def doctor(cfg: dict) -> int:
     if not _doctor_story_link(cfg):
         ok = False
 
+    if not _doctor_preco_real(cfg):
+        ok = False
+
+    _doctor_preco_checkout(cfg, _watchlist(cfg))
+
     # Por último de propósito: é o item que responde "quem me chama?", e ele
     # fala do MUNDO (o agendador), não das credenciais.
     if not _doctor_agendador():
         ok = False
 
     return 0 if ok else 1
+
+
+def _tem_playwright() -> bool:
+    """O extra `preco` está instalado? Só a PRESENÇA — nada é aberto aqui."""
+    import importlib.util
+    return importlib.util.find_spec("playwright") is not None
+
+
+def _doctor_preco_real(cfg: dict) -> bool:
+    """Fase 5P: a leitura do preço de checkout, conferida SEM abrir navegador.
+
+    DESLIGADA ele cala. Ela é o estado normal, e um item por diagnóstico sobre
+    algo que não roda é ruído — que é como se ensina o dono a ignorar o doctor.
+
+    Ligada, ele confere as duas coisas que só se descobre tarde demais: o perfil
+    (apontar para o Chrome do dono é o erro que custa a conta) e a presença do
+    extra (sem ele toda leitura se desarma no primeiro item, e o dia inteiro
+    publica o preço da API achando que está lendo).
+    """
+    opcoes = preco_real.config_de(cfg)
+    if not opcoes["enabled"]:
+        return True
+    motivo = preco_real.perfil_proibido(opcoes["profile_dir"])
+    if motivo:
+        print(f"❌ preco_real: {motivo}")
+        return False
+    if not _tem_playwright():
+        print("❌ preco_real: ligado, mas o extra não está instalado — rode "
+              "`pip install -e .[preco]`. Sem ele TODA leitura se desarma no "
+              "primeiro item e o dia publica o preço da API "
+              "(ver docs/runbooks/shopee-preco.md)")
+        return False
+    print(f"✅ preco_real: ligado · perfil próprio em {opcoes['profile_dir']} "
+          f"(channel={opcoes['browser_channel'] or 'chromium empacotado'}, "
+          f"teto={opcoes['timeout_s']:.0f}s, desarma em {opcoes['max_falhas']} "
+          "falhas seguidas)")
+    return True
+
+
+def _doctor_preco_checkout(cfg: dict, watchlist) -> bool:
+    """Fase 5R: o preço de checkout que vem do cubo, conferido SEM rede.
+
+    Desligado ele cala, como o item da 5P. Ligado, ele responde a única
+    pergunta que só se descobre tarde demais: **quantos preços ainda estão
+    dentro do teto de idade hoje**. A seção envelhece sozinha — cada preço tem
+    a data da RASPAGEM, não a do arquivo — e uma coleta que parou faria as
+    peças voltarem ao preço de catálogo sem nada dizer.
+
+    **Ele NUNCA pinta o doctor de vermelho**, e devolve sempre True. É o mesmo
+    critério do data feed da 5L: seção vazia ou vencida não quebra nada — o
+    post publica o preço da API, exatamente como publicava antes desta fase —,
+    e um ❌ num sistema que está entregando é a maneira mais rápida de ensinar
+    o dono a ignorar o ❌. Quem cobra a coleta é o aviso diário do run, que vai
+    ao chat de operações.
+    """
+    opcoes = shopee_checkout.config_de(cfg)
+    if not opcoes["enabled"]:
+        return True
+    regua = (f"teto {opcoes['gap_max']:.0%} · piso {opcoes['gap_min']:.0%} · "
+             f"idade máx. {opcoes['idade_max_dias']} dia(s)")
+    if watchlist is None:
+        print("⚠️ preco_checkout: ligado, mas não há watchlist legível — o preço de "
+              "checkout mora em `checkout_prices` dela; os posts publicam o preço "
+              "da API (ver docs/runbooks/shopee-preco.md)")
+        return True
+    entradas = watchlist.checkout_prices
+    if not entradas:
+        print("⚠️ preco_checkout: ligado e a seção `checkout_prices` está vazia — "
+              "rode /shopee-checkout-refresh (os posts publicam o preço da API)")
+        return True
+    dentro = len(shopee_checkout.frescos(entradas, date.today(),
+                                         opcoes["idade_max_dias"]))
+    marca = "✅" if dentro else "⚠️"
+    print(f"{marca} preco_checkout: ligado · {dentro} de {len(entradas)} preços "
+          f"dentro do teto de idade · {regua} · seção de "
+          f"{watchlist.section_date(shopee_checkout.SECAO).isoformat()}"
+          + ("" if dentro else " — rode /shopee-checkout-refresh"))
+    return True
 
 
 def _doctor_story_link(cfg: dict) -> bool:
@@ -1040,13 +1166,18 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
     Um item por linha com o nome COMPLETO e o preço, as categorias por nome, e
     a janela MAIS CURTA entre as ofertas (é a única que vale para o post
     inteiro: prometer a maior seria alegar sobre um item o que só outro
-    sustenta). Fecha na frase-assinatura."""
+    sustenta). Fecha na frase-assinatura.
+
+    O preço sai por `pricing.preco_publicado`, que carrega o "sem cupom" dos
+    itens da Shopee quando o rótulo está ligado (fase 5K; desligado desde a
+    5N): cada slide é a arte de feed, e ela desenha o rótulo na pill — a
+    legenda não pode discordar do álbum que acompanha, nos dois estados."""
     linhas = [titulo, subtitulo, ""]
     for i, post in enumerate(posts, start=1):
         offer = post.offer
         nome = sanitiza_titulo(offer.title)
         selo = " · selo do Fiscal" if post.verdict.seal else ""
-        linhas.append(f"{i}. {nome} — {format_brl(offer.price_current_cents)}{selo}")
+        linhas.append(f"{i}. {nome} — {pricing.preco_publicado(offer)}{selo}")
     linhas += ["", "🔗 Link na bio e no canal do Telegram", ""]
     nomes = list(dict.fromkeys(
         n for n in (categorias.nome(p.offer.category) for p in posts) if n))
@@ -1154,6 +1285,113 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
         [f"🎠 Carrossel publicado — {titulo}",
          *(f"• {p.offer.title[:40]}" for p in posts), *avisos]))
     return 0
+
+
+# --- Fase 5P: exercitar a leitura de preço à mão ------------------------------
+
+def _cents_do_texto(texto: str) -> int:
+    """"599,00", "599.00", "R$ 599,00" -> 59900. 0 quando não dá para ler."""
+    limpo = str(texto or "").replace("R$", "").strip().replace(".", "").replace(",", ".")
+    try:
+        return int(round(float(limpo) * 100))
+    except ValueError:
+        return 0
+
+
+def _alvo_no_estoque(db: StateDB, item_id: str):
+    """A candidata da Shopee com este itemId no estoque do `state.db` — é dela
+    que saem a URL do anúncio e o preço da API sem chamar API nenhuma."""
+    for offer in db.load_candidates("shopee", 30):
+        if offer.item_id == item_id:
+            return offer
+    return None
+
+
+def preco_real_a_mao(cfg: dict, args) -> int:
+    """`afiliado preco-real <url|itemId>`: lê o preço de checkout de UM anúncio
+    e imprime o que o post publicaria. Não publica, não escreve no banco.
+
+    É o instrumento da decisão da fase (P1): a leitura nasce DESLIGADA, e este
+    comando roda de qualquer jeito — o dono compara a leitura com a tela do
+    celular dele e só então liga o interruptor.
+
+    Duas coisas que ele NÃO faz, de propósito:
+      - não grava o desarme (`estado=None`): três sondas à mão não podem calar a
+        leitura da produção no dia seguinte;
+      - não usa o perfil do Chrome do dono. Se `preco_real.profile_dir` apontar
+        para lá, ele recusa aqui pelo mesmo caminho que a montagem do run.
+
+    Sai 0 quando leu e 1 quando não leu — para um script saber a diferença.
+    """
+    opcoes = preco_real.config_de(cfg)
+    motivo_do_perfil = preco_real.perfil_proibido(opcoes["profile_dir"])
+    if motivo_do_perfil:
+        print(f"❌ preco-real: {motivo_do_perfil}")
+        return 1
+
+    alvo = str(args.alvo).strip()
+    url, preco_cents = alvo, _cents_do_texto(getattr(args, "preco", ""))
+    # `"://"` e não `startswith("http")`: um `file://…` (uma página salva, o
+    # jeito de exercitar o parser sem tocar a Shopee) é URL e não itemId, e
+    # tratá-lo como itemId mandava o comando procurar no estoque.
+    if "://" not in alvo:
+        db = _abre_estado(cfg)
+        try:
+            offer = _alvo_no_estoque(db, alvo)
+        finally:
+            db.close()
+        if offer is None:
+            print(f"❌ preco-real: item {alvo} não está no estoque de candidatas "
+                  "— passe a URL do anúncio e --preco (o preço da API, a âncora "
+                  "da leitura)")
+            return 1
+        url = offer.product_url
+        preco_cents = preco_cents or offer.price_current_cents
+    if preco_cents <= 0:
+        print("❌ preco-real: sem o preço da API não há âncora — "
+              "passe --preco 599,00")
+        return 1
+
+    print(f"🔎 preco-real — {url}")
+    print(f"   preço da API (âncora): {format_brl(preco_cents)}")
+    print(f"   navegador: perfil {opcoes['profile_dir']} · "
+          f"channel={opcoes['browser_channel'] or 'chromium empacotado'} · "
+          f"headless={opcoes['headless']} · teto={opcoes['timeout_s']:.0f}s")
+    print("   (perfil PRÓPRIO e deslogado — nunca o Chrome do dono)")
+
+    try:
+        navegador = preco_real.navegador_playwright(
+            opcoes["profile_dir"], channel=opcoes["browser_channel"],
+            headless=opcoes["headless"], teto_s=opcoes["timeout_s"],
+            passo_s=opcoes["passo_s"])
+    except ImportError:
+        print(f"❌ preco-real: {preco_real.SEM_PLAYWRIGHT}")
+        return 1
+
+    def pronto(texto: str) -> bool:
+        return preco_real.parse_preco(texto, preco_cents).ok
+
+    try:
+        texto, segundos = navegador(url, pronto)
+    except Exception as exc:      # noqa: BLE001 - é um diagnóstico, não um run
+        print(f"❌ preco-real: {preco_real.FALHA_DO_NAVEGADOR} "
+              f"({type(exc).__name__}: {exc})")
+        return 1
+
+    leitura = preco_real.parse_preco(texto, preco_cents)
+    tempo = f"{segundos:.1f}".replace(".", ",")
+    if leitura.ok:
+        print(f"✅ leitura em {tempo} s: "
+              f"{format_brl(leitura.price_cents)} {leitura.condicao}")
+        print(f"   o post publicaria: {format_brl(leitura.price_cents)} "
+              f"{leitura.condicao}")
+        return 0
+    print(f"❌ sem leitura ({tempo} s): {leitura.motivo}")
+    print(f"   o post publicaria: {format_brl(preco_cents)} "
+          "(o preço da API, como hoje — é o que falhar fechado significa)")
+    print(f"   primeiros 300 caracteres do que a página devolveu:\n"
+          f"   {' | '.join(texto.splitlines())[:300]}")
+    return 1
 
 
 def legenda_do_flagrante(achado, verdict) -> str:
@@ -1369,6 +1607,8 @@ def main(argv: list[str] | None = None) -> int:
         return ig_login(cfg)
     if args.cmd == "feed":
         return feed(cfg, args)
+    if args.cmd == "preco-real":
+        return preco_real_a_mao(cfg, args)
 
     # `stories` (fase 5F) é o MESMO run — mesmo ritmo, dedupe, teto diário e
     # resumo de operações — com os canais recortados nos de story. O nome do
@@ -1384,6 +1624,7 @@ def main(argv: list[str] | None = None) -> int:
 
     db = _abre_estado(cfg, stories=somente_story)
     sources, avisos = _build_sources(cfg, db)
+    leitor_de_preco = _build_preco_real(cfg, db, avisos)
     channels = []
     if not args.dry_run:
         # A API privada só é montada sob `afiliado stories` — ver
@@ -1409,7 +1650,8 @@ def main(argv: list[str] | None = None) -> int:
         # alimenta.
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
                                warnings_iniciais=avisos,
-                               checa_cadencia=not somente_story)
+                               checa_cadencia=not somente_story,
+                               preco_real=leitor_de_preco)
     except pipeline.RunAborted as exc:
         # Todas as fontes falharam: a causa está no próprio motivo (os avisos
         # por fonte podem já ter sido deduplicados hoje) e vai ao journal e

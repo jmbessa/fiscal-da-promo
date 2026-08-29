@@ -131,6 +131,41 @@ selection:
 # afiliado (data/meli_links.json, ver docs/runbooks/meli-setup.md).
 sources:
   shopee: true
+  # DESLIGADO EM 2026-08-28 — o preço publicado estava muito acima do real.
+  # Dois stories no ar, os dois medidos ao vivo, paginando /products/{id}/items
+  # inteiro:
+  #
+  #   MLB19603205 (creatina): publicamos R$ 80. Nosso anúncio EXISTE e custa
+  #   R$ 80 mesmo — entre 277 vendedores que vão de R$ 35,90 a R$ 6.999. A
+  #   página mostra R$ 39,90.
+  #
+  #   MLB22983247 (colchão): publicamos R$ 209,87. Nosso anúncio EXISTE e custa
+  #   isso — entre 137 vendedores de R$ 109 a R$ 414,90. A página mostra R$ 113.
+  #
+  # `refresh_price` funcionou nos dois: leu o preço vivo do anúncio gravado. O
+  # defeito é a PREMISSA — o `buy_box_item_id` não é o vencedor do buy box, é
+  # só um vendedor, e caro. O `buyBoxId` do JoomPulse envelhece (renovei 33
+  # entradas na manhã do mesmo dia e as duas saíram assim), e a API do ML não
+  # entrega o vencedor: `buy_box_winner` vem nulo e `tier` vem vazio nos 89
+  # anúncios sondados.
+  #
+  # CONSERTADO na fase 5M e RELIGADO em 2026-08-28: o preço publicado passou a
+  # ser o do anúncio LINKADO mais barato, e o link do post é o daquele anúncio.
+  # Não se estima mais qual vendedor a página vai mostrar — post e clique são o
+  # mesmo objeto, por construção.
+  #
+  # Conferido em seco antes de religar, com o pipeline de produção:
+  #   publicado R$ 45,90 -> anúncio MLB5131776515 (meli.la/1YxoeGp) custa 45,90
+  #   publicado R$ 97,00 -> anúncio MLB5000010211 (meli.la/1GHj71M) custa 97,00
+  #
+  # 119 links por anúncio cunhados sob a etiqueta ofiscaldapromo; cobertura de
+  # 52 das 53 ofertas do pool (a que falta é o único produto sem anúncio
+  # elegível no piso de qualidade).
+  #
+  # O que esperar: as ofertas do ML nascem em MODO B — sem alegar desconto e
+  # sem selo —, porque a régua do pool era do anúncio que vencia o buy box e o
+  # preço agora é de outro vendedor. Elas ganham régua quando o nosso price_log
+  # sustentar uma. Ver docs/runbooks/meli-setup.md, seção "2026-08-28".
   meli: true
 
 # Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26
@@ -151,6 +186,45 @@ shopee:
                             # este número para <= 5 desliga subcategorias e keywords
                             # em silêncio — o run avisa quando isso acontece.
   candidate_max_age_days: 3 # por quantos dias a candidata descoberta segue na fila
+  # Fase 5L — O DATA FEED, a segunda superfície de descoberta. Tudo medido ao
+  # vivo em 2026-08-28 (ver docs/runbooks/shopee-preco.md).
+  #
+  # `listItemFeeds`/`getItemFeedData` entregam CATÁLOGOS INTEIROS: 100.000
+  # itens no "Shopee Oficial BR" (10.000 no "Shopee Brasil"), contra as janelas
+  # de 2.000 itens por (categoria, ordenação) que a busca alcança. O teto por
+  # chamada é 500 (`limit: 1000` devolve `error [11001]`), então o catálogo
+  # inteiro sai em 200 chamadas.
+  #
+  # FULL e não DELTA, e é o contrário do que parecia: o DELTA oficial tem
+  # 170.217 linhas (341 chamadas) e, numa janela de 500, 229 são DELETE contra
+  # 264 NEW e 7 UPDATE — mais chamadas para menos linha aproveitável.
+  #
+  # O que o feed NÃO traz: `commission` e `sales`. As duas são medidas pelo
+  # `refresh_price` imediatamente antes de publicar; até lá a candidata é
+  # "comissão desconhecida" e o piso de `min_ev_brl` NÃO a julga (ver
+  # selection.comissao_desconhecida — sem isso a fase seria um zero silencioso).
+  # Consequência de projeto: sem comissão e sem vendas, a candidata do feed
+  # entra no fim da fila e só publica quando o topo das categorias se esgota —
+  # que é exatamente o papel dela. O feed é RESERVA e alcance, não substituto:
+  # os itens dele têm mediana de 1 venda/30 dias (feed oficial) contra os
+  # milhares do topo de categoria que a busca traz.
+  #
+  # Custo: 1 janela + 1 `listItemFeeds` = 2 chamadas/run, contra as 8 da busca.
+  feed_calls_per_run: 1
+  feed_page_size: 500       # teto medido da API
+  # Quantas linhas de cada janela entram no estoque, e por CURTIDAS: a nota é
+  # 5,0 na mediana (165 de 172 acima de 4,5 — não separa nada), enquanto as 12
+  # linhas mais curtidas de uma janela somam 2.152 vendas de 30 dias contra 2
+  # das 12 menos curtidas. O teto existe porque o gargalo não é a API, é o
+  # `state.db` (arquivo binário versionado): 32% das linhas passam nos portões,
+  # e guardar tudo seriam ~9.800 candidatas/dia — com candidate_max_age_days: 3,
+  # ~29 mil linhas de ~600 bytes contra 60 posts/dia. Com 10, são ~610/dia e
+  # ~1.800 vivas, +60% sobre o estoque de hoje. 0 = sem teto (não faça isso).
+  feed_keep_per_run: 10
+  # feed_name: "Oficial"    # vazio/ausente = o MAIOR feed FULL da conta. Só o
+                            # oficial tem a coluna `like` preenchida (no
+                            # "Shopee Brasil" ela é 0 nas 178 linhas medidas),
+                            # e sem ela o teto acima escolheria ao acaso.
   # Buscar POR categoria muda tudo: sem isso a API devolve majoritariamente a
   # categoria 100644 (fora da nossa lista). Medido em 2026-08-25: desconto médio
   # sobe de 19% para ~47% e a mediana de vendas de 282 para milhares.
@@ -190,7 +264,11 @@ shopee:
 # (/products/{id}/items) só imediatamente antes de publicar (refresh_price).
 meli:
   offers_path: data/meli_offers.json   # pool curado; ver docs/runbooks/meli-setup.md
-  links_path: data/meli_links.json     # pool de links de afiliado (gerado por /meli-links-refresh)
+  # Pool de links de afiliado POR ANÚNCIO (fase 5M), gerado por
+  # /meli-links-refresh: {version: 2, products: {produto: {items: {anúncio:
+  # link}, product_link}}}. É `items` que publica; `product_link` guarda os 55
+  # links de catálogo da fase 5C, que continuam válidos e não publicam nada.
+  links_path: data/meli_links.json
   # Comissão média estimada do programa de afiliados do ML, usada no cálculo de
   # valor esperado enquanto a API não expõe a taxa por item.
   # Ajuste com as taxas reais do seu painel de afiliados por categoria.
@@ -199,7 +277,103 @@ meli:
   # decide publicabilidade é selection.max_above_ref + validate.check_price,
   # igual para as duas lojas; a mínima histórica do pool vira
   # Offer.price_floor_cents e só alimenta o selo de menor preço.
-  tag: "jmbessa"             # etiqueta cadastrada no painel de afiliados (linkbuilder)
+  # Etiqueta cadastrada no painel de afiliados (linkbuilder). Ela é o
+  # `matt_word` do link — medido em 2026-08-28 resolvendo links reais:
+  #
+  #   .../social/bessarodriguesjoomarcello?matt_word=jmbessa&matt_tool=58475193
+  #   .../social/bessarodriguesjoomarcello?matt_word=ofiscaldapromo&matt_tool=58475193
+  #
+  # O caminho `/social/<apelido>` é IDÊNTICO nos dois: ele é o apelido do perfil
+  # social da conta, não a etiqueta — mudá-lo é mexer no perfil do ML, não aqui.
+  # O `matt_tool` também é o mesmo, ou seja, a comissão cai na MESMA conta; a
+  # etiqueta só separa o relatório.
+  #
+  # ATENÇÃO: os 55 links já em data/meli_links.json foram gerados sob `jmbessa`
+  # e continuam valendo (o link não muda de dono), guardados em `product_link`.
+  # Eles não publicam nada desde a fase 5M — são links de catálogo. Os links
+  # por anúncio nascem sob `ofiscaldapromo`.
+  tag: "ofiscaldapromo"
+
+# Fase 5P — O PREÇO QUE O SEGUIDOR VÊ, lido do navegador. NASCE DESLIGADA.
+#
+# A Shopee cobra dois preços: o de catálogo (o que a API expõe e o que
+# publicamos) e o de CHECKOUT, ~12% menor, que exige cupom. O dono reclamou
+# duas vezes de abrir o anúncio e ver um número menor que o do post. As seis
+# rotas de servidor estão fechadas (docs/runbooks/shopee-preco.md); a sétima é
+# o navegador, que executa o JavaScript e renderiza o bloco.
+#
+# LIGAR É DECISÃO DO DONO, e a ordem é esta:
+#   1. pip install -e .[preco]
+#   2. afiliado preco-real <itemId>   (a leitura à mão, com isto ainda em false)
+#   3. comparar com a tela do celular; só então `enabled: true`
+#   4. afiliado doctor  (ele confere o perfil e o extra; desligada, ele cala).
+#
+# MEDIDO EM 2026-08-28, e é o motivo de ela nascer desligada: num Chrome de
+# PERFIL PRÓPRIO E DESLOGADO (headless e com janela, com aquecimento pela home,
+# nas duas formas de URL, com user agent de desktop e de celular) a rota do
+# produto NÃO entrega preço — ela responde o interstício "Login Necessário" e,
+# depois de algumas requisições, até a home cai em `/verify/traffic/error`. A
+# leitura que o runbook registrou foi feita no Chrome LOGADO do dono, que é
+# exatamente o que esta fase proíbe usar. Hoje, ligada, toda leitura falha
+# FECHADA: o interstício desarma na primeira ocorrência e o dia inteiro publica
+# o preço da API, como sempre. Ver o relatório da fase.
+preco_real:
+  enabled: false
+  # O perfil do navegador. NUNCA aponte para o Chrome da máquina — ele é o que
+  # está logado na Shopee como o dono, e 60 páginas automatizadas por dia a
+  # partir dele é o padrão que a Shopee caça. `preco_real.perfil_proibido`
+  # recusa em código qualquer caminho dentro do User Data do Chrome/Edge, e o
+  # run avisa o chat de operações em vez de subir. Também não fica em `data/`:
+  # aquela pasta é versionada.
+  profile_dir: .cache/chrome-preco-real
+  # "chrome" usa o BINÁRIO instalado na máquina (menos detectável) com um perfil
+  # VAZIO nosso; vazio ("") usa o Chromium empacotado do Playwright, que exige
+  # `playwright install chromium`.
+  browser_channel: chrome
+  headless: true
+  # O bloco de preço chega VAZIO e leva de 10 a 30 s para preencher (medido):
+  # o leitor relê a página a cada `passo_s` até o teto, e desiste em silêncio.
+  timeout_s: 30
+  passo_s: 1.0
+  # Leituras seguidas sem preço antes de a leitura se DESARMAR pelo resto do dia
+  # local (marca persistente em `day_flags`, como o instagram_story_link). O
+  # interstício/bloqueio desarma na PRIMEIRA ocorrência, sem contar: insistir 60
+  # vezes por dia contra um bloqueio é o que custa a conta.
+  max_falhas: 3
+
+# Fase 5R — O PREÇO QUE O SEGUIDOR VÊ, vindo do CUBO. A OITAVA rota, e a que
+# funciona: `ShbMartItem.price` do JoomPulse É o preço exibido, com cupom.
+#
+# Sem navegador, sem sessão, sem risco para a conta do dono — e 100 itens por
+# consulta. O dado NÃO vem daqui: ele mora em `checkout_prices` na
+# `data/watchlist.json` e quem o enche é o skill /shopee-checkout-refresh.
+# Ligado com a seção vazia, nada muda: toda oferta cai na recusa "o cubo não
+# tem preço de checkout para este anúncio" e publica o preço da API, como
+# sempre.
+#
+# OS TRÊS LIMIARES, com os números que os escolheram (medidos em 2026-08-29
+# sobre 100 itens do topo da fila real, o preço do cubo contra o do estoque):
+# 88 tinham o cubo MENOR; dos 88, 70 ficam em até 15% e se empilham nos degraus
+# de cupom da Shopee (14 em ~5%, 18 em ~10%, 6 em exatamente 14,50%), com um
+# cotovelo claro entre 14,57% e 15,34%; acima dele os valores são espalhados e
+# a cauda vai a 55,8% — R$ 199,90 virando R$ 88,27 não é cupom, é o preço tendo
+# mudado desde a raspagem. A medição do dono, em 10 itens conferidos contra a
+# tela, deu a mesma faixa (5% a 14,5%).
+preco_checkout:
+  enabled: true
+  # O quanto o preço do cubo pode ficar ABAIXO do preço vivo do `refresh_price`.
+  # Acima do teto não é cupom; abaixo do piso é ruído de arredondamento, e um
+  # "com cupom" colado a uma diferença de centavos afirma um cupom que
+  # provavelmente não existe.
+  gap_max_pct: 15
+  gap_min_pct: 1
+  # A idade máxima da RASPAGEM (`itemLastSeenDate`), não do arquivo. O cubo é
+  # reconstruído todo dia, mas com a última raspagem de CADA item: na amostra a
+  # mediana foi de 4 dias e o máximo de 30, e só 27 dos 100 tinham sido vistos
+  # nas últimas 24 h. Preço de ontem apresentado como o de hoje é o erro do
+  # `buy_box_item_id` com outra roupa — por isso a idade é guarda, e a seção
+  # vencida vira aviso ao chat de operações.
+  idade_max_dias: 3
 
 validation:
   # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio

@@ -287,3 +287,48 @@ def test_o_script_nao_grava_credencial_nenhuma():
     for proibido in ("-Password", "IG_PASSWORD", "IG_USERNAME", "SHOPEE_APP_SECRET",
                      "TELEGRAM_BOT_TOKEN", "ConvertTo-SecureString"):
         assert proibido not in texto, proibido
+
+
+def test_a_tarefa_nao_abre_janela_de_terminal():
+    """O `afiliado.exe` é aplicação de console: chamado direto pelo Agendador,
+    ele abria uma janela na tela do dono a cada 15 minutos (2026-08-28).
+
+    O caminho óbvio — `LogonType S4U`, que roda em sessão não interativa —
+    **foi tentado e recusado nesta máquina**: registrar tarefa S4U exige
+    elevação e o `Register-ScheduledTask` devolveu "Acesso negado"
+    (0x80070005). Por isso a tarefa continua `Interactive` e quem esconde a
+    janela é o `afiliado-oculto.vbs`.
+
+    O teste afirma a INVARIANTE (não abre janela), não o meio: se alguém um dia
+    conseguir o S4U, troque as duas primeiras asserções — mas não deixe o
+    `afiliado.exe` voltar a ser o `-Execute` da tarefa."""
+    texto = _script()
+    assert 'New-ScheduledTaskAction -Execute "wscript.exe"' in texto
+    assert "afiliado-oculto.vbs" in texto
+    assert "-Execute $AfiliadoExe" not in texto, "a tarefa voltou a abrir janela"
+    # Sem senha: nenhuma das formas de passar credencial pode aparecer.
+    for proibido in ("-Password", "-User ", "ConvertTo-SecureString"):
+        assert proibido not in texto, f"o script passou a lidar com senha: {proibido!r}"
+
+
+def test_o_atalho_esconde_a_janela_e_espera_o_processo_terminar():
+    """`Run(cmd, 0, True)`: o `0` é a janela oculta e o `True` é "espere".
+
+    O `True` não é detalhe: com `False` o wscript sairia na hora, o Agendador
+    daria a tarefa por concluída e os dois freios que dependem da duração —
+    `MultipleInstances IgnoreNew` (um run travado não empilha dez) e o
+    `ExecutionTimeLimit` — deixariam de valer EM SILÊNCIO."""
+    with open("deploy/afiliado-oculto.vbs", encoding="utf-8") as f:
+        vbs = f.read()
+    assert re.search(r"sh\.Run\(\s*cmd\s*,\s*0\s*,\s*True\s*\)", vbs), \
+        "o atalho deixou de esconder a janela ou de esperar o processo"
+    # O codigo de saida tem de voltar ao Agendador, senao LastTaskResult mente.
+    assert "WScript.Quit codigo" in vbs
+
+
+def test_o_script_falha_alto_se_o_atalho_sumir():
+    """Tarefa apontando para um .vbs inexistente falharia a cada 15 min sem
+    dizer nada — o modo de falha que esta fase existe para acabar."""
+    texto = _script()
+    assert "não achei $VbsOculto" in texto
+    assert "throw" in texto.split("$VbsOculto = Join-Path")[1][:400]

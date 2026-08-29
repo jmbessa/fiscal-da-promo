@@ -88,11 +88,18 @@ o refresh token a cada uso, então o pipeline persiste a rotação em
 Não há API oficial de link de afiliado no Mercado Livre — `resolve_affiliate_link`
 lê um **pool de links pré-gerados** em `data/meli_links.json`, preenchido
 pelo skill `/meli-links-refresh` (`.claude/skills/meli-links-refresh/`),
-que gera links em lote pelo painel de afiliados (`src/afiliado/meli_links.py`)
-e mescla o resultado no pool sem sobrescrever links existentes — item sem
-link no pool é descartado (comportamento já existente do pipeline, promove
-a próxima oferta da fila). Fluxo completo (pool curado de ofertas → preço
-ao vivo → link) em `docs/runbooks/meli-setup.md`.
+que os cunha em lote pelo painel de afiliados (`src/afiliado/meli_links.py`)
+e mescla o resultado no pool sem sobrescrever links existentes.
+
+Desde a fase 5M esse pool é **por anúncio**, não por produto: a página de
+catálogo do ML tem dezenas de vendedores e um preço por vendedor, e é o ML
+que escolhe qual mostrar no clique — foi assim que um story saiu com R$ 80
+num produto de R$ 39,90. Agora o pipeline publica o preço do **anúncio
+linkado mais barato** (entre os que passam num piso de qualidade) e dá o link
+**daquele** anúncio: post e clique mostram o mesmo número por construção.
+Produto sem anúncio linkado é descartado (promove a próxima oferta da fila).
+Fluxo completo (pool curado de ofertas → preço ao vivo → link) em
+`docs/runbooks/meli-setup.md`.
 
 ## Comandos
 

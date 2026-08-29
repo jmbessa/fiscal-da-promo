@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from datetime import date, timedelta
 
@@ -185,19 +186,22 @@ def test_fetch_offers_le_pool_e_mapeia_campos(tmp_path):
     assert o.title == "Creatina 1kg Growth"
     assert o.image_url == "https://http2.mlstatic.com/D_creatina.jpg"
     assert o.category == "MLB264586"
+    # A mediana do pool vira o preço ESTIMADO com que a oferta entra na fila
+    # (o preço de verdade só existe depois do `refresh_price`).
     assert o.price_current_cents == 2590
     assert o.price_original_cents == 2590  # sem desconto inflado (ver Mudança 3)
-    assert o.price_ref_cents == 2590       # mediana da janela, do pool curado
-    assert o.price_p25_cents == 2428
-    assert o.price_window_days == 91
-    assert o.price_floor_cents == 1699     # mínima histórica -> selo de menor preço
-    assert o.price_floor_window_days == 365
-    assert o.real_discount_pct == 0        # no preço típico: nada a alegar
+    # ...mas a RÉGUA não viaja mais na oferta: fase 5M, ver
+    # `test_a_oferta_do_meli_nasce_sem_regua` logo abaixo.
+    assert o.price_ref_cents == 0
+    assert o.price_p25_cents == 0
+    assert o.price_window_days == 0
+    assert o.price_floor_cents == 0
+    assert o.price_floor_window_days == 0
+    assert o.real_discount_pct == 0        # sem referência: nada a alegar
     assert o.sales == 13337
     assert o.rating == 4.8
     assert o.commission_pct == 4.0
     assert o.product_url == "https://www.mercadolivre.com.br/p/MLB18725310"
-    assert src._buy_box_ids == {"MLB18725310": "MLB3928374651"}
 
 
 def test_fetch_offers_nao_chama_rede(tmp_path):
@@ -301,6 +305,16 @@ def _pool_com(tmp_path, entradas):
     return [o.item_id for o in offers], src.pool_warning
 
 
+def _pool_com_nota(tmp_path, entradas):
+    """Como `_pool_com`, mas devolve também a `pool_note` — o canal
+    INFORMATIVO, separado do aviso desde a fase 5J."""
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, entradas)
+    src = source_with(_no_network_handler, tmp_path)
+    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    return [o.item_id for o in offers], src.pool_warning, src.pool_note
+
+
 def test_pool_pula_cada_campo_de_preco_ausente_ou_invalido(tmp_path):
     # Fase 5J: o ZERO deixou de ser "campo ausente" e passou a ter motivo
     # próprio quando é PARCIAL (P2, M2, J1 abaixo) — o resto (nulo, texto,
@@ -337,8 +351,7 @@ def test_pool_aceita_centavos_em_float_integral(tmp_path):
     src = source_with(_no_network_handler, tmp_path)
     (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
     assert src.pool_warning is None
-    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (5000, 4500, 91)
-    assert (o.price_floor_cents, o.price_floor_window_days) == (4000, 365)
+    assert o.price_current_cents == 5000
     # inteiros de verdade: o resto do código faz aritmética de centavos
     assert all(isinstance(v, int) for v in (o.price_ref_cents, o.price_p25_cents,
                                             o.price_current_cents, o.price_window_days,
@@ -394,17 +407,15 @@ def test_pool_pula_p25_acima_da_referencia_e_minima_acima_do_p25(tmp_path):
                      "1 p25 acima da referência)")
 
 
-def test_pool_pula_entrada_sem_buy_box_e_id_repetido(tmp_path):
+def test_pool_pula_id_repetido_e_entrada_malformada(tmp_path):
     ids, aviso = _pool_com(tmp_path, [
-        {"product_id": "A", "title": "t", "price_ref_cents": 5000, "buy_box_item_id": ""},
-        {"product_id": "B", "title": "t", "price_ref_cents": 5000, "buy_box_item_id": None},
         {"product_id": "C", "title": "t", "price_ref_cents": 5000},
         {"product_id": "C", "title": "t", "price_ref_cents": 5000},
         {"product_id": "", "title": "t", "price_ref_cents": 5000},
         "não é objeto",
     ])
     assert ids == ["C"]
-    assert aviso == ("5 entrada(s) do pool ignorada(s) (2 sem buy box, 1 entrada não é objeto, "
+    assert aviso == ("3 entrada(s) do pool ignorada(s) (1 entrada não é objeto, "
                      "1 id repetido, 1 sem id ou título)")
 
 
@@ -430,64 +441,38 @@ def test_pool_antigo_sem_p25_e_rejeitado_inteiro(tmp_path):
     assert aviso == "1 entrada(s) do pool ignorada(s) (1 sem p25)"
 
 
-# -- buy box que envelhece (rodada de correção da 5B, Fix 1 — caminho B) ----
-# Verificado ao vivo em 2026-08-26, 3 produtos: a ordem de /products/{id}/items
-# bateu com a página em 2 de 3 (no 3º a página mostrava results[1]) e o
-# anúncio do pool de um deles já tinha sumido da lista. Nem a API nem o pool
-# reproduzem a página com certeza; o que o loader garante é a IDADE da
-# verificação do buy box — 7 dias.
+# -- fase 5M: o buy box saiu do leitor --------------------------------------
+# A validade de 7 dias do `buy_box_checked_at` existia para proteger UMA
+# premissa: o preço publicado era o do anúncio do buy box, e esse anúncio
+# envelhece. A premissa caiu — o preço agora é o do anúncio linkado mais
+# barato, lido ao vivo. Manter a validade só faria o pool inteiro parar de
+# publicar 7 dias depois de cada refresh, por um campo que ninguém lê.
 
-def test_pool_buy_box_verificado_ha_mais_de_7_dias_e_ignorado_com_os_dias_no_motivo(tmp_path):
-    hoje = date.today()
+
+def test_pool_nao_exige_mais_buy_box_nem_a_data_dele(tmp_path):
     ids, aviso = _pool_com(tmp_path, [
-        {"product_id": "FRESCO", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (hoje - timedelta(days=7)).isoformat()},
-        {"product_id": "HOJE", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": hoje.isoformat()},
-        {"product_id": "VELHO", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (hoje - timedelta(days=8)).isoformat()},
-        {"product_id": "MUITO-VELHO", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (hoje - timedelta(days=30)).isoformat()},
+        {"product_id": "SEM-BB", "title": "t", "price_ref_cents": 5000,
+         "buy_box_item_id": None},
+        {"product_id": "BB-VELHO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": (date.today() - timedelta(days=90)).isoformat()},
+        {"product_id": "BB-TORTO", "title": "t", "price_ref_cents": 5000,
+         "buy_box_checked_at": "ontem"},
     ])
-    assert ids == ["FRESCO", "HOJE"]
-    assert aviso == ("2 entrada(s) do pool ignorada(s) (1 buy box não verificado há 30 dias, "
-                     "1 buy box não verificado há 8 dias)")
+    assert ids == ["SEM-BB", "BB-VELHO", "BB-TORTO"]
+    assert aviso is None
 
 
-def test_pool_sem_buy_box_checked_at_usa_a_data_de_geracao(tmp_path):
-    # Gerar o pool É uma verificação (o Passo 1 do skill devolve o buyBoxId):
-    # sem o campo, vale a data de geração — e envelhece junto com ela, mesmo
-    # com o pool dentro dos 30 dias de validade.
+def test_pool_antigo_de_30_dias_ainda_publica(tmp_path):
+    """Antes da 5M um pool gerado há 8 dias vinha VAZIO (o buy box vencia em 7)
+    e o ML parava sozinho entre um `/meli-pool-refresh` e outro. A validade que
+    resta é a do arquivo (`valid_days`, 30 dias)."""
     pool_path = tmp_path / "meli_offers.json"
     cfg = {"meli": {"offers_path": str(pool_path)}, "selection": SEL}
     write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
-               generated_at=date.today() - timedelta(days=8))
-    src = source_with(_no_network_handler, tmp_path)
-    assert src.fetch_offers(cfg) == []
-    assert src.pool_warning == "1 entrada(s) do pool ignorada(s) (1 buy box não verificado há 8 dias)"
-
-    write_pool(pool_path, [{"product_id": "A", "title": "t", "price_ref_cents": 5000}],
-               generated_at=date.today() - timedelta(days=7))
+               generated_at=date.today() - timedelta(days=29), valid_days=30)
     src = source_with(_no_network_handler, tmp_path)
     assert len(src.fetch_offers(cfg)) == 1
     assert src.pool_warning is None
-
-
-def test_pool_buy_box_checked_at_invalido_ou_no_futuro_e_ignorado(tmp_path):
-    ids, aviso = _pool_com(tmp_path, [
-        {"product_id": "A", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": "ontem"},
-        {"product_id": "B", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": 20260826},
-        {"product_id": "C", "title": "t", "price_ref_cents": 5000, "buy_box_checked_at": ""},
-        {"product_id": "D", "title": "t", "price_ref_cents": 5000,
-         "buy_box_checked_at": (date.today() + timedelta(days=1)).isoformat()},
-    ])
-    assert ids == []
-    assert aviso == "4 entrada(s) do pool ignorada(s) (4 data do buy box inválida)"
-
-
-def test_pool_validade_do_buy_box_e_de_7_dias():
-    from afiliado.sources.meli import BUY_BOX_MAX_AGE_DAYS
-    assert BUY_BOX_MAX_AGE_DAYS == 7
 
 
 # -- fase 5J: a entrada SEM HISTÓRICO (os cinco campos de régua zerados) -----
@@ -515,7 +500,6 @@ def test_pool_aceita_a_entrada_com_a_regua_toda_zerada(tmp_path):
     # ...e tudo que NÃO é régua continua chegando: é isso que o Passo 2 do
     # skill compra por 1 consulta a cada 50 produtos.
     assert (o.title, o.category, o.sales, o.rating) == ("Creatina", "MLB264586", 13337, 4.8)
-    assert src._buy_box_ids == {"NOVO": "BB-NOVO"}
 
 
 def test_pool_campo_de_regua_AUSENTE_continua_sendo_erro(tmp_path):
@@ -563,29 +547,50 @@ def test_pool_sem_historico_nao_e_barrado_pela_faixa_de_preco(tmp_path):
     Verificado: quem barra por preço VIVO é `validate.check_price`, DEPOIS do
     `refresh_price` — a mesma faixa, sobre o preço que vai ao post. Então aqui
     a checagem é pulada, e o aviso diz isso."""
-    ids, aviso = _pool_com(tmp_path, [
+    ids, aviso, nota = _pool_com_nota(tmp_path, [
         {"product_id": "SEM", "title": "t", **SEM_HISTORICO},
         {"product_id": "CARO", "title": "t", "price_ref_cents": 100001},
     ])
     assert ids == ["SEM"]                      # a de R$ 3.000 COM régua cai
-    assert "1 entrada(s) do pool ignorada(s) (1 fora da faixa de preço)" in aviso
-    assert "1 entrada(s) sem histórico" in aviso
-    assert "preço VIVO" in aviso
+    assert aviso == "1 entrada(s) do pool ignorada(s) (1 fora da faixa de preço)"
+    assert "1 oferta(s) do ML nascem SEM RÉGUA" in nota
 
 
-def test_pool_so_com_entradas_sem_historico_avisa_sem_ignorar_nada(tmp_path):
-    ids, aviso = _pool_com(tmp_path, [
+def test_pool_so_com_entradas_sem_historico_nao_gera_aviso_nenhum(tmp_path):
+    """A separação entre `pool_warning` e `pool_note`: pool inteiro sem
+    histórico é estado SAUDÁVEL — nada foi ignorado, e o doctor tem de mostrar
+    ✅. Um ⚠️ aceso todo dia deixa de ser lido, e a entrada silenciosamente
+    ignorada se esconderia atrás dele."""
+    ids, aviso, nota = _pool_com_nota(tmp_path, [
         {"product_id": "A", "title": "t", **SEM_HISTORICO},
         {"product_id": "B", "title": "t", **SEM_HISTORICO},
     ])
     assert ids == ["A", "B"]
-    assert aviso.startswith("2 entrada(s) sem histórico")
-    assert "modo B" in aviso
+    assert aviso is None
+    assert nota.startswith("2 oferta(s) do ML nascem SEM RÉGUA")
+    assert "modo B" in nota
 
 
-def test_ruler_coverage_conta_quantas_entradas_tem_regua_curada(tmp_path):
-    """J4: sem este número, "o ML só publica modo B" vira descoberta de semanas
-    depois — e o ponto da fase é que a proporção mude sozinha com o tempo."""
+def test_pool_note_nao_sobrevive_a_uma_leitura_que_nem_chegou_ao_pool(tmp_path):
+    """Retorno antecipado (pool ausente) tem de limpar a nota da leitura
+    anterior — senão ela descreve um pool que não foi lido."""
+    src = source_with(_no_network_handler, tmp_path)
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "A", "title": "t", **SEM_HISTORICO}])
+    cfg = {"meli": {"offers_path": str(pool_path)}, "selection": SEL}
+    assert src.fetch_offers(cfg) and src.pool_note
+
+    cfg["meli"]["offers_path"] = str(tmp_path / "nao_existe.json")
+    assert src.fetch_offers(cfg) == []
+    assert src.pool_note is None
+    assert "pool ausente ou inválido" in src.pool_warning
+
+
+def test_ruler_coverage_e_zero_por_construcao_desde_a_5M(tmp_path):
+    """J4 + M4: o número existe para que "o ML só publica modo B" não vire
+    descoberta de semanas depois. Desde a 5M ele é ZERO por desenho — a régua
+    curada é de OUTRO anúncio —, e a régua própria (price_log) só aparece
+    depois do `enrich_offers`, que roda adiante."""
     pool_path = tmp_path / "meli_offers.json"
     write_pool(pool_path, [
         {"product_id": "A", "title": "t", "price_ref_cents": 5000},
@@ -594,32 +599,104 @@ def test_ruler_coverage_conta_quantas_entradas_tem_regua_curada(tmp_path):
     ])
     src = source_with(_no_network_handler, tmp_path)
     offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
-    assert src.ruler_coverage(offers) == (1, 3)
+    assert src.ruler_coverage(offers) == (0, 3)
     assert src.ruler_coverage([]) == (0, 0)
 
 
-# -- refresh_price: preço vivo = buy box (C7b) ------------------------------
+# -- fase 5M (M4): a régua do pool é de OUTRO anúncio -------------------------
 
-ITENS = [
-    {"item_id": "MLB7210468412", "price": 58.90, "original_price": None, "condition": "new"},
-    {"item_id": "MLB4555189589", "price": 78.90, "original_price": 104.9, "condition": "new"},
-    {"item_id": "MLB7125449388", "price": 104.90, "original_price": None, "condition": "new"},
-]
+def test_a_oferta_do_meli_nasce_sem_regua(tmp_path):
+    """A régua curada (mediana/p25/janela/mínima) é do anúncio que vencia o buy
+    box; o preço publicado é o do anúncio linkado mais barato — outro vendedor.
+    Selar "menor preço dos últimos 12 meses (verificado)" comparando o preço de
+    A com a mínima de B é mentira, então a oferta nasce sem régua e publica em
+    modo B."""
+    from afiliado import pricing
 
-
-def _make_offer_from_pool(tmp_path, product_id="MLB66637233", price_ref_cents=10490,
-                          price_historic_min_cents=9990, buy_box_item_id="MLB7125449388",
-                          handler=None):
     pool_path = tmp_path / "meli_offers.json"
     write_pool(pool_path, [
-        {"product_id": product_id, "title": "Creatina 500g", "price_ref_cents": price_ref_cents,
-         "price_p25_cents": min(price_ref_cents, 9990),
-         "price_historic_min_cents": price_historic_min_cents,
-         "buy_box_item_id": buy_box_item_id},
+        {"product_id": "MLB1", "title": "Creatina", "price_ref_cents": 10490,
+         "price_p25_cents": 9990, "price_window_days": 91,
+         "price_historic_min_cents": 8990, "price_min_window_days": 365},
     ])
-    src = source_with(handler or _authed_handler, tmp_path)
-    cfg = {"meli": {"offers_path": str(pool_path)}}
-    offers = src.fetch_offers(cfg)
+    src = source_with(_no_network_handler, tmp_path)
+    (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    assert (o.price_ref_cents, o.price_p25_cents, o.price_window_days) == (0, 0, 0)
+    assert (o.price_floor_cents, o.price_floor_window_days) == (0, 0)
+    # ...e o veredito que sai daí não alega desconto nem sela nada.
+    veredito = pricing.verdict(dataclasses.replace(o, price_current_cents=7890), 10)
+    assert veredito.mode == "B"
+    assert veredito.discount_pct == 0 and veredito.seal == ""
+
+
+def test_a_mediana_do_pool_ainda_serve_para_ranquear(tmp_path):
+    """Zerar a régua não pode zerar o preço: sem preço o `ev_score` é 0 e a
+    oferta cai para o fim da fila (ou morre no `min_ev_brl`). A mediana do pool
+    continua sendo a ESTIMATIVA com que a oferta entra na fila — o preço de
+    verdade só existe depois do `refresh_price`."""
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [{"product_id": "MLB1", "title": "t", "price_ref_cents": 10490}])
+    src = source_with(_no_network_handler, tmp_path)
+    (o,) = src.fetch_offers({"meli": {"offers_path": str(pool_path)}, "selection": SEL})
+    assert o.price_current_cents == 10490
+    assert o.price_original_cents == 10490      # e sem "de" inventado
+    assert o.discount_pct == 0
+
+
+# -- fase 5M: o preço publicado é o do ANÚNCIO que o nosso link abre ---------
+#
+# O `buy_box_item_id` do pool não era o vencedor do buy box — era só UM
+# vendedor, e nos dois stories errados de 2026-08-28 um caro (R$ 80,00 num
+# produto cuja página mostrava R$ 39,90; R$ 209,87 num de R$ 113). O vencedor
+# não é obtível: `/products/{id}` devolve `buy_box_winner: null` e o campo
+# `tier` de `/products/{id}/items` veio vazio nos 89 anúncios sondados.
+#
+# A saída não é adivinhar melhor: é publicar o preço do anúncio que o NOSSO
+# link abre. Aí o número do post e o número que o seguidor vê são o mesmo
+# objeto, por construção.
+
+PRODUTO = "MLB66637233"
+
+
+def _anuncio(item_id: str, price, **extra) -> dict:
+    """Um anúncio como `/products/{id}/items` devolve — campos e valores
+    medidos ao vivo em 2026-08-28 (1717 anúncios de 53 produtos do pool).
+    O default passa em qualquer piso de qualidade; os testes de piso pedem o
+    contrário explicitamente."""
+    item = {"item_id": item_id, "price": price, "original_price": None,
+            "condition": "new", "listing_type_id": "gold_special",
+            "official_store_id": None, "tier": "", "inventory_id": "",
+            "tags": ["kvs_primary", "immediate_payment"],
+            "shipping": {"free_shipping": True, "mode": "me2",
+                         "logistic_type": "fulfillment", "cost": 0}}
+    item.update(extra)
+    return item
+
+
+def write_links(path, produtos: dict[str, dict[str, str]], product_links=None):
+    """Pool de links no formato da fase 5M: produto -> {anúncio: link}."""
+    from afiliado.meli_links import escrever_pool
+    escrever_pool(path, {pid: {"items": itens,
+                               "product_link": (product_links or {}).get(pid, "")}
+                         for pid, itens in produtos.items()}, tag="ofiscaldapromo")
+    return path
+
+
+def _fonte(tmp_path, handler, linkados: dict[str, str] | None = None,
+           product_id=PRODUTO, price_ref_cents=10490):
+    """(fonte, oferta) prontas: pool curado de um produto + pool de links."""
+    pool_path = tmp_path / "meli_offers.json"
+    write_pool(pool_path, [
+        {"product_id": product_id, "title": "Creatina 500g",
+         "price_ref_cents": price_ref_cents, "price_p25_cents": min(price_ref_cents, 9990),
+         "price_historic_min_cents": min(price_ref_cents, 9990)},
+    ])
+    links_path = tmp_path / "meli_links.json"
+    write_links(links_path, {product_id: linkados if linkados is not None
+                             else {"MLB4555189589": "https://meli.la/link-do-4555",
+                                   "MLB7125449388": "https://meli.la/link-do-7125"}})
+    src = source_with(handler, tmp_path, links_path=links_path)
+    offers = src.fetch_offers({"meli": {"offers_path": str(pool_path)}})
     assert offers, src.pool_warning
     return src, offers[0]
 
@@ -628,7 +705,7 @@ def _items_handler(results, paging=None):
     def handler(request: httpx.Request):
         if request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
-        if request.url.path == "/products/MLB66637233/items":
+        if request.url.path == f"/products/{PRODUTO}/items":
             assert request.headers["authorization"] == "Bearer TOK"
             return httpx.Response(200, json={"results": results, "paging": paging or {
                 "total": len(results), "offset": 0, "limit": 100}})
@@ -636,49 +713,87 @@ def _items_handler(results, paging=None):
     return handler
 
 
-def test_refresh_price_usa_o_buy_box_nunca_o_menor_entre_vendedores(tmp_path):
-    # Teste obrigatório 9. Caso real (2026-08-26): 37 vendedores, o mais
-    # barato a R$ 58,90 e o buy box (MLB7125449388) a R$ 104,90 — o post
-    # dizia 58,90 e o clique mostrava 104,90.
-    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(ITENS))
+# Caso real (2026-08-26/28): o mais barato da lista está a R$ 58,90, o anúncio
+# que o pool chamava de buy box custa R$ 104,90, e temos link para dois deles.
+ITENS = [
+    _anuncio("MLB7210468412", 58.90),                       # o mais barato — SEM link
+    _anuncio("MLB4555189589", 78.90, original_price=104.9),  # linkado
+    _anuncio("MLB7125449388", 104.90),                       # linkado (o "buy box" do pool)
+]
+
+
+def test_refresh_price_publica_o_mais_barato_ENTRE_OS_LINKADOS(tmp_path):
+    src, offer = _fonte(tmp_path, _items_handler(ITENS))
     updated = src.refresh_price(offer)
-    assert updated.price_current_cents == 10490
-    assert updated is not offer  # dataclass frozen -> nova instância
-    assert offer.price_current_cents == 10490  # original não é mutado
-    assert updated.price_ref_cents == 10490 and updated.price_floor_cents == 9990
+    assert updated.price_current_cents == 7890          # não 5890 (sem link)
+    assert updated.anuncio_id == "MLB4555189589"        # e o post sabe de quem é o preço
+    assert updated is not offer                          # dataclass frozen -> nova instância
+    assert offer.anuncio_id == ""                        # o original não é mutado
 
 
-def test_refresh_price_sem_buy_box_na_lista_levanta_source_error(tmp_path):
-    # O anúncio vencedor do pool não está entre os vendedores: NUNCA cair
-    # para o mínimo (58,90) — a oferta é descartada.
-    sem_vencedor = [r for r in ITENS if r["item_id"] != "MLB7125449388"]
-    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(sem_vencedor))
-    with pytest.raises(SourceError, match="sem buy box"):
+def test_refresh_price_nunca_publica_o_preco_de_um_anuncio_sem_link(tmp_path):
+    """A garantia inteira da fase: publicar o preço de um anúncio que o nosso
+    link NÃO abre é reintroduzir o bug — o seguidor chega em outro vendedor."""
+    src, offer = _fonte(tmp_path, _items_handler(ITENS),
+                        linkados={"MLB7125449388": "https://meli.la/link-do-7125"})
+    assert src.refresh_price(offer).price_current_cents == 10490   # nem 5890, nem 7890
+
+
+def test_refresh_price_ignora_o_buy_box_do_pool(tmp_path):
+    """O `buy_box_item_id` deixou de ser lido: ele não era o vencedor, e o
+    vencedor não é obtível. O pool destes testes aponta para `BB-MLB66637233`,
+    que NÃO está entre os vendedores — antes da 5M isso descartava a oferta
+    inteira ("sem buy box"); agora nem é consultado."""
+    src, offer = _fonte(tmp_path, _items_handler(ITENS))
+    publicada = src.refresh_price(offer)
+    assert publicada.anuncio_id == "MLB4555189589"
+    assert not hasattr(src, "_buy_box_ids")   # o mapa morreu junto com a premissa
+
+
+def test_refresh_price_sem_anuncio_linkado_na_lista_viva_levanta(tmp_path):
+    """Os anúncios linkados sumiram da lista (medido: 1 de 35 some em 2 dias).
+    A oferta é DESCARTADA — nunca cai para o mais barato sem link."""
+    sumiram = [ITENS[0], _anuncio("MLB9999999999", 61.0)]
+    src, offer = _fonte(tmp_path, _items_handler(sumiram))
+    with pytest.raises(SourceError, match="nenhum anúncio linkado"):
         src.refresh_price(offer)
 
 
-def test_refresh_price_buy_box_sem_preco_levanta_source_error(tmp_path):
-    itens = [{"item_id": "MLB7125449388", "price": None, "condition": "new"}, ITENS[0]]
-    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(itens))
-    with pytest.raises(SourceError, match="sem preço"):
+def test_refresh_price_sem_link_nenhum_para_o_produto_levanta(tmp_path):
+    src, offer = _fonte(tmp_path, _items_handler(ITENS), linkados={})
+    with pytest.raises(SourceError, match="sem link de anúncio"):
+        src.refresh_price(offer)
+
+
+def test_refresh_price_anuncio_linkado_sem_preco_e_pulado(tmp_path):
+    itens = [_anuncio("MLB4555189589", None), _anuncio("MLB7125449388", 104.90), ITENS[0]]
+    src, offer = _fonte(tmp_path, _items_handler(itens))
+    assert src.refresh_price(offer).price_current_cents == 10490
+
+    src, offer = _fonte(tmp_path, _items_handler([_anuncio("MLB4555189589", None)]))
+    with pytest.raises(SourceError, match="nenhum anúncio linkado"):
         src.refresh_price(offer)
 
 
 def test_refresh_price_lista_vazia_levanta_source_error(tmp_path):
-    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler([]))
-    with pytest.raises(SourceError, match="sem buy box"):
+    src, offer = _fonte(tmp_path, _items_handler([]))
+    with pytest.raises(SourceError, match="nenhum anúncio linkado"):
         src.refresh_price(offer)
 
 
-def test_refresh_price_oferta_desconhecida_da_fonte_levanta_source_error(tmp_path):
-    from tests.test_models import make_offer
-    src = source_with(_authed_handler, tmp_path)
-    with pytest.raises(SourceError, match="sem buy box conhecido"):
-        src.refresh_price(make_offer(source="meli", item_id="MLB999"))
+def test_refresh_price_zera_o_de_do_vendedor(tmp_path):
+    """`price_original_cents` continua sendo o preço vivo: o ML não expõe "de"
+    de vendedor (`original_price` é nulo em 1502 dos 1717 anúncios medidos) e
+    deixar lá a mediana do pool inventaria um desconto — o `flagrante` lê esse
+    campo como acusação."""
+    src, offer = _fonte(tmp_path, _items_handler(ITENS))
+    updated = src.refresh_price(offer)
+    assert updated.price_original_cents == updated.price_current_cents == 7890
+    assert updated.discount_pct == 0
 
 
-def test_refresh_price_pagina_ate_achar_o_buy_box(tmp_path):
-    paginas = {0: [{"item_id": f"X{i}", "price": 10.0, "condition": "new"} for i in range(100)],
+def test_refresh_price_pagina_ate_achar_os_linkados(tmp_path):
+    paginas = {0: [_anuncio(f"X{i}", 10.0) for i in range(100)],
                100: [ITENS[0], ITENS[2]]}
     chamadas = []
 
@@ -690,24 +805,48 @@ def test_refresh_price_pagina_ate_achar_o_buy_box(tmp_path):
         return httpx.Response(200, json={"results": paginas[offset],
                                          "paging": {"total": 102, "offset": offset, "limit": 100}})
 
-    src, offer = _make_offer_from_pool(tmp_path, handler=handler)
+    src, offer = _fonte(tmp_path, handler,
+                        linkados={"MLB7125449388": "https://meli.la/link-do-7125"})
     assert src.refresh_price(offer).price_current_cents == 10490
     assert chamadas == [0, 100]
 
 
+def test_refresh_price_para_de_paginar_quando_ja_achou_todos_os_linkados(tmp_path):
+    """O maior produto do pool tem 277 anúncios (3 páginas). Achados os
+    linkados, não há por que pedir o resto: as páginas seguintes não podem
+    mudar a escolha."""
+    chamadas = []
+
+    def handler(request: httpx.Request):
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
+        chamadas.append(int(request.url.params.get("offset", 0)))
+        return httpx.Response(200, json={
+            "results": ITENS + [_anuncio(f"X{i}", 9.0) for i in range(97)],
+            "paging": {"total": 277, "offset": 0, "limit": 100}})
+
+    src, offer = _fonte(tmp_path, handler)
+    assert src.refresh_price(offer).price_current_cents == 7890
+    assert chamadas == [0]
+
+
 def test_refresh_price_preco_acima_da_referencia_e_barrado_depois(tmp_path):
     # refresh_price deixa passar; quem barra é a validação (a rede que pega a
-    # oferta que encareceu entre a busca e a publicação).
+    # oferta que encareceu entre a busca e a publicação). Com a régua do ML
+    # zerada (fase 5M), quem sustenta a referência é o nosso price_log.
     from afiliado import validate
     from afiliado.errors import ValidationError
+    from tests.test_models import make_offer
 
-    itens = [{"item_id": "MLB7125449388", "price": 129.90, "condition": "new"}]
-    src, offer = _make_offer_from_pool(tmp_path, handler=_items_handler(itens))
+    src, offer = _fonte(tmp_path, _items_handler([_anuncio("MLB7125449388", 129.90)]),
+                        linkados={"MLB7125449388": "https://meli.la/x"})
     updated = src.refresh_price(offer)
     assert updated.price_current_cents == 12990
     cfg = {"selection": {"max_above_ref": 1.00, "price_min_brl": 20, "price_max_brl": 1000}}
+    com_regua = make_offer(source="meli", item_id=PRODUTO, price_ref_cents=10490,
+                           price_current_cents=updated.price_current_cents)
     with pytest.raises(ValidationError, match="acima da referência"):
-        validate.check_price(updated, cfg)
+        validate.check_price(com_regua, cfg)
 
 
 def test_refresh_price_erro_http_vira_source_error(tmp_path):
@@ -716,58 +855,179 @@ def test_refresh_price_erro_http_vira_source_error(tmp_path):
             return httpx.Response(200, json={"access_token": "TOK", "expires_in": 21600})
         return httpx.Response(500, text="erro interno")
 
-    src, offer = _make_offer_from_pool(tmp_path, handler=handler)
+    src, offer = _fonte(tmp_path, handler)
     with pytest.raises(SourceError):
         src.refresh_price(offer)
 
 
 def test_meli_nao_grava_o_preco_do_pool_como_observacao():
     # C7c: o preço com que a oferta sai do pool é a mediana, não uma
-    # observação — o pipeline lê este atributo e só grava o preço vivo.
+    # observação — o pipeline lê este atributo e só grava o preço vivo. Desde
+    # a 5M o que entra no price_log é o preço do anúncio ESCOLHIDO.
     assert MeliSource.observes_price_on_discovery is False
 
 
-# -- resolve_affiliate_link (pool pré-gerado, inalterado) -------------------
+# -- fase 5M (M3): o mais barato não pode ser QUALQUER um ---------------------
+#
+# Medido em 2026-08-28 sobre 1717 anúncios de 53 produtos do pool
+# (`/products/{id}/items` paginado inteiro):
+#
+# - `condition` é "new" em 1717/1717 — o piso não exclui ninguém HOJE, e é
+#   justamente por isso que ele fica: o dia em que um usado entrar na lista
+#   não pode ser o dia em que a gente descobre que não olhava;
+# - em 12 dos 53 produtos o mais barato é um item barato com FRETE caro pago
+#   pelo comprador (`free_shipping: false`, `shipping.cost` 44,62): R$ 8,00 +
+#   R$ 44,62 de frete, R$ 17,99 + R$ 44,62... publicar "R$ 8,00" ali é dizer
+#   um número que ninguém paga;
+# - exigir Full OU loja oficial OU frete grátis derruba esses 12 para ZERO,
+#   custa 1 produto de 53 (fica sem anúncio elegível) e encarece o preço
+#   publicado em +0,0% na mediana (p75 +8,6%): em 38 dos 52 produtos o mais
+#   barato JÁ passa no piso;
+# - exigir só frete grátis custaria 15 produtos de 53 e +8,4% na mediana;
+#   exigir `gold_pro`, 21 produtos e +10,6%. Nenhum dos dois se paga.
 
-def test_resolve_affiliate_link_usa_pool(tmp_path):
+
+def test_o_piso_de_qualidade_e_novo_E_um_sinal_de_entrega():
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    full = _anuncio("MLB1", 10.0)
+    assert anuncio_passa_no_piso(full)
+    oficial = _anuncio("MLB2", 10.0, official_store_id=1234,
+                       shipping={"free_shipping": False, "logistic_type": "drop_off"})
+    assert anuncio_passa_no_piso(oficial)
+    frete_gratis = _anuncio("MLB3", 10.0,
+                            shipping={"free_shipping": True, "logistic_type": "cross_docking"})
+    assert anuncio_passa_no_piso(frete_gratis)
+
+
+def test_o_piso_barra_o_item_barato_de_frete_caro():
+    """O caso real: R$ 8,00 com R$ 44,62 de frete pago pelo comprador — 558%
+    do preço. Sem loja oficial, sem Full, sem frete grátis."""
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    assert not anuncio_passa_no_piso(_anuncio(
+        "MLB5097654932", 8.0, official_store_id=None,
+        shipping={"free_shipping": False, "logistic_type": "drop_off", "cost": 44.62}))
+
+
+def test_o_piso_barra_o_anuncio_usado_ou_recondicionado():
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    for condicao in ("used", "refurbished", "", None):
+        assert not anuncio_passa_no_piso(_anuncio("MLB1", 10.0, condition=condicao))
+
+
+def test_o_piso_aguenta_payload_torto():
+    from afiliado.sources.meli import anuncio_passa_no_piso
+
+    assert not anuncio_passa_no_piso({})
+    assert not anuncio_passa_no_piso({"condition": "new", "shipping": "não é dict"})
+    assert not anuncio_passa_no_piso({"condition": "new"})
+
+
+def test_refresh_price_pula_o_linkado_que_nao_passa_no_piso(tmp_path):
+    """Ter link não basta: mandar o seguidor para um vendedor ruim é outro
+    tipo de dano, e a conta se chama Fiscal."""
+    itens = [_anuncio("MLB4555189589", 78.90, official_store_id=None,
+                      shipping={"free_shipping": False, "logistic_type": "drop_off",
+                                "cost": 44.62}),
+             _anuncio("MLB7125449388", 104.90)]
+    src, offer = _fonte(tmp_path, _items_handler(itens))
+    publicada = src.refresh_price(offer)
+    assert publicada.anuncio_id == "MLB7125449388"
+    assert publicada.price_current_cents == 10490
+
+
+def test_refresh_price_com_todos_os_linkados_fora_do_piso_descarta(tmp_path):
+    ruim = {"free_shipping": False, "logistic_type": "drop_off", "cost": 44.62}
+    itens = [_anuncio("MLB4555189589", 78.90, shipping=ruim),
+             _anuncio("MLB7125449388", 104.90, condition="used")]
+    src, offer = _fonte(tmp_path, _items_handler(itens))
+    with pytest.raises(SourceError, match="nenhum anúncio linkado"):
+        src.refresh_price(offer)
+
+
+def test_anuncios_para_linkar_devolve_os_N_mais_baratos_que_passam_no_piso():
+    """O que o `/meli-links-refresh` manda para o painel. N = 3: medido, 34 de
+    35 anúncios sobrevivem a 2 dias (~90% a 7), então a chance de os TRÊS
+    sumirem numa semana é 0,09%; e em 27 dos 52 produtos os 3 já são a lista
+    elegível INTEIRA."""
+    from afiliado.sources.meli import LINKS_POR_PRODUTO, anuncios_para_linkar
+
+    ruim = {"free_shipping": False, "logistic_type": "drop_off", "cost": 44.62}
+    results = [_anuncio("MLB-caro", 300.0), _anuncio("MLB-barato-ruim", 8.0, shipping=ruim),
+               _anuncio("MLB-b", 50.0), _anuncio("MLB-a", 20.0), _anuncio("MLB-c", 90.0),
+               _anuncio("MLB-sem-preco", None)]
+    assert LINKS_POR_PRODUTO == 3
+    assert anuncios_para_linkar(results) == ["MLB-a", "MLB-b", "MLB-c"]
+    assert anuncios_para_linkar(results, n=1) == ["MLB-a"]
+    assert anuncios_para_linkar([], n=3) == []
+    assert anuncios_para_linkar([_anuncio("MLB-x", 8.0, shipping=ruim)]) == []
+
+
+# -- resolve_affiliate_link: o link é o do anúncio publicado ------------------
+
+def test_resolve_affiliate_link_devolve_o_link_do_anuncio_escolhido(tmp_path):
+    src, offer = _fonte(tmp_path, _items_handler(ITENS))
+    publicada = src.refresh_price(offer)
+    assert src.resolve_affiliate_link(publicada) == "https://meli.la/link-do-4555"
+
+
+def test_resolve_affiliate_link_sem_o_anuncio_escolhido_levanta(tmp_path):
+    """Sem passar pelo `refresh_price` não há anúncio escolhido — e devolver
+    "algum" link do produto é publicar preço de um anúncio e link de outro."""
     from tests.test_models import make_offer
-    links_path = tmp_path / "meli_links.json"
-    links_path.write_text(
-        json.dumps({"MLB123456": "https://mercadolivre.com/sec/abc"}), encoding="utf-8")
+    links_path = write_links(tmp_path / "links.json",
+                             {"MLB123456": {"MLB99": "https://meli.la/x"}})
     src = source_with(_authed_handler, tmp_path, links_path=links_path)
-    offer = make_offer(source="meli", item_id="MLB123456")
-    assert src.resolve_affiliate_link(offer) == "https://mercadolivre.com/sec/abc"
+    with pytest.raises(SourceError, match="sem anúncio escolhido"):
+        src.resolve_affiliate_link(make_offer(source="meli", item_id="MLB123456"))
 
 
-def test_resolve_affiliate_link_sem_pool_levanta_source_error(tmp_path):
+def test_resolve_affiliate_link_produto_sem_link_levanta(tmp_path):
     from tests.test_models import make_offer
-    links_path = tmp_path / "meli_links.json"
-    links_path.write_text(json.dumps({"MLB1": "https://mercadolivre.com/sec/x"}), encoding="utf-8")
+    links_path = write_links(tmp_path / "links.json",
+                             {"MLB1": {"MLB11": "https://meli.la/x"}})
     src = source_with(_authed_handler, tmp_path, links_path=links_path)
-    offer = make_offer(source="meli", item_id="MLB999")
-    with pytest.raises(SourceError):
+    offer = make_offer(source="meli", item_id="MLB999", anuncio_id="MLB11")
+    with pytest.raises(SourceError, match="sem link de afiliado"):
         src.resolve_affiliate_link(offer)
 
 
-def test_pool_ausente_nao_levanta_na_carga(tmp_path):
+def test_o_formato_antigo_por_produto_nao_publica_nada(tmp_path):
+    """Os 55 links da fase 5C abrem a página de catálogo: eles continuam
+    guardados (`product_link`), mas não podem virar preço publicado — o pool
+    antigo lido pela fonte nova tem cobertura ZERO, e é o doctor que avisa."""
+    from tests.test_models import make_offer
+    links_path = tmp_path / "links.json"
+    links_path.write_text(json.dumps({"MLB1": "https://meli.la/velho"}), encoding="utf-8")
+    src = source_with(_authed_handler, tmp_path, links_path=links_path)
+    offer = make_offer(source="meli", item_id="MLB1", anuncio_id="MLB11")
+    with pytest.raises(SourceError, match="sem link de afiliado"):
+        src.resolve_affiliate_link(offer)
+    assert src.link_coverage([offer]) == (0, 1)
+
+
+def test_pool_de_links_ausente_nao_levanta_na_carga(tmp_path):
     from tests.test_models import make_offer
     src = source_with(_authed_handler, tmp_path, links_path=tmp_path / "nao-existe.json")
-    offer = make_offer(source="meli", item_id="MLB1")
+    offer = make_offer(source="meli", item_id="MLB1", anuncio_id="MLB11")
     with pytest.raises(SourceError, match="sem link de afiliado"):
         src.resolve_affiliate_link(offer)
 
 
 # -- Fase 5C (M5/A6): cobertura do pool de links ------------------------------
 
-def test_link_coverage_conta_quantos_produtos_tem_link(tmp_path):
+def test_link_coverage_conta_produtos_com_pelo_menos_um_anuncio_linkado(tmp_path):
     from tests.test_models import make_offer
-    links = tmp_path / "links.json"
-    links.write_text(json.dumps({"MLB1": "https://meli.la/a", "MLB3": ""}),
-                     encoding="utf-8")
+    links = write_links(tmp_path / "links.json",
+                        {"MLB1": {"MLB11": "https://meli.la/a"},
+                         "MLB3": {}},                      # produto sem anúncio linkado
+                        product_links={"MLB3": "https://meli.la/velho"})
     src = source_with(_authed_handler, tmp_path, links_path=links)
     ofertas = [make_offer(source="meli", item_id=f"MLB{n}") for n in (1, 2, 3)]
     assert src.links_file_exists
-    assert src.link_coverage(ofertas) == (1, 3)      # link vazio não conta
+    assert src.link_coverage(ofertas) == (1, 3)
     assert src.link_coverage([]) == (0, 0)
 
 

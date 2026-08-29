@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from afiliado import meli_links
 from afiliado.errors import SourceError
 from afiliado.models import Offer
 
@@ -23,17 +24,16 @@ TOKEN_EXPIRY_MARGIN_S = 60
 # `refresh_price`, imediatamente antes de publicar.
 DEFAULT_OFFERS_PATH = "data/meli_offers.json"
 DEFAULT_VALID_DAYS = 30
-# Páginas de /products/{id}/items percorridas atrás do anúncio do buy box
-# (100 anúncios por página; o maior produto visto tinha 38).
+# Páginas de /products/{id}/items percorridas atrás dos anúncios linkados
+# (100 anúncios por página; o maior produto do pool tem 277 — medido em
+# 2026-08-28, sondando os 53 inteiros: 1717 anúncios, mediana 4 por produto).
 MAX_ITEMS_PAGES = 5
-# Validade da verificação do buy box (rodada de correção da 5B, Fix 1). Ao
-# vivo em 2026-08-26, 3 produtos: `results[0]` de /products/{id}/items bateu
-# com a página em 2 de 3 (no 3º a página mostrava `results[1]`), e o anúncio
-# do pool de um deles já tinha SUMIDO da lista. Nem a ordem da API nem o
-# `buy_box_item_id` do pool reproduzem a página com certeza — o que o loader
-# consegue garantir é a IDADE da verificação: `buy_box_checked_at` (ou, na
-# falta, `generated_at`) com mais de 7 dias → entrada ignorada com motivo.
-BUY_BOX_MAX_AGE_DAYS = 7
+#
+# O `buy_box_checked_at` NÃO é mais lido (fase 5M). A validade de 7 dias dele
+# protegia uma premissa que caiu: o preço publicado era o do anúncio do buy
+# box, e esse anúncio envelhece. Agora o preço é o do anúncio linkado mais
+# barato, lido ao vivo — manter a validade só faria o pool inteiro parar de
+# publicar 7 dias depois de cada refresh, por um campo que ninguém lê.
 
 # Campos inteiros obrigatórios em cada entrada do pool (fase 5B, C7d) e o
 # motivo, por grupo, que vai ao aviso quando faltam.
@@ -54,6 +54,22 @@ CAMPOS_DE_PRECO = (
     ("price_historic_min_cents", "sem mínima histórica"),
     ("price_min_window_days", "sem janela da mínima"),
 )
+
+# Quantos anúncios de cada produto entram no pool de links (fase 5M, M1).
+#
+# TRÊS, e o número que sustenta: sondando `/products/{id}/items` inteiro para
+# os 53 produtos do pool em 2026-08-28 (1717 anúncios) e comparando com os
+# `buy_box_item_id` lidos em 26/08, **34 de 35 anúncios ainda estavam na lista
+# 2 dias depois** (97,1%) — ~90% em 7 dias. Com 3 links por produto, a chance
+# de os três sumirem numa semana é 0,09% (contra 10% com um link só); em 30
+# dias, 4,4%. E em 27 dos 52 produtos com anúncio elegível os 3 mais baratos
+# JÁ SÃO a lista elegível inteira: para metade do pool a cobertura é total, por
+# construção. O 4º e o 5º link custariam +40% de links (170 contra 121) para
+# cobrir 1 produto a mais.
+#
+# Se o mais barato linkado morrer, cai-se para o 2º: +5,3% na mediana (p75
+# +13,1%) — um negócio pior, nunca um número errado.
+LINKS_POR_PRODUTO = 3
 
 # O `sales` do pool é `catalogSales`: o contador VITALÍCIO do próprio Mercado
 # Livre, o mesmo "+250 mil vendidos" que aparece no anúncio. Janela 0 = sem
@@ -84,14 +100,15 @@ class MeliSource:
             timeout=30, transport=httpx.HTTPTransport(retries=3))
         self._access_token: str | None = None
         self._expires_at: float = 0.0
-        self._links_pool: dict[str, str] | None = None
-        # product_id -> item_id do anúncio que vence o buy box (do pool);
-        # `refresh_price` só aceita o preço DESSE anúncio.
-        self._buy_box_ids: dict[str, str] = {}
+        self._links_pool: dict[str, dict[str, str]] | None = None
         # Motivo de fetch_offers ter devolvido menos do que o pool tem (pool
         # ausente/inválido/vencido, entradas puladas e por quê); None quando
         # a última leitura foi limpa. Vai ao doctor e ao resumo de ops.
         self.pool_warning: str | None = None
+        # Observação sobre o pool que NÃO é problema (entradas sem histórico).
+        # Separada do aviso porque o doctor e o resumo tratam as duas de forma
+        # diferente: uma pede ação, a outra só informa.
+        self.pool_note: str | None = None
 
     # -- autenticação ---------------------------------------------------
 
@@ -204,17 +221,25 @@ class MeliSource:
         no aviso, por motivo — quando falta qualquer campo de preço inteiro
         > 0 (`CAMPOS_DE_PRECO`), quando `price_ref_cents / 100` sai de
         `selection.price_min_brl..price_max_brl`, quando o p25 passa da
-        referência, quando a mínima histórica passa do p25, quando não há
-        `buy_box_item_id` (sem ele `refresh_price` nunca teria preço: entrada
-        morta por construção), ou quando a verificação do buy box
-        (`buy_box_checked_at`; na falta, `generated_at`) tem mais de
-        `BUY_BOX_MAX_AGE_DAYS` dias — o vencedor muda e o anúncio do pool some
-        da lista (visto ao vivo). Um pool que era foto de um dia (C7) não passa."""
+        referência ou quando a mínima histórica passa do p25. Um pool que era
+        foto de um dia (C7) não passa.
+
+        A régua curada continua sendo VALIDADA aqui e não viaja na oferta
+        (fase 5M, ver `_parse_pool_offer`): pool quebrado segue sendo pool
+        quebrado — e a validação custa zero, porque nenhuma das 53 entradas do
+        pool de produção cai por ela.
+
+        `buy_box_item_id` e `buy_box_checked_at` deixaram de ser exigidos: o
+        preço não vem mais do anúncio do buy box."""
         me = cfg.get("meli") or {}
         sel = cfg.get("selection") or {}
         offers_path = Path(me.get("offers_path") or DEFAULT_OFFERS_PATH)
         commission_pct = float(me.get("commission_pct") or 0.0)
+        # Os DOIS zerados aqui: um retorno antecipado (pool ausente ou vencido)
+        # deixaria a nota da leitura anterior de pé, descrevendo um pool que
+        # nem foi lido.
         self.pool_warning = None
+        self.pool_note = None
         hoje = date.today()
 
         try:
@@ -238,7 +263,7 @@ class MeliSource:
             if not isinstance(item, dict):
                 motivos["entrada não é objeto"] += 1
                 continue
-            offer, motivo = _parse_pool_offer(item, commission_pct, sel, generated_at, hoje)
+            offer, motivo = _parse_pool_offer(item, commission_pct, sel)
             if offer is None:
                 motivos[motivo] += 1
                 continue
@@ -246,62 +271,71 @@ class MeliSource:
                 motivos["id repetido"] += 1
                 continue
             seen_ids.add(offer.item_id)
-            self._buy_box_ids[offer.item_id] = str(item["buy_box_item_id"])
             offers.append(offer)
-        avisos: list[str] = []
         if motivos:
             detalhe = ", ".join(f"{n} {motivo}" for motivo, n in
                                 sorted(motivos.items(), key=lambda kv: (-kv[1], kv[0])))
-            avisos.append(
+            self.pool_warning = (
                 f"{sum(motivos.values())} entrada(s) do pool ignorada(s) ({detalhe})")
-        sem_regua = len(offers) - self.ruler_coverage(offers)[0]
-        if sem_regua:
-            avisos.append(
-                f"{sem_regua} entrada(s) sem histórico: régua zerada, publicam em "
-                "modo B (sem alegar desconto e sem selo) até o nosso price_log "
-                "sustentar a régua — a faixa de preço delas é checada no preço "
-                "VIVO, depois do refresh, e não na carga")
-        self.pool_warning = "; ".join(avisos) or None
+        # `pool_note` é INFORMATIVO e mora fora do `pool_warning` de propósito:
+        # este significa "voltou menos do que o pool tem", e é sobre ele que a
+        # rede contra o zero silencioso afirma `is None`. Um pool inteiro sem
+        # régua é estado SAUDÁVEL desde a 5M — despejá-lo no aviso faria o
+        # doctor imprimir ⚠️ num dia normal, e um ⚠️ que está sempre aceso
+        # deixa de ser lido: a entrada ignorada em silêncio se esconderia atrás.
+        self.pool_note = (
+            f"{len(offers)} oferta(s) do ML nascem SEM RÉGUA (fase 5M): a régua "
+            "curada do pool é do anúncio que vencia o buy box e o preço "
+            "publicado é o do anúncio linkado mais barato — outro vendedor. "
+            "Elas publicam em modo B (sem alegar desconto e sem selo) até o "
+            "nosso price_log, que agora registra o preço do anúncio escolhido, "
+            "sustentar uma régua própria") if offers else None
         return offers
 
     # -- preço ao vivo (imediatamente antes de publicar) -------------------
 
     def refresh_price(self, offer: Offer) -> Offer:
-        """Preço vivo = o do anúncio que vence o BUY BOX (C7b), nunca o menor
-        entre os vendedores: a página de catálogo mostra o vencedor, e o
-        post dizia R$ 32 enquanto o clique mostrava R$ 45.
+        """Preço vivo = o do anúncio MAIS BARATO **entre os que temos link**
+        (fase 5M). Não é o menor da lista, não é o do buy box: é o preço do
+        objeto que o nosso link abre — e por isso o número do post e o número
+        que o seguidor vê ao chegar são o mesmo, por construção.
 
-        Caminho escolhido (verificado ao vivo em 2026-08-26 com token de
-        aplicação E de usuário, em 3 produtos do pool): `GET /products/{id}`
-        traz a chave `buy_box_winner`, mas sempre `null` — o endpoint não
-        entrega o vencedor a este app. Então: `GET /products/{id}/items` e o
-        item cujo `item_id == buy_box_item_id` do pool (o `buyBoxId` do
-        JoomPulse, presente na lista real: MLB7125449388 a R$ 104,90 entre
-        37 vendedores cujo menor preço era R$ 58,90). Anúncio ausente da
-        lista, sem preço, ou produto sem `buy_box_item_id` → `SourceError`
-        ("sem buy box"): a oferta é descartada — nunca cai para o mínimo.
+        O que a medição fechou (2026-08-28) e por que não há alternativa:
 
-        Rodada de correção (Fix 1): a ORDEM de `/items` também foi conferida
-        contra a página real — `results[0]` bateu em 2 de 3 produtos (no 3º
-        a página mostrava `results[1]`), logo a lista não é "ordenada por buy
-        box" e `results[0]` não substitui o anúncio do pool. O que envelhece
-        é tratado na carga: `buy_box_checked_at` com validade de
-        `BUY_BOX_MAX_AGE_DAYS` (o skill tem um passo semanal que a renova).
+        - o vencedor do buy box NÃO é obtível: `GET /products/{id}` devolve
+          `buy_box_winner: null` (3 produtos em 26/08, de novo em 28/08, com
+          token de aplicação e de usuário) e o campo `tier` de
+          `/products/{id}/items` veio vazio nos 89 anúncios sondados;
+        - o `buy_box_item_id` do pool (o `buyBoxId` do JoomPulse) era só UM
+          vendedor, e nos dois stories errados um caro: R$ 80,00 num produto
+          cuja página mostrava R$ 39,90 (+100%) e R$ 209,87 num de R$ 113
+          (+86%);
+        - conferir o preço lendo a página antes de publicar também está
+          fechado: `/items/{id}` e `/sites/MLB/search` são 403, e a página
+          `/p/{id}` com sessão devolve uma casca de 14,6 KB sem preço.
 
-        Devolve um `Offer` novo (dataclass frozen) com `price_current_cents`.
-        Publicabilidade continua sendo de `selection.max_above_ref` +
-        `validate.check_price`; ref/p25/piso do pool viajam na oferta."""
-        buy_box_id = self._buy_box_ids.get(offer.item_id, "")
-        if not buy_box_id:
-            raise SourceError(f"meli: sem buy box conhecido para {offer.item_id}")
+        Anúncio linkado nenhum na lista viva (ou nenhum que passe no piso de
+        `anuncio_passa_no_piso`) → `SourceError` e a oferta é descartada.
+        **Nunca** cai para um anúncio sem link: publicar o preço de um
+        vendedor e o link de outro é o bug que esta fase conserta.
+
+        Devolve um `Offer` novo (frozen) com `price_current_cents`,
+        `price_original_cents` (o mesmo: o ML não expõe "de" de vendedor) e
+        `anuncio_id` — que é o que `resolve_affiliate_link` lê."""
+        linkados = self._load_links_pool().get(offer.item_id) or {}
+        if not linkados:
+            raise SourceError(f"meli: sem link de anúncio para {offer.item_id}")
         token = self.ensure_token()
         headers = {"Authorization": f"Bearer {token}"}
         url = f"{API_HOST}/products/{offer.item_id}/items"
 
-        offset, total, vistos = 0, None, 0
+        candidatos: dict[str, int] = {}
+        encontrados: set[str] = set()
+        offset, vistos = 0, 0
         for _ in range(MAX_ITEMS_PAGES):
             try:
-                r = self.client.get(url, headers=headers, params={"offset": offset} if offset else None)
+                r = self.client.get(url, headers=headers,
+                                    params={"offset": offset} if offset else None)
                 r.raise_for_status()
             except httpx.HTTPError as exc:
                 raise SourceError(f"meli API: {exc}") from exc
@@ -311,73 +345,151 @@ class MeliSource:
                 raise SourceError(f"meli API: resposta não é JSON válido: {exc}") from exc
             results = data.get("results") or []
             vistos += len(results)
-            winner = _item_by_id(results, buy_box_id)
-            if winner is not None:
-                live_cents = _price_cents(winner.get("price"))
-                if live_cents is None:
-                    raise SourceError(
-                        f"meli: buy box {buy_box_id} de {offer.item_id} sem preço")
-                return dataclasses.replace(offer, price_current_cents=live_cents)
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("item_id") or "")
+                if item_id not in linkados or item_id in encontrados:
+                    continue
+                encontrados.add(item_id)
+                cents = _price_cents(item.get("price"))
+                if cents is not None and cents > 0 and anuncio_passa_no_piso(item):
+                    candidatos[item_id] = cents
+            if len(encontrados) == len(linkados):
+                # Achados todos os linkados, as páginas seguintes não podem
+                # mudar a escolha — e o maior produto do pool tem 277 anúncios.
+                break
             paging = data.get("paging") if isinstance(data.get("paging"), dict) else {}
             total = paging.get("total")
             limit = int(paging.get("limit") or len(results) or 0)
             offset += limit
             if not results or total is None or offset >= int(total):
                 break
-        raise SourceError(
-            f"meli: sem buy box — anúncio {buy_box_id} não está entre os "
-            f"{vistos} vendedores de {offer.item_id}")
+        if not candidatos:
+            raise SourceError(
+                f"meli: nenhum anúncio linkado de {offer.item_id} está à venda entre "
+                f"os {vistos} vendedores")
+        # Empate desempatado pelo id: dois anúncios pelo mesmo preço não podem
+        # fazer o post mudar de link entre um run e outro.
+        anuncio_id, cents = min(candidatos.items(), key=lambda kv: (kv[1], kv[0]))
+        return dataclasses.replace(offer, price_current_cents=cents,
+                                   price_original_cents=cents, anuncio_id=anuncio_id)
 
-    # -- link de afiliado (pool pré-gerado) --------------------------------
+    # -- link de afiliado (pool pré-gerado, por ANÚNCIO) --------------------
 
     def resolve_affiliate_link(self, offer: Offer) -> str:
-        pool = self._load_links_pool()
-        link = pool.get(offer.item_id)
+        """O link do anúncio que o `refresh_price` escolheu — nunca "algum"
+        link do produto: publicar o preço de um vendedor e o link de outro é o
+        bug da fase 5M."""
+        if not offer.anuncio_id:
+            raise SourceError(
+                f"meli: sem anúncio escolhido para {offer.item_id} (refresh_price não rodou)")
+        link = (self._load_links_pool().get(offer.item_id) or {}).get(offer.anuncio_id)
         if not link:
-            raise SourceError(f"sem link de afiliado no pool para {offer.item_id}")
+            raise SourceError(
+                f"sem link de afiliado no pool para {offer.item_id}/{offer.anuncio_id}")
         return link
 
     def link_coverage(self, offers: list[Offer]) -> tuple[int, int]:
-        """(quantas das ofertas têm link no pool, total) — leitura local, sem
-        rede (fase 5C, M5/A6).
+        """(quantas das ofertas têm ao menos UM anúncio linkado, total) —
+        leitura local, sem rede (fase 5C, M5/A6).
 
         `data/meli_links.json` nunca foi commitado e não existe em nenhum
         checkout: com `sources.meli: true` num clone limpo, TODA oferta do ML
         virava um descarte "sem link de afiliado no pool" — e o `doctor` dizia
         ✅ mesmo assim. Agora a cobertura é um número que o doctor e o resumo
-        do run mostram."""
+        do run mostram.
+
+        Fase 5M: um produto que só tem o link ANTIGO (de catálogo, sem
+        anúncio) conta como ZERO — ele não publica preço nenhum, e a cobertura
+        precisa dizer isso em vez de esconder."""
         pool = self._load_links_pool()
         return sum(1 for o in offers if pool.get(o.item_id)), len(offers)
 
     def ruler_coverage(self, offers: list[Offer]) -> tuple[int, int]:
-        """(quantas ofertas trazem RÉGUA CURADA do pool, total) — fase 5J, J4.
+        """(quantas ofertas trazem RÉGUA, total) — fase 5J, J4.
 
-        As demais são as entradas "sem histórico": publicáveis, mas em modo B
-        até `ref_min_observations` dias do nosso price_log sustentarem uma
-        régua própria. Sem este número no doctor e no resumo de ops, "o ML só
-        publica modo B" vira descoberta de semanas depois — e o ponto da fase é
-        justamente que essa proporção mude sozinha com o tempo.
+        Sem este número no doctor e no resumo de ops, "o ML só publica modo B"
+        vira descoberta de semanas depois.
 
-        Chamada ANTES do `enrich_offers`, é o que o POOL tem; depois dele, o
-        que a oferta tem (o degrau 3 já pode ter carimbado régua própria)."""
+        **Desde a 5M o primeiro número é 0 por construção**, e isso é o
+        desenho, não um defeito: a régua curada é do anúncio do buy box e o
+        preço é de outro anúncio, então ela não viaja na oferta (ver
+        `_parse_pool_offer`). Como o pipeline e o doctor chamam este método
+        ANTES do `enrich_offers`, a régua que o nosso price_log vier a
+        sustentar (degrau 3) não aparece aqui — quem a vê é o veredito do
+        post."""
         return sum(1 for o in offers if o.price_ref_cents > 0), len(offers)
 
     @property
     def links_file_exists(self) -> bool:
         return self.links_path.is_file()
 
-    def _load_links_pool(self) -> dict[str, str]:
+    def _load_links_pool(self) -> dict[str, dict[str, str]]:
+        """`{product_id: {item_id: link}}` — só os links por ANÚNCIO. O
+        `product_link` do formato antigo fica guardado no arquivo (é link
+        válido, foi trabalho de painel) mas não entra aqui: ele abre a página
+        de catálogo, onde quem escolhe o vendedor é o Mercado Livre."""
         if self._links_pool is None:
-            pool: dict[str, str] = {}
-            if self.links_path.is_file():
-                try:
-                    data = json.loads(self.links_path.read_text(encoding="utf-8"))
-                    if isinstance(data, dict):
-                        pool = {str(k): str(v) for k, v in data.items()}
-                except (ValueError, OSError):
-                    pool = {}
-            self._links_pool = pool
+            self._links_pool = {
+                pid: dict(entrada["items"])
+                for pid, entrada in meli_links.ler_pool(self.links_path).items()
+                if entrada["items"]}
         return self._links_pool
+
+
+def anuncio_passa_no_piso(item: dict) -> bool:
+    """Piso de qualidade do anúncio (fase 5M, M3): **novo E (Full OU loja
+    oficial OU frete grátis)**.
+
+    Mandar o seguidor para um vendedor ruim é outro tipo de dano, e a conta se
+    chama Fiscal. Os números que escolheram este piso, medidos em 2026-08-28
+    sobre 1717 anúncios de 53 produtos:
+
+    - `condition == "new"` em 1717/1717 — hoje o piso não exclui NINGUÉM. Fica
+      porque o dia em que um usado entrar na lista não pode ser o dia em que a
+      gente descobre que não olhava;
+    - em **12 dos 53 produtos** o anúncio mais barato é um item barato com
+      frete caro pago pelo comprador (R$ 8,00 + R$ 44,62 de frete = 558% do
+      preço; R$ 17,99 + R$ 44,62...). Publicar "R$ 8,00" ali é dizer um número
+      que ninguém paga;
+    - o piso derruba esses 12 para **ZERO** e custa **1 produto de 53** (fica
+      sem anúncio elegível) e **+0,0% na mediana** do preço publicado (p75
+      +8,6%): em 38 dos 52 produtos o mais barato já passa;
+    - as alternativas não se pagam: só frete grátis custaria 15 produtos de 53
+      e +8,4%; só `gold_pro`, 21 produtos e +10,6%.
+
+    O que NÃO dá para exigir: quantidade em estoque. `/products/{id}/items`
+    não expõe `available_quantity` nem equivalente (0 de 1717 anúncios, todos
+    os campos conferidos) e `GET /items/{id}`, que o traria, é 403 para o
+    token de aplicação. O "Último disponível" visto no card não é checável —
+    ver docs/runbooks/meli-setup.md."""
+    if not isinstance(item, dict) or str(item.get("condition") or "") != "new":
+        return False
+    envio = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+    return bool(item.get("official_store_id")
+                or envio.get("free_shipping")
+                or envio.get("logistic_type") == "fulfillment")
+
+
+def anuncios_para_linkar(results: list, n: int = LINKS_POR_PRODUTO) -> list[str]:
+    """Os `n` `item_id` mais baratos de `/products/{id}/items` que passam no
+    piso — a lista que o `/meli-links-refresh` manda ao painel.
+
+    Mesma função que o `refresh_price` usa para escolher o preço, de propósito:
+    cunhar link para um anúncio que a publicação recusaria é trabalho jogado
+    fora, e publicar um anúncio que a cunhagem não escolheria é um link que não
+    existe."""
+    elegiveis = []
+    for item in results:
+        if not anuncio_passa_no_piso(item):
+            continue
+        cents = _price_cents((item or {}).get("price"))
+        item_id = str(item.get("item_id") or "")
+        if cents is None or cents <= 0 or not item_id:
+            continue
+        elegiveis.append((cents, item_id))
+    return [item_id for _, item_id in sorted(elegiveis)[:max(0, int(n))]]
 
 
 def _centavos(valor) -> tuple[int | None, str]:
@@ -407,8 +519,8 @@ def _centavos(valor) -> tuple[int | None, str]:
     return valor, ""
 
 
-def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
-                      generated_at: date, hoje: date) -> tuple[Offer | None, str]:
+def _parse_pool_offer(item: dict, commission_pct: float,
+                      sel: dict) -> tuple[Offer | None, str]:
     """(Offer, "") quando a entrada é válida; (None, motivo) quando é pulada."""
     product_id = str(item.get("product_id") or "").strip()
     title = str(item.get("title") or "").strip()
@@ -426,13 +538,6 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         # Motivo PRÓPRIO: "sem p25" mandaria a curadoria procurar um campo que
         # está lá, e "sem histórico" absolveria uma régua que está quebrada.
         return None, "régua parcial (uns campos de régua zerados, outros não)"
-    if not str(item.get("buy_box_item_id") or "").strip():
-        return None, "sem buy box"
-    idade_buy_box = _dias_desde_a_checagem(item.get("buy_box_checked_at"), generated_at, hoje)
-    if idade_buy_box is None:
-        return None, "data do buy box inválida"
-    if idade_buy_box > BUY_BOX_MAX_AGE_DAYS:
-        return None, f"buy box não verificado há {idade_buy_box} dias"
     ref, p25 = valores["price_ref_cents"], valores["price_p25_cents"]
     minima = valores["price_historic_min_cents"]
     preco_min = sel.get("price_min_brl")
@@ -459,7 +564,9 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         # entrada sem histórico, que quer dizer "preço ainda desconhecido". Nos
         # dois casos ele é substituído pelo preço VIVO em `refresh_price`, antes
         # de qualquer decisão de publicação; o 0 nunca chega a um post (sem
-        # preço vivo a oferta é descartada, "sem buy box").
+        # preço vivo a oferta é descartada). Ele serve para RANQUEAR (o
+        # `ev_score` precisa de um preço) e para a faixa de preço na carga —
+        # não para o post.
         price_original_cents=ref,
         price_current_cents=ref,
         commission_pct=commission_pct,
@@ -473,34 +580,30 @@ def _parse_pool_offer(item: dict, commission_pct: float, sel: dict,
         sales_e_faixa=True,
         sales_window_days=SALES_WINDOW_DAYS,
         rating=float(item.get("rating") or 0.0),
-        price_ref_cents=ref,
-        price_p25_cents=p25,
-        price_window_days=valores["price_window_days"],
-        price_floor_cents=minima,
-        price_floor_window_days=valores["price_min_window_days"],
+        # RÉGUA ZERADA (fase 5M, M4). A régua curada do pool — mediana, p25,
+        # janela e mínima histórica — é do anúncio que vencia o buy box. O
+        # preço publicado passou a ser o do anúncio LINKADO mais barato, que é
+        # outro vendedor: os dois deixaram de falar da mesma coisa, e um selo
+        # "menor preço dos últimos 12 meses (verificado)" comparando o preço do
+        # vendedor A com a mínima do vendedor B é mentira.
+        #
+        # Então a oferta do ML nasce sem régua e publica em MODO B (preço +
+        # prova social, sem alegar desconto e sem selo) — o caminho que a fase
+        # 5J já abriu. A régua volta sozinha quando o NOSSO `price_log`, que
+        # agora registra o preço do anúncio escolhido, tiver
+        # `selection.ref_min_observations` dias distintos: aí ela fala do mesmo
+        # objeto que o post. Melhor um post honesto sem selo que um selo que
+        # não se sustenta.
+        #
+        # Os números curados continuam NO ARQUIVO (são medianas reais de 13
+        # semanas) e continuam validados na carga: pool quebrado segue sendo
+        # pool quebrado, e a faixa de preço ainda é checada sobre a referência.
+        price_ref_cents=0,
+        price_p25_cents=0,
+        price_window_days=0,
+        price_floor_cents=0,
+        price_floor_window_days=0,
     ), ""
-
-
-def _dias_desde_a_checagem(checado, generated_at: date, hoje: date) -> int | None:
-    """Idade (dias) da verificação do buy box. Campo ausente/nulo → a data de
-    geração do pool (gerar o pool É verificar: o Passo 1 do skill devolve o
-    `buyBoxId`). Não-string, data inválida ou no futuro → None."""
-    if checado is None:
-        return (hoje - generated_at).days
-    if not isinstance(checado, str):
-        return None
-    try:
-        idade = (hoje - date.fromisoformat(checado)).days
-    except ValueError:
-        return None
-    return idade if idade >= 0 else None
-
-
-def _item_by_id(results: list, item_id: str) -> dict | None:
-    for result in results:
-        if isinstance(result, dict) and str(result.get("item_id") or "") == item_id:
-            return result
-    return None
 
 
 def _price_cents(price) -> int | None:

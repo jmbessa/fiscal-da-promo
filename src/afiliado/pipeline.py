@@ -5,7 +5,8 @@ from functools import partial
 
 import httpx
 
-from afiliado import copywriter, llm, message, pricing, selection, state, validate
+from afiliado import (copywriter, llm, message, pricing, selection, shopee_checkout,
+                      state, validate)
 from afiliado.channels.base import Channel
 from afiliado.errors import SourceError
 from afiliado.models import Post
@@ -307,6 +308,16 @@ def candidate_max_age_days(cfg: dict, source: str) -> int:
         return 0
 
 
+def _avisos_da_descoberta(stats) -> list[str]:
+    """Os avisos que a fatia de descoberta juntou. `DiscoveryStats.avisos()`
+    quando a fonte o oferece; senão, o `warning` de sempre — uma fonte
+    duplicada em teste não pode quebrar por causa de um campo novo."""
+    avisos = getattr(stats, "avisos", None)
+    if callable(avisos):
+        return [a for a in avisos() if a]
+    return [a for a in [getattr(stats, "warning", "")] if a]
+
+
 def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
                        frescas: dict[str, list], summary: RunSummary,
                        dry_run: bool, warn: "_Warner") -> list:
@@ -344,11 +355,18 @@ def _candidatas_do_run(cfg: dict, db: StateDB, sources: list[Source],
                 f"🔎 {src.name}: {stats.calls} chamadas · {stats.nodes} nós · "
                 f"{stats.eligible} elegíveis · {novos} novos no estoque "
                 f"({len(conhecidos | {o.item_id for o in lote})} no total)")
-            # Erro de CONFIG da varredura (ex.: `calls_per_run` que corta o
-            # plano e desliga subcategorias/keywords em silêncio). É aviso, não
-            # número do run: passa pelo warn_once e notifica uma vez por dia.
-            if getattr(stats, "warning", ""):
-                warn(stats.warning)
+            # Fase 5L: a fatia do DATA FEED, à parte. São duas superfícies com
+            # custos e rendimentos diferentes, e uma linha só não diria qual
+            # rendeu o quê — a comparação entre elas viraria opinião.
+            if getattr(stats, "feed", ""):
+                summary.discovery.append(f"📦 {src.name}: {stats.feed}")
+            # Erros de CONFIG/infra da descoberta (`calls_per_run` que corta o
+            # plano e desliga subcategorias/keywords em silêncio; o data feed
+            # fora do ar). São avisos, não números do run: passam pelo
+            # warn_once e notificam uma vez por dia. `avisos()` é opcional —
+            # uma fonte que só tem `warning` continua funcionando.
+            for aviso in _avisos_da_descoberta(stats):
+                warn(aviso)
     return list(resultado.values())
 
 
@@ -375,7 +393,7 @@ def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict,
 def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         dry_run: bool = False, validator=None, watchlist: Watchlist | None = None,
         warnings_iniciais: list[str] | None = None,
-        checa_cadencia: bool = True) -> RunSummary:
+        checa_cadencia: bool = True, preco_real=None) -> RunSummary:
     if validator is None:
         # Dry-run (A10): nada de rede além de fetch_offers/refresh_price —
         # a imagem não é baixada (o link já é checado offline, C6).
@@ -429,6 +447,16 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         warn(f"⚠️ Watchlist vencida há {watchlist.days_old()} dias — rode /watchlist-refresh")
         watchlist = watchlist.facts_only()
 
+    # Fase 5R — o preço de CHECKOUT vindo do cubo `ShbMartItem` do JoomPulse.
+    # Montado aqui e não na CLI porque ele precisa das duas coisas que só
+    # existem neste ponto: a watchlist já resolvida (é dela que sai a seção
+    # `checkout_prices`) e o dia LOCAL do run, que é contra quem a idade do
+    # dado é medida. None quando o interruptor está desligado ou não há
+    # watchlist — e None é o pipeline de hoje, inteiro.
+    preco_do_cubo = shopee_checkout.monta(cfg, watchlist, db.local_today())
+    for aviso in drena_avisos(preco_do_cubo) if preco_do_cubo else []:
+        warn(aviso)
+
     frescas: dict[str, list] = {}
     erros_de_fonte: list[str] = []
     for src in sources:
@@ -456,7 +484,7 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         if cobertura is not None and src_offers:
             com_link, total = cobertura(src_offers)
             if com_link * 2 < total:
-                warn(f"⚠️ {src.name}: só {com_link} de {total} produtos têm link — "
+                warn(f"⚠️ {src.name}: só {com_link} de {total} produtos têm anúncio linkado — "
                      "rode /meli-links-refresh")
         # Fase 5J (J4): quanto do pool traz RÉGUA CURADA e quanto está em modo
         # B esperando o nosso price_log. Número do run, não aviso (não passa
@@ -606,6 +634,25 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
                     # C7c: o preço VIVO é a observação do dia (o ML gravava
                     # o do pool todo dia — o histórico dele era uma constante).
                     db.record_price(offer.source, offer.item_id, offer.price_current_cents)
+            # Fase 5P: o preço de CHECKOUT, lido no navegador. Aqui e não antes,
+            # por dois motivos:
+            #   - o `price_log` acabou de gravar o preço de CATÁLOGO, e é ele
+            #     que a série precisa (a leitura não entra no histórico);
+            #   - só a oferta que VAI publicar paga uma página de navegador
+            #     (≈60/dia), nunca o estoque de candidatas.
+            # `aplica` nunca levanta e nunca inventa: sem leitura boa a oferta
+            # sai daqui idêntica à que entrou, e o post publica o preço da API.
+            if preco_real is not None:
+                offer, _leitura = preco_real.aplica(offer)
+                for aviso in drena_avisos(preco_real):
+                    warn(aviso)
+            # Fase 5R: o cubo PREENCHE o que a leitura não carimbou. A ordem é
+            # a precedência: a leitura do navegador é viva e ancorada na frase
+            # da própria página; o cubo é uma foto de até três dias atrás.
+            # `aplica` tem o mesmo contrato — nunca levanta, nunca inventa, e
+            # sem entrada sã a oferta sai idêntica à que entrou.
+            if preco_do_cubo is not None:
+                offer, _motivo = preco_do_cubo.aplica(offer)
             # Uma decisão, tomada uma vez: texto, copy, arte e legendas
             # recebem este veredito e não recalculam nada (C9/C10).
             veredito = pricing.verdict(offer, minimo_pct)

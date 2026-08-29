@@ -146,6 +146,27 @@ def test_build_message_obedece_ao_veredito_e_nao_recalcula():
     assert build_message(offer, _copy(), LINK, v) == ESPERADO_COM_SELO
 
 
+def test_build_message_acompanha_o_rotulo_da_shopee(rotulo):
+    """Fase 5K/5N: arte e texto não podem discordar. Enquanto a pill desenha
+    "SEM CUPOM", o texto do Telegram diz o mesmo, colado no mesmo número e FORA
+    do negrito (o herói é o preço); quando o rótulo está desligado, ele some
+    dos dois. O texto não decide nada — importa de `pricing`."""
+    sufixo = f" {rotulo}" if rotulo else ""
+    modo_b = make_offer(title=TITULO, price_current_cents=68999)
+    assert f"<b>R$ 689,99</b>{sufixo}\n" in _texto(modo_b)
+    modo_a = make_offer_ref(79900, title=TITULO, price_current_cents=68999)
+    assert f"Por: <b>R$ 689,99</b>{sufixo} (13% OFF)" in _texto(modo_a)
+
+
+def test_build_message_do_ml_nao_leva_o_rotulo(rotulo):
+    """O preço do ML é o do anúncio do buy box — o mesmo que a página mostra.
+    Vale nos dois estados do interruptor: a fixture roda os dois."""
+    offer = make_offer(title=TITULO, source="meli", price_current_cents=68999)
+    texto = _texto(offer)
+    assert "<b>R$ 689,99</b>" in texto
+    assert "sem cupom" not in texto
+
+
 def test_build_message_escapa_titulo_e_copy():
     offer = make_offer(title="<b>Tênis</b> & cia", price_current_cents=24999)
     copy = CopyParts(headline="<script>", description="a & b", cta="clique <aqui>")

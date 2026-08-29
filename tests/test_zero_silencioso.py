@@ -152,7 +152,16 @@ def test_pool_real_produz_candidatas_com_o_config_real(tmp_path, monkeypatch):
 
     O tempo é congelado na geração do pool: o teste protege a régua, não a
     validade do arquivo — pool vencido é problema de operação, avisado no
-    resumo, e não deve quebrar a suíte."""
+    resumo, e não deve quebrar a suíte.
+
+    DEFEITO DE CURADORIA continua sendo falha absoluta (campo faltando, régua
+    parcial, p25 acima da referência, mínima acima do p25). O que passou a ser
+    tolerado, e só ele, é a entrada que o TETO deixou para trás: a fase 5S
+    baixou `price_max_brl` de 1000 para 150 e o pool de produção foi gerado
+    antes disso, então uma entrada (colchão inflável, ref R$ 209,87) ficou fora
+    da faixa. O próximo `/meli-pool-refresh` a remove sozinho — o skill filtra
+    pela mesma faixa. O teto de 1 impede que isso vire silêncio: se o pool
+    encher de item caro, este teste cai."""
     real = RAIZ / "data/meli_offers.json"
     if not real.is_file():
         pytest.skip("sem data/meli_offers.json neste checkout")
@@ -164,8 +173,15 @@ def test_pool_real_produz_candidatas_com_o_config_real(tmp_path, monkeypatch):
     offers = src.fetch_offers(cfg)
 
     assert offers, f"pool real não produziu oferta alguma: {src.pool_warning}"
-    assert src.pool_warning is None, f"entradas ignoradas no pool real: {src.pool_warning}"
-    assert len(offers) == len(raw["offers"])
+    fora_da_faixa = len(raw["offers"]) - len(offers)
+    assert src.pool_warning in (
+        None, f"{fora_da_faixa} entrada(s) do pool ignorada(s) "
+              f"({fora_da_faixa} fora da faixa de preço)"), (
+        f"entradas ignoradas no pool real por DEFEITO de curadoria: {src.pool_warning}")
+    assert fora_da_faixa <= 1, (
+        f"{fora_da_faixa} entradas do pool estão fora de "
+        f"{cfg['selection']['price_min_brl']}..{cfg['selection']['price_max_brl']} — "
+        "rode /meli-pool-refresh")
 
     db = StateDB(tmp_path / "s.db")
     candidatas = selection.filter_offers(
@@ -220,13 +236,30 @@ def test_a_entrada_sem_historico_nao_entra_por_uma_porta_que_a_de_30_reais_nao_u
 
 # -- fase 5L: o lote do data feed da Shopee ----------------------------------
 
+# A escada de preços do lote, MEDIDA (fase 5S): os 20 quantis das 15.688
+# candidatas da Shopee em `data/state.db` — a superfície que o feed e a API
+# alimentam. 37% abaixo de R$ 20, mediana R$ 26,98, p90 R$ 88,00, p95
+# R$ 157,99, p99 R$ 749,00.
+#
+# O que estava aqui era uma escada UNIFORME de R$ 20 a R$ 920, invenção que a
+# medição nunca sustentou — e o preço saía do mesmo `i` que as curtidas, então
+# "a linha mais curtida" era também "a mais cara". Enquanto o teto era R$ 1.000
+# nada disso aparecia; com `price_max_brl: 150` as 10 linhas mantidas (o corte
+# do feed é por `like`) eram todas caras, o lote inteiro morria na faixa de
+# preço e o teste deixava de provar o que existe para provar.
+ESCADA_DE_PRECOS = ("7.99", "10.80", "12.00", "13.90", "15.90", "17.89",
+                    "19.50", "20.70", "22.99", "25.83", "28.00", "29.99",
+                    "34.80", "38.25", "42.90", "49.98", "59.99", "76.90",
+                    "114.59", "340.90")
+
+
 def _lote_de_feed(n: int = 500) -> list[dict]:
     """Um lote INTEIRO do feed, na proporção medida ao vivo em 2026-08-28
     (`getItemFeedData`, 3 janelas de 500 do "Shopee Oficial BR"):
 
     - 32% das linhas caem nas cinco raízes que a conta varre; o resto é
       autopeças (102187, a maior categoria do feed), pets, papelaria...;
-    - 86% dos preços caem na faixa de R$ 20 a R$ 1.000;
+    - os preços seguem `ESCADA_DE_PRECOS`, descorrelacionada das curtidas;
     - `like` vai de 0 a dezenas de milhares (mediana 70);
     - e NENHUMA traz `commission` ou `sales` — é isso que esta rede protege.
     """
@@ -236,11 +269,12 @@ def _lote_de_feed(n: int = 500) -> list[dict]:
     for i in range(n):
         nossa = i % 100 < 32
         cat = nossas[i % 5] if nossa else outras[i % 5]
-        # 14% fora da faixa: metade barata demais, metade cara demais
-        preco = {0: "9.90", 1: "1499.00"}.get(i % 14, f"{20 + (i % 900)}.90")
+        # O passo 7 é primo com 20 (a escada), com 5 (a categoria) e com 100
+        # (a fatia "nossa"): preço, categoria e curtidas ficam independentes.
+        preco = ESCADA_DE_PRECOS[(i * 7) % len(ESCADA_DE_PRECOS)]
         linhas.append({"columns": json.dumps({
             "itemid": str(9_000_000 + i), "title": f"Produto do feed {i}",
-            "price": f"{40 + (i % 900)}.90", "sale_price": preco,
+            "price": f"{float(preco) * 2:.2f}", "sale_price": preco,
             "discount_percentage": str(i % 60), "item_rating": "4.9",
             "image_link": f"https://cf.shopee.com.br/file/{i}",
             "product_link": f"https://shopee.com.br/product/7/{9_000_000 + i}",
@@ -294,6 +328,9 @@ def test_um_lote_inteiro_do_feed_produz_candidatas_com_o_config_real(tmp_path):
     assert len(candidatas) > 0, (
         f"{len(offers)} linhas do feed entraram e ZERO sobraram — {cortes.resumo()}")
     assert cortes.ev == 0, "o piso de EV matou candidata de comissão desconhecida"
+    # E a faixa de preço CORTA de verdade neste lote (fase 5S): sem isto a
+    # escada podia virar toda barata e o teste passaria sem tocar no teto.
+    assert cortes.faixa_preco > 0, "a escada de preços deixou de exercitar a faixa"
     assert cortes.categoria == 0, "o feed entregou categoria fora do allowlist"
     db.close()
 
@@ -322,15 +359,19 @@ def test_config_real_nao_tem_mais_portao_de_desconto():
 def test_oferta_sem_referencia_e_publicavel_e_o_texto_nao_alega_desconto(tmp_path):
     """Teste obrigatório 3, ponta a ponta com o config real: sem referência a
     oferta PASSA no filtro e na validação (é a decisão de volume máximo) e o
-    texto não alega desconto nenhum."""
+    texto não alega desconto nenhum.
+
+    O preço fica DENTRO de `price_min_brl..price_max_brl` de propósito: o que
+    se prova aqui é que a falta de referência não barra ninguém, e uma oferta
+    barrada pela faixa (o teto virou 150 na fase 5S) provaria outra coisa."""
     from afiliado import message, validate
     from afiliado.models import CopyParts
     from tests.test_models import make_offer
 
     cfg = load_config(CONFIG_REAL)
     db = StateDB(tmp_path / "s.db")
-    offer = make_offer(category="100630", price_original_cents=49999,
-                       price_current_cents=24999, rating=4.8, sales=12000)
+    offer = make_offer(category="100630", price_original_cents=19999,
+                       price_current_cents=9990, rating=4.8, sales=12000)
     assert offer.price_ref_cents == 0
     assert offer.discount_pct == 50          # o "de" do vendedor diz 50%...
 
@@ -342,6 +383,6 @@ def test_oferta_sem_referencia_e_publicavel_e_o_texto_nao_alega_desconto(tmp_pat
                                   pricing.verdict(offer, cfg["selection"]["min_real_discount_pct"]))
     assert "OFF" not in texto                # ...e o post não repete nada disso
     assert "<s>" not in texto
-    assert "R$ 499,99" not in texto
-    assert "R$ 249,99" in texto
+    assert "R$ 199,99" not in texto          # o "de" do vendedor não aparece
+    assert "R$ 99,90" in texto
     db.close()

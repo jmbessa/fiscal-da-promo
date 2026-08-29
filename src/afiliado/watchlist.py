@@ -41,6 +41,20 @@ class PriceFloor:
 
 
 @dataclass(frozen=True)
+class CheckoutPrice:
+    """O preço EXIBIDO do anúncio — o de checkout, com cupom —, medido pelo
+    JoomPulse (fase 5R) e a data em que a Shopee foi RASPADA (não a do run).
+
+    `measured_at` é a metade da guarda que não é o preço: o cubo é uma foto por
+    item, e a raspagem de um item pode ter dias (medido em 2026-08-29 sobre 100
+    itens: mediana de 4 dias, máximo de 30). Entrada sem data é entrada sem
+    idade, e sem idade ela NÃO é publicada — apresentar o preço de ontem como o
+    de hoje é o erro do `buy_box_item_id` com outra roupa."""
+    price_cents: int
+    measured_at: date | None = None
+
+
+@dataclass(frozen=True)
 class PriceRef:
     """Referência curada: mediana (`ref_cents`), topo do quartil mais barato
     (`p25_cents`) e a janela real em dias. Entrada sem p25 carrega 0 — e
@@ -63,6 +77,10 @@ class Watchlist:
     hot_items: dict[str, float] = field(default_factory=dict)      # item_id -> boost
     price_floors: dict[str, PriceFloor] = field(default_factory=dict)
     price_refs: dict[str, PriceRef] = field(default_factory=dict)
+    # Fase 5R — o preço de checkout do JoomPulse. É FATO datado, como as duas
+    # seções acima: sobrevive ao vencimento da opinião (`facts_only`) e tem a
+    # data dele em `measured_at`.
+    checkout_prices: dict[str, CheckoutPrice] = field(default_factory=dict)
     section_dates: dict[str, date] = field(default_factory=dict)
 
     def section_date(self, secao: str) -> date:
@@ -107,6 +125,9 @@ class Watchlist:
     def price_ref(self, item_id: str) -> PriceRef | None:
         return self.price_refs.get(item_id)
 
+    def checkout_price(self, item_id: str) -> CheckoutPrice | None:
+        return self.checkout_prices.get(item_id)
+
 
 def load_watchlist(path: str | Path) -> Watchlist | None:
     """None se o arquivo não existe ou é inválido — o pipeline segue sem watchlist.
@@ -126,6 +147,8 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
         raw_price_floors = raw_price_floors if isinstance(raw_price_floors, dict) else {}
         raw_price_refs = raw.get("price_refs")
         raw_price_refs = raw_price_refs if isinstance(raw_price_refs, dict) else {}
+        raw_checkout = raw.get("checkout_prices")
+        raw_checkout = raw_checkout if isinstance(raw_checkout, dict) else {}
         raw_section_dates = raw.get("section_dates")
         raw_section_dates = raw_section_dates if isinstance(raw_section_dates, dict) else {}
         return Watchlist(
@@ -144,6 +167,10 @@ def load_watchlist(path: str | Path) -> Watchlist | None:
                                          _data(v.get("measured_at")))
                         for k, v in raw_price_refs.items()
                         if isinstance(v, dict) and "ref_cents" in v},
+            checkout_prices={str(k): CheckoutPrice(int(v["price_cents"]),
+                                                   _data(v.get("measured_at")))
+                             for k, v in raw_checkout.items()
+                             if isinstance(v, dict) and "price_cents" in v},
             section_dates={str(k): _data(v) for k, v in raw_section_dates.items()
                            if _data(v) is not None},
         )

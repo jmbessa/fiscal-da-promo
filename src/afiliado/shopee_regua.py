@@ -50,7 +50,7 @@ WATCHLIST_PADRAO = "data/watchlist.json"
 SECOES_DE_FATO = ("price_refs", "price_floors")
 
 __all__ = ["Regua", "centavos", "dias_observados", "regua_do_item", "reguas_do_bruto",
-           "mesclar", "escrever", "alvos", "main", "JANELA_PADRAO", "CUBO"]
+           "mesclar", "escrever", "fila", "alvos", "main", "JANELA_PADRAO", "CUBO"]
 
 
 def centavos(valor) -> int | None:
@@ -282,22 +282,30 @@ def escrever(path: str | Path, conteudo: dict) -> None:
                           encoding="utf-8")
 
 
-def alvos(db: StateDB, cfg: dict, watchlist: Watchlist | None, n: int = 36,
-          fonte: str = "shopee") -> list[str]:
-    """Os itens que valem uma consulta: o topo de `selection.order_by_ev` sobre
-    o estoque vivo, sem quem já tem referência na watchlist.
+def fila(db: StateDB, cfg: dict, watchlist: Watchlist | None,
+         fonte: str = "shopee") -> list:
+    """A fila que o pipeline PUBLICARIA, na ordem em que ele a publicaria:
+    o estoque vivo, pelos mesmos portões do run (`filter_offers`) e pela mesma
+    ordem (`order_by_ev`) — e não `rank_offers`, que é dimensionado por
+    `posts_per_run` e devolve um punhado. Não toca a rede: o estoque de
+    candidatas já está no `state.db`.
 
-    É a lista que o pipeline PUBLICARIA, medida com os mesmos portões do run
-    (`filter_offers`) e a mesma ordem (`order_by_ev`) — e não `rank_offers`,
-    que é dimensionado por `posts_per_run` e devolve um punhado. Não toca a
-    rede: o estoque de candidatas já está no `state.db`.
+    É de onde saem os alvos das duas coletas do JoomPulse (a régua da 5O e o
+    preço de checkout da 5R); o que muda entre elas é só quem já está servido.
     """
     ofertas = db.load_candidates(fonte, pipeline.candidate_max_age_days(cfg, fonte))
     ofertas = pricing.enrich_offers(ofertas, db, watchlist, cfg)
-    ordenadas = selection.order_by_ev(selection.filter_offers(ofertas, db, cfg),
-                                      cfg, watchlist)
+    return selection.order_by_ev(selection.filter_offers(ofertas, db, cfg),
+                                 cfg, watchlist)
+
+
+def alvos(db: StateDB, cfg: dict, watchlist: Watchlist | None, n: int = 36,
+          fonte: str = "shopee") -> list[str]:
+    """Os itens que valem uma consulta: o topo da `fila`, sem quem já tem
+    referência na watchlist."""
     ja_tem = set(watchlist.price_refs) if watchlist else set()
-    return [o.item_id for o in ordenadas if o.item_id not in ja_tem][:n]
+    return [o.item_id for o in fila(db, cfg, watchlist, fonte)
+            if o.item_id not in ja_tem][:n]
 
 
 def _semear(args, parser: argparse.ArgumentParser) -> int:

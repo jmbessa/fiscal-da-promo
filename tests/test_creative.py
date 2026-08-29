@@ -524,9 +524,14 @@ def test_price_pill_do_feed_tambem_e_centralizada():
 # dois estados: LIGADO, só a Shopee leva; DESLIGADO, ninguém leva e a pill
 # volta a ser exatamente o preço mais o padding — sem slot vazio.
 
-# Preço e referência mais largos que o projeto pode publicar hoje:
-# `selection.price_max_brl` é 1000, e a referência riscada é a nossa mediana —
-# ela não tem teto de configuração.
+# O pior caso de LARGURA que a pill precisa aguentar. Não é o teto de
+# publicação: `selection.price_max_brl` virou 150 na fase 5S, e a referência
+# riscada (a nossa mediana) nunca teve teto de configuração.
+#
+# Os números aqui ficam em R$ 999,99 / R$ 1.999,99 de propósito — quatro
+# dígitos são o pior caso de LAYOUT, e é folga que o teto de preço não deve
+# poder consumir: subir `price_max_brl` de novo não pode voltar a quebrar a
+# arte. Medir a pill no teto de hoje seria medir menos do que ela precisa.
 PIOR_PRECO, PIOR_REF = 99999, 199999
 
 
@@ -721,12 +726,12 @@ def test_no_modo_b_a_condicao_longa_nem_encosta_no_guarda():
     assert _pill_feed(offer)["width"] <= FEED_TITLE_WIDTH
 
 
-PIOR_CHECKOUT = 89999      # 10% abaixo do teto publicável (R$ 999,99)
+PIOR_CHECKOUT = 89999      # 10% abaixo do pior caso de largura (R$ 999,99)
 
 
 def test_o_riscado_do_modo_b_cabe_no_pior_caso_publicavel_com_a_condicao_do_cubo():
-    """O pior caso que o cubo pode produzir: preço no teto de `price_max_brl`,
-    riscado do catálogo e "COM CUPOM". Ele cabe nos dois formatos, e o riscado
+    """O pior caso de LARGURA que o cubo pode produzir: preço de quatro
+    dígitos, riscado do catálogo e "COM CUPOM". Ele cabe nos dois formatos, e o riscado
     sai INTEIRO — o defeito da 5P ("R$ 7…") não voltou por outra porta."""
     offer = _lida(price_current_cents=PIOR_PRECO, price_checkout_cents=PIOR_CHECKOUT)
     for pill, largura, esperado in ((_pill_story, STORY_TITLE_WIDTH, 886),

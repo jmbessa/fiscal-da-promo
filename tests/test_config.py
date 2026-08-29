@@ -51,7 +51,9 @@ def test_o_teto_de_preco_e_o_medido_na_fase_5s():
 
     O que o teto NÃO custa (medido sobre `data/state.db`, 15.688 candidatas da
     Shopee + o pool de 53 do ML): 8.904 candidatas sobrevivem a 150 contra
-    9.572 a 1000 (−7%), e são 148 dias de estoque para um teto de 60 posts/dia.
+    9.572 a 1000 (−7%). A janela do estoque é `shopee.candidate_max_age_days`
+    = 3 dias, e nesses 3 dias o Telegram publica 180: sobram 49× mais
+    candidatas do que a fila consome.
 
     Por que não 100: a 100 o ML perde um produto publicável (o preço vivo do
     Kit 10 potes 640ml é R$ 109,70) e a faixa R$ 100–150, onde vivem 4 dos 100

@@ -88,8 +88,11 @@ selection:
   # O QUE CUSTA (medido sobre `data/state.db`, 15.688 candidatas da Shopee +
   # o pool de 53 do ML, teto → candidatas de `filter_offers`):
   #   1000 → 9.572 · 250 → 9.210 · 200 → 9.132 · 150 → 8.904 · 100 → 8.473
-  # A 150 sobram 8.904 candidatas, 148 dias de estoque para 60 posts/dia: o
-  # volume não é o que este número aperta. A comissão nominal esperada de um
+  # A 150 sobram 8.904 candidatas. A comparação certa não é "dias de estoque":
+  # a janela do estoque é `shopee.candidate_max_age_days` = 3 dias, e nesses
+  # mesmos 3 dias o Telegram publica 180. São 49× mais candidatas do que a
+  # fila consome — o volume não é o que este número aperta. A comissão
+  # nominal esperada de um
   # dia de 60 posts cai 36% (R$ 2.231 → R$ 1.435) — a troca só é ruim se o
   # item barato converter menos de 0,64× o caro, e a evidência acima diz o
   # contrário.

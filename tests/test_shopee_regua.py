@@ -221,6 +221,23 @@ def test_reguas_do_bruto_aceita_lista_e_dict_e_chave_sem_prefixo():
     assert reguas["a"].window_days == reguas["b"].window_days == 89
 
 
+def test_reguas_do_bruto_le_o_formato_COLUNAR_do_conector():
+    """Fase 5R: é ESTE o formato que `query_cubejs_shopee` devolve — `columns`
+    mais `data` de listas. A 5O supôs a lista de dicionários e filtrava por
+    `isinstance(linha, dict)`: um bruto colunar virava zero linhas e todo item
+    saía recusado com "sem linha no cubo", para um dado que estava lá."""
+    colunar = {"columns": ["itemId", "modelId", "modelPrice", "priceStart", "priceEnd"],
+               "data": [[11503789697, 0, 129.97, "2026-06-22T00:00:00.000",
+                         "2026-07-09T00:00:00.000"],
+                        [11503789697, 0, 152.91, "2026-07-10T00:00:00.000",
+                         "2026-08-28T00:00:00.000"]],
+               "dimensionCount": 5, "totalRows": 2}
+    reguas, recusadas = shopee_regua.reguas_do_bruto([colunar], HOJE)
+    assert recusadas == {}
+    assert reguas["11503789697"].window_days == 68
+    assert reguas["11503789697"].ref_cents == 15291
+
+
 # ------------------------------------------------------- O3: gravar sem mentir
 
 def watchlist_antiga() -> dict:

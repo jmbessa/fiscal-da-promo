@@ -37,14 +37,14 @@ from datetime import date, timedelta
 from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
 
-from afiliado import pipeline, pricing, selection
+from afiliado import joompulse, pipeline, pricing, selection
 from afiliado.state import StateDB
 from afiliado.watchlist import PriceFloor, PriceRef, Watchlist, load_watchlist
 
 CUBO = "ShbModelsPricesDaily"
 # O teto de linhas por consulta do cubo (medido em 2026-08-28). Vale como
 # palpite quando a resposta salva não traz o `query.limit` dela.
-LIMITE_PADRAO = 100
+LIMITE_PADRAO = joompulse.LIMITE_PADRAO
 JANELA_PADRAO = pricing.DEFAULT_REF_WINDOW_DAYS
 WATCHLIST_PADRAO = "data/watchlist.json"
 SECOES_DE_FATO = ("price_refs", "price_floors")
@@ -69,17 +69,10 @@ def centavos(valor) -> int | None:
     return int(bruto.to_integral_value(rounding=ROUND_FLOOR))
 
 
-def _dia(valor) -> date | None:
-    """A data de um `priceStart`/`priceEnd`. O cubo devolve tanto `2026-08-28`
-    quanto `2026-08-28T00:00:00.000` — os 10 primeiros caracteres bastam."""
-    if isinstance(valor, date):
-        return valor
-    if not isinstance(valor, str):
-        return None
-    try:
-        return date.fromisoformat(valor[:10])
-    except ValueError:
-        return None
+# A data de um `priceStart`/`priceEnd`, e as linhas cruas: os dois formatos
+# (colunar e lista de dicionários) são lidos em `afiliado.joompulse`, uma vez
+# só, para os dois cubos.
+_dia = joompulse.dia
 
 
 def dias_observados(intervalos: list[tuple[date, date | None, int]], hoje: date,
@@ -169,23 +162,8 @@ def regua_do_item(item_id: str, intervalos: list[tuple[date, date | None, int]],
     return Regua(item_id, ref, p25, minimo, len(dias), hoje), ""
 
 
-def _linhas(bruto) -> tuple[list[dict], int]:
-    """`(linhas, limite)` de uma resposta do Cube.js — `{"data": [...]}` ou a
-    lista nua. O limite sai de `query.limit` quando a resposta o traz."""
-    limite = LIMITE_PADRAO
-    if isinstance(bruto, dict):
-        consulta = bruto.get("query")
-        if isinstance(consulta, dict):
-            try:
-                limite = int(consulta.get("limit") or LIMITE_PADRAO)
-            except (TypeError, ValueError):
-                limite = LIMITE_PADRAO
-        bruto = bruto.get("data")
-    return [linha for linha in bruto or [] if isinstance(linha, dict)], limite
-
-
 def _campo(linha: dict, nome: str):
-    return linha.get(f"{CUBO}.{nome}", linha.get(nome))
+    return joompulse.campo(linha, CUBO, nome)
 
 
 def intervalos_do_bruto(brutos: list) -> tuple[dict[str, list], int, set[str]]:
@@ -205,7 +183,7 @@ def intervalos_do_bruto(brutos: list) -> tuple[dict[str, list], int, set[str]]:
     ignoradas = 0
     cortados: set[str] = set()
     for bruto in brutos:
-        linhas, limite = _linhas(bruto)
+        linhas, limite = joompulse.linhas(bruto)
         ultimo = ""
         for linha in linhas:
             item_id = str(_campo(linha, "itemId") or "").strip()
@@ -322,21 +300,12 @@ def alvos(db: StateDB, cfg: dict, watchlist: Watchlist | None, n: int = 36,
     return [o.item_id for o in ordenadas if o.item_id not in ja_tem][:n]
 
 
-def _brutos(caminhos: list[str]) -> list:
-    """Os JSONs de `data/joompulse_raw/...` — arquivos ou diretórios."""
-    arquivos: list[Path] = []
-    for caminho in caminhos:
-        p = Path(caminho)
-        arquivos.extend(sorted(p.glob("*.json")) if p.is_dir() else [p])
-    return [json.loads(a.read_text(encoding="utf-8")) for a in arquivos]
-
-
 def _semear(args, parser: argparse.ArgumentParser) -> int:
     watchlist = Path(args.watchlist)
     if not watchlist.exists():
         parser.error(f"watchlist não encontrada: {watchlist}")
     hoje = date.fromisoformat(args.hoje) if args.hoje else date.today()
-    reguas, recusadas = reguas_do_bruto(_brutos(args.bruto), hoje,
+    reguas, recusadas = reguas_do_bruto(joompulse.carrega(args.bruto), hoje,
                                         args.janela, args.min_dias)
     for item_id, regua in sorted(reguas.items()):
         print(f"✅ {item_id}: {regua.window_days} dias observados · "

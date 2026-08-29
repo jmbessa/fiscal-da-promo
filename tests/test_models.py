@@ -139,3 +139,23 @@ def test_post_accepts_verdict():
         verdict=v,
     )
     assert post.verdict is v
+
+
+# --- Fase 5R: a porcentagem de CHECKOUT (o pedido do dono) ---------------------
+
+def test_checkout_discount_pct_e_a_conta_dos_dois_numeros_observados_por_nos():
+    """Entre o preço de catálogo (o que a API dá) e o preço exibido (o do cubo).
+    Nenhum dos dois é o "de" do vendedor — este é o número que a peça pode
+    mostrar sem certificar `price_original_cents`."""
+    offer = make_offer(price_current_cents=59900, price_checkout_cents=52348)
+    assert offer.checkout_discount_pct == 12          # 12,6% -> 12, sempre para baixo
+
+
+def test_checkout_discount_pct_e_zero_sem_leitura_e_sem_desconto():
+    assert make_offer(price_current_cents=59900).checkout_discount_pct == 0
+    assert make_offer(price_current_cents=59900,
+                      price_checkout_cents=59900).checkout_discount_pct == 0
+    assert make_offer(price_current_cents=59900,
+                      price_checkout_cents=60000).checkout_discount_pct == 0
+    assert make_offer(price_current_cents=0,
+                      price_checkout_cents=100).checkout_discount_pct == 0

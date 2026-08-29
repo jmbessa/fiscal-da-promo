@@ -397,13 +397,40 @@ def _pill_left(offer: Offer, verdict: Verdict) -> tuple[str, bool]:
     """(texto à esquerda do preço na pill, se ele é riscado) — pelo veredito.
 
     Modo A (desconto verificado): a NOSSA referência, riscada — nunca o "de"
-    do vendedor. Modo B: NADA — a pill é só o preço, grande; nota, vendas e
-    loja ficam na linha de meta logo abaixo (`_draw_meta`), exatamente como
-    no modo A, sem duplicar a prova social.
+    do vendedor.
+
+    Modo B COM preço de checkout (fase 5R): o preço de CATÁLOGO, riscado. É a
+    BASE da porcentagem que o badge mostra, e sem ela o seguidor vê um "-12%"
+    que não pode conferir. Continua não sendo o "de" do vendedor: é a nossa
+    medição de hoje, o mesmo número que a página escreve como "ou R$ 599,00 sem
+    cupom" — os dois números do par são observados por nós, que é exatamente a
+    condição para o percentual poder ser publicado.
+
+    Modo B sem leitura: NADA — a pill é só o preço, grande; nota, vendas e loja
+    ficam na linha de meta logo abaixo (`_draw_meta`), sem duplicar a prova
+    social. É o comportamento de sempre, e é o da maioria das peças.
     """
     if verdict.mode == "A":
         return format_brl(offer.price_ref_cents), True
+    if offer.checkout_discount_pct > 0:
+        return format_brl(offer.price_current_cents), True
     return "", False
+
+
+def _badge_pct(offer: Offer, verdict: Verdict) -> int:
+    """A porcentagem do badge do card — UMA por peça, sempre a mais forte que é
+    verdadeira, e nunca a do vendedor.
+
+    Modo A: a do veredito, que já é a da referência para o preço PUBLICADO
+    (5P) — ela é sempre maior que a de checkout, porque a referência é maior
+    que o catálogo (`1 - c/x` cresce com x).
+
+    Modo B: a de CHECKOUT, quando existe. Este é o pedido do dono da fase 5R —
+    "precisamos evidenciar a porcentagem de desconto nos stories" —, e até aqui
+    a peça de modo B com preço de checkout não mostrava porcentagem nenhuma: o
+    badge só existia no modo A. Sem leitura, 0, e o badge não é desenhado.
+    """
+    return verdict.discount_pct or offer.checkout_discount_pct
 
 
 def _price_pill_dims(
@@ -911,7 +938,7 @@ def _story_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
     title, price, meta, selo = _story_body_options(
         draw, offer, verdict, footer["cta_box"][1] - 36, pill_left)
     return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
-            "pill_left": pill_left, "badge_pct": verdict.discount_pct}
+            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict)}
 
 
 def _feed_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
@@ -922,7 +949,7 @@ def _feed_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
     title, price, meta, selo = _feed_body_options(
         draw, offer, verdict, footer["divider_y"] - 36, pill_left)
     return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
-            "pill_left": pill_left, "badge_pct": verdict.discount_pct}
+            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict)}
 
 
 def _resumo(plan: dict) -> dict:

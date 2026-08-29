@@ -702,11 +702,56 @@ def test_a_condicao_longa_cabe_no_canvas_e_no_story_quem_cede_e_a_referencia():
 
 
 def test_no_modo_b_a_condicao_longa_nem_encosta_no_guarda():
-    """O modo B não tem riscado para ceder — e não precisa: sem ele a pill é o
-    preço mais o rótulo, e sobra largura útil de sobra nos dois formatos."""
+    """O modo B com leitura ganhou riscado na fase 5R (o preço de catálogo, que
+    é a BASE da porcentagem), e ele passa pelo mesmo guarda e com a mesma
+    precedência: onde não cabe, quem cede é o riscado, nunca a condição.
+
+    Medido em 2026-08-29, com a foto do preview (útil 936 no story, 952 no
+    feed):
+
+        caso real (R$ 599,00 -> R$ 523,48)   story 872 · feed 781  com "COM CUPOM"
+        pior caso (R$ 999,99 -> R$ 899,99)   story 886 · feed 787  com "COM CUPOM"
+        os mesmos, com "NO PIX COM CUPOM"    story 800/813 (o riscado SAI) · feed 893/899
+
+    Ou seja: pelo cubo (fase 5R), onde a condição é sempre "com cupom", os dois
+    formatos mostram a base em todos os casos publicáveis. "NO PIX COM CUPOM" só
+    vem da leitura do navegador (5P), e aí o story abre mão do riscado."""
     offer = _lida(price_checkout_label="no Pix com cupom")
     assert _pill_story(offer)["width"] <= STORY_TITLE_WIDTH
     assert _pill_feed(offer)["width"] <= FEED_TITLE_WIDTH
+
+
+PIOR_CHECKOUT = 89999      # 10% abaixo do teto publicável (R$ 999,99)
+
+
+def test_o_riscado_do_modo_b_cabe_no_pior_caso_publicavel_com_a_condicao_do_cubo():
+    """O pior caso que o cubo pode produzir: preço no teto de `price_max_brl`,
+    riscado do catálogo e "COM CUPOM". Ele cabe nos dois formatos, e o riscado
+    sai INTEIRO — o defeito da 5P ("R$ 7…") não voltou por outra porta."""
+    offer = _lida(price_current_cents=PIOR_PRECO, price_checkout_cents=PIOR_CHECKOUT)
+    for pill, largura, esperado in ((_pill_story, STORY_TITLE_WIDTH, 886),
+                                    (_pill_feed, FEED_TITLE_WIDTH, 787)):
+        dims = pill(offer)
+        assert dims["width"] == esperado <= largura
+        assert dims["orig_text"] == "R$ 999,99"       # inteiro, nunca "R$ 9…"
+        assert not dims["orig_text"].endswith("…")
+
+
+def test_a_condicao_longa_faz_o_story_ceder_o_riscado_do_modo_b_INTEIRO():
+    offer = _lida(price_current_cents=PIOR_PRECO, price_checkout_cents=PIOR_CHECKOUT,
+                  price_checkout_label="no Pix com cupom")
+    story, feed = _pill_story(offer), _pill_feed(offer)
+    assert story["nota_text"] == feed["nota_text"] == "NO PIX COM CUPOM"
+    assert story["width"] <= STORY_TITLE_WIDTH and feed["width"] <= FEED_TITLE_WIDTH
+    assert story["orig_text"] == ""                   # sai inteiro
+    assert feed["orig_text"] == "R$ 999,99"
+
+
+def test_o_modo_b_sem_leitura_continua_com_a_pill_de_antes():
+    """A pill de modo B sem preço de checkout não engordou um pixel: ela mede o
+    preço mais o padding, exatamente como antes da 5R."""
+    for pill in (_pill_story, _pill_feed):
+        assert pill(make_offer(price_current_cents=PIOR_PRECO))["orig_text"] == ""
 
 
 def test_a_direita_do_preco_na_pill_e_o_rotulo_ou_e_ouro_liso(rotulo):
@@ -802,3 +847,58 @@ def test_o_botao_dourado_do_story_e_uma_pill_e_nao_uma_elipse():
     assert largura_topo > 0.7 * largura_caixa, (
         f"pill virou elipse: {largura_topo}px preenchidos a 8% do topo, "
         f"contra uma caixa de {largura_caixa:.0f}px")
+
+
+# --- Fase 5R: a porcentagem de checkout na peça -------------------------------
+#
+# O pedido do dono, textual: "mesmo que o joompulse traga o preço correto,
+# precisamos evidenciar a porcentagem de desconto nos stories, pois isso atrai a
+# atenção do consumidor". Até aqui o modo B com preço de checkout não mostrava
+# porcentagem NENHUMA — o badge só existia no modo A.
+
+def _lido(**kw):
+    return make_offer(price_current_cents=59900, price_checkout_cents=52348,
+                      price_checkout_label="com cupom", **kw)
+
+
+def test_modo_b_com_preco_de_checkout_ganha_o_badge_da_porcentagem():
+    for plan in (story_plan(_lido(), NO_CLAIM), feed_plan(_lido(), NO_CLAIM)):
+        assert plan["badge_pct"] == 12
+        assert plan["sem_cupom"] == "COM CUPOM"
+
+
+def test_modo_b_com_preco_de_checkout_mostra_a_BASE_da_porcentagem():
+    """A porcentagem sem a base é um número que o seguidor não pode conferir. O
+    riscado aqui é o preço de CATÁLOGO — a nossa medição de hoje, o mesmo número
+    que a página da Shopee mostra como "ou R$ 599,00 sem cupom" —, e nunca o
+    `price_original_cents` do vendedor."""
+    for plan in (story_plan(_lido(), NO_CLAIM), feed_plan(_lido(), NO_CLAIM)):
+        assert plan["riscado"] == "R$ 599,00"
+
+
+def test_modo_b_sem_preco_de_checkout_continua_sem_badge_e_sem_riscado():
+    offer = make_offer(price_current_cents=59900)
+    for plan in (story_plan(offer, NO_CLAIM), feed_plan(offer, NO_CLAIM)):
+        assert plan["badge_pct"] == 0 and plan["riscado"] == ""
+
+
+def test_modo_a_nao_muda_com_o_preco_de_checkout():
+    """UMA porcentagem por peça, sempre a mais forte que é verdadeira. No modo A
+    o badge já é o da referência para o preço publicado (5P) — e ele é sempre
+    MAIOR que o de checkout, porque a referência é maior que o catálogo."""
+    offer = make_offer_ref(75000, price_current_cents=59900,
+                           price_checkout_cents=52348, price_checkout_label="com cupom")
+    v = _v(offer)
+    assert v.mode == "A" and v.discount_pct == 30
+    assert offer.checkout_discount_pct == 12
+    for plan in (story_plan(offer, v), feed_plan(offer, v)):
+        assert plan["badge_pct"] == 30
+        assert plan["riscado"] == "R$ 750,00"          # a referência, não o catálogo
+
+
+def test_o_ml_nunca_ganha_badge_de_checkout():
+    """`price_checkout_cents` é só da Shopee (a guarda mora em
+    `shopee_checkout.avalia`); a arte não reimplementa a regra — ela desenha o
+    que o carimbo diz. Sem carimbo, nada muda."""
+    offer = make_offer(source="meli", price_current_cents=59900)
+    assert story_plan(offer, NO_CLAIM)["badge_pct"] == 0

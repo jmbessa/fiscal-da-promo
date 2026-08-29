@@ -99,6 +99,26 @@ class Offer:
         return (self.price_ref_cents - self.price_current_cents) * 100 // self.price_ref_cents
 
     @property
+    def checkout_discount_pct(self) -> int:
+        """Fase 5R — a porcentagem de CHECKOUT: quanto o cupom tira do preço de
+        catálogo. Arredondada para BAIXO, como todo percentual deste projeto.
+
+        São **dois números observados por nós**: `price_current_cents`, o preço
+        de catálogo que a API acabou de medir, e `price_checkout_cents`, o preço
+        exibido que o cubo (ou o navegador) trouxe. Nenhum dos dois é o "de" do
+        vendedor — e é por isso que este número pode ir à peça, enquanto
+        `discount_pct` e `priceDiscountRate` não podem.
+
+        0 quando não há leitura, quando o exibido não é menor, ou quando não há
+        catálogo com que comparar: sem os dois números não há conta."""
+        if self.price_checkout_cents <= 0 or self.price_current_cents <= 0:
+            return 0
+        if self.price_checkout_cents >= self.price_current_cents:
+            return 0
+        return ((self.price_current_cents - self.price_checkout_cents) * 100
+                // self.price_current_cents)
+
+    @property
     def published_price_cents(self) -> int:
         """O número que vai à peça: o de checkout quando o navegador o leu, o de
         catálogo quando não (fase 5P). Um lugar só, para que arte, texto do

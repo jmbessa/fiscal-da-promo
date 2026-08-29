@@ -149,16 +149,24 @@ sources:
   # entrega o vencedor: `buy_box_winner` vem nulo e `tier` vem vazio nos 89
   # anúncios sondados.
   #
-  # CONSERTADO na fase 5M, e continua desligado até o dono ver uma peça: o
-  # preço publicado passou a ser o do anúncio LINKADO mais barato, e o link do
-  # post é o daquele anúncio. Não se estima mais qual vendedor a página vai
-  # mostrar — post e clique são o mesmo objeto, por construção.
+  # CONSERTADO na fase 5M e RELIGADO em 2026-08-28: o preço publicado passou a
+  # ser o do anúncio LINKADO mais barato, e o link do post é o daquele anúncio.
+  # Não se estima mais qual vendedor a página vai mostrar — post e clique são o
+  # mesmo objeto, por construção.
   #
-  # Para religar: rode /meli-links-refresh (o pool de links está migrado mas
-  # VAZIO de anúncios — os 55 links antigos são de catálogo e não publicam),
-  # confira `afiliado doctor` e só então mude para true.
-  # Ver docs/runbooks/meli-setup.md, seção "2026-08-28 (fase 5M)".
-  meli: false
+  # Conferido em seco antes de religar, com o pipeline de produção:
+  #   publicado R$ 45,90 -> anúncio MLB5131776515 (meli.la/1YxoeGp) custa 45,90
+  #   publicado R$ 97,00 -> anúncio MLB5000010211 (meli.la/1GHj71M) custa 97,00
+  #
+  # 119 links por anúncio cunhados sob a etiqueta ofiscaldapromo; cobertura de
+  # 52 das 53 ofertas do pool (a que falta é o único produto sem anúncio
+  # elegível no piso de qualidade).
+  #
+  # O que esperar: as ofertas do ML nascem em MODO B — sem alegar desconto e
+  # sem selo —, porque a régua do pool era do anúncio que vencia o buy box e o
+  # preço agora é de outro vendedor. Elas ganham régua quando o nosso price_log
+  # sustentar uma. Ver docs/runbooks/meli-setup.md, seção "2026-08-28".
+  meli: true
 
 # Fase 5C (C1) — DESCOBERTA ROTATIVA. Tudo aqui vem da medição de 2026-08-26
 # contra a API real (147 chamadas; docs/superpowers/reviews/2026-08-26-descoberta-shopee.md).

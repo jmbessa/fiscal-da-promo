@@ -52,8 +52,59 @@ llm:
 # há nada aqui que controle o intervalo entre runs.
 selection:
   posts_per_run: 1
+  # Fase 5S — A FAIXA DE PREÇO, e a evidência que a sustenta.
+  #
+  # O PISO não foi medido e por isso não mudou. A amostra do catálogo abaixo
+  # filtrou preço > R$ 20: ela não diz NADA sobre o que acontece abaixo de 20.
+  # O que dá para medir é o nosso lado, e ele só diz que a mudança seria
+  # grande: 5.795 das 15.688 candidatas do estoque (36,9%) estão abaixo de
+  # R$ 20, com comissão mediana de R$ 0,60, e o `min_ev_brl` abaixo não as
+  # segura (5.763 das 5.795 passariam nele). Baixar o piso é uma decisão com
+  # 37% de raio de alcance e zero evidência de conversão — fica como está até
+  # alguém medir.
   price_min_brl: 20
-  price_max_brl: 1000
+  # O TETO era 1000 e virou 150, e o número é MEDIDO.
+  #
+  # A EVIDÊNCIA, e o que ela não é (leia esta parte antes de mexer): são os
+  # 100 itens mais vendidos da Shopee Brasil nos últimos 30 dias (JoomPulse
+  # `ShbMartItem`, `sold30Days > 0`, preço > R$ 20, medidos em 2026-08-29).
+  # Isso é o CATÁLOGO DA SHOPEE, não a nossa audiência. Não temos dado de
+  # conversão próprio — a conta de afiliado é nova e o `conversionReport` está
+  # vazio. É a melhor evidência disponível e é um PROXY; o dia em que houver
+  # conversão nossa, refaça a conta com ela.
+  #
+  #   mediana R$ 36,05 · média R$ 43,41 · p75 R$ 49,99 · p90 R$ 68,75
+  #   maior dos 100: R$ 148,20 · acima de R$ 100: 4/100 · acima de R$ 150: 0/100
+  #
+  # 150 é onde a distribuição do que o catálogo VENDE termina. O teto é um
+  # limite EXTERNO ("ninguém compra acima disto"), não uma meta — a mediana do
+  # que publicamos continua sendo decidida pelo ranking, não por ele.
+  #
+  # O QUE PUBLICÁVAMOS com 1000, medido no `posted` real (101 posts no
+  # Telegram, 27–29/08/2026): mediana R$ 150,50, média R$ 234,09, 21% acima de
+  # R$ 400, o mais caro uma autoclave de R$ 850,00 — 4,2× a mediana do que o
+  # catálogo vende.
+  #
+  # O QUE CUSTA (medido sobre `data/state.db`, 15.688 candidatas da Shopee +
+  # o pool de 53 do ML, teto → candidatas de `filter_offers`):
+  #   1000 → 9.572 · 250 → 9.210 · 200 → 9.132 · 150 → 8.904 · 100 → 8.473
+  # A 150 sobram 8.904 candidatas, 148 dias de estoque para 60 posts/dia: o
+  # volume não é o que este número aperta. A comissão nominal esperada de um
+  # dia de 60 posts cai 36% (R$ 2.231 → R$ 1.435) — a troca só é ruim se o
+  # item barato converter menos de 0,64× o caro, e a evidência acima diz o
+  # contrário.
+  #
+  # O MERCADO LIVRE não é derrubado (era o risco da fase): `filter_offers`
+  # devolve os MESMOS 36 produtos do pool a 150 e a 1000, e dos 23 anúncios do
+  # ML com preço vivo no nosso price_log os 2 acima de 150 já estão em dedupe.
+  # O ML entrega pouco por outro motivo, que o teto não toca: 53 produtos no
+  # pool ÷ dedupe de 30 dias ≈ 1,8 oferta/dia contra uma meta de 30
+  # (`source_quota` 0,5 × os 60 do Telegram). Por isso NÃO há teto por fonte.
+  #
+  # Por que não 100: a 100 o ML perde um produto publicável (Kit 10 potes
+  # 640ml, preço vivo R$ 109,70) e some a faixa R$ 100–150, onde vivem 4 dos
+  # 100 mais vendidos. tests/test_config.py trava os dois números e o efeito.
+  price_max_brl: 150
   dedupe_days: 30
   # Fase 4/5B — régua honesta de preço. O desconto do vendedor (o "de" inflado)
   # deixou de decidir SE publicamos e passa a decidir só O QUE o post alega:
@@ -123,6 +174,27 @@ selection:
     # campeão de vendas ao LLM é o recorte por vendas do slate, não isto aqui.
     # O EV deixa de ser "reais por post" e vira um score — min_ev_brl acima é
     # lido na MESMA escala (0,50 continua cortando comissão abaixo de ~R$ 0,38).
+    #
+    # Fase 5S — MEDIDO, e por isso NÃO mudou. A hipótese era que o teto de
+    # preço tratasse o sintoma e o expoente fosse a causa raiz. A medição sobre
+    # o estoque real (15.688 candidatas + o pool do ML) diz o contrário: entre
+    # 0,3 e 1,0 o expoente é quase inerte sobre o preço, e quem manda é o teto.
+    # Preço MEDIANO dos 60 primeiros de `order_by_ev` (60 = o teto diário do
+    # Telegram, ou seja "o dia que o pipeline publicaria"):
+    #
+    #   teto \ exp    0.0     0.3     0.5     0.7     1.0
+    #      150         34     101     111     111     114
+    #     1000         34     127     191     212     284
+    #
+    # A 150, ir de 0,7 para 1,0 move a mediana R$ 3; ir de 1000 para 150 a
+    # move R$ 101. O expoente não é a alavanca de preço que parecia.
+    #
+    # E o 0,0 da coluna da esquerda NÃO é uma opção escondida: com expoente
+    # zero `comissão ** 0` é 1 para toda comissão positiva, ou seja o EV para
+    # de ver comissão e vira popularidade × desconto. A mediana cai para R$ 34
+    # e as vendas medianas sobem de 945 para 6.550 — mas aí `min_ev_brl` perde
+    # o sentido (ele é lido na escala do EV) e o ranking deixa de saber
+    # distinguir 3% de 24% de comissão. É outro produto, não um ajuste.
     commission_exp: 0.7
 
 # Fase 3 (parte 1): fontes de ofertas habilitadas. Seção opcional — ausente,

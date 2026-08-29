@@ -902,3 +902,19 @@ def test_o_ml_nunca_ganha_badge_de_checkout():
     que o carimbo diz. Sem carimbo, nada muda."""
     offer = make_offer(source="meli", price_current_cents=59900)
     assert story_plan(offer, NO_CLAIM)["badge_pct"] == 0
+
+
+def test_o_cta_concorda_com_o_genero_da_loja():
+    """"na Shopee" mas "NO Mercado Livre".
+
+    A preposição estava separada do nome (`f"LINK NA {label}"`) e todo story do
+    Mercado Livre saía com "LINK NA MERCADO LIVRE". O teste afirma as duas
+    formas juntas, porque o defeito nasce exatamente de elas viverem separadas."""
+    from afiliado.creative import STORY_SIZE, _story_footer_geometry
+
+    medidor = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    for fonte, esperado in (("meli", "LINK NO MERCADO LIVRE"),
+                            ("shopee", "LINK NA SHOPEE")):
+        geo = _story_footer_geometry(medidor, *STORY_SIZE, "@ofiscaldapromo",
+                                     make_offer(source=fonte), False)
+        assert esperado in geo["cta_text"], (fonte, geo.get("cta_text"))

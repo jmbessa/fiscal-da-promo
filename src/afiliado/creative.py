@@ -815,8 +815,10 @@ def _story_footer_geometry(draw: ImageDraw.ImageDraw, width: int, height: int,
     else:
         pad_y, pad_x = 26, 40
         font = _font("sans", 42, 700)
-    label = "MERCADO LIVRE" if offer.source == "meli" else "SHOPEE"
-    text = CTA_FIGURINHA if cta_figurinha else f"→  LINK NA {label}"
+    # A preposição vem JUNTO do nome: "na Shopee" mas "NO Mercado Livre". Elas
+    # estavam separadas e todo story do ML dizia "LINK NA MERCADO LIVRE".
+    destino = "NO MERCADO LIVRE" if offer.source == "meli" else "NA SHOPEE"
+    text = CTA_FIGURINHA if cta_figurinha else f"→  LINK {destino}"
     bbox = draw.textbbox((0, 0), text, font=font)
     w = (bbox[2] - bbox[0]) + 2 * pad_x
     h = (bbox[3] - bbox[1]) + 2 * pad_y

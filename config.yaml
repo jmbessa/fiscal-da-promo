@@ -526,6 +526,25 @@ channels:
   instagram_story:
     enabled: false
     max_per_day: 60           # DESLIGADO: quem publica story é o instagram_story_link abaixo
+  # Fase 5T: o REEL — a única superfície de AQUISIÇÃO que a conta não tem.
+  # Medido na conta real em 2026-08-29 pela Graph API: 2 seguidores, 5 posts,
+  # ZERO do tipo REEL, alcance de 1 conta em 7 dias. O feed serve quem já
+  # segue; o Reel é o mecanismo que a Meta usa para entregar a quem NÃO segue.
+  #
+  # NASCE DESLIGADO, e é assim de propósito: quem liga é o dono, depois de VER
+  # a peça. `afiliado run --dry-run` grava o .mp4 em `.claude/previews/`.
+  #
+  # Ele precisa do extra `reel` (`pip install -e .[reel]`) ou de um ffmpeg no
+  # PATH. Sem isso o canal não sobe e o run avisa uma vez — o resto do
+  # pipeline segue inteiro.
+  #
+  # A cota da Meta (100/24 h, COMPARTILHADA com feed e story) este canal
+  # PERGUNTA antes de publicar: a documentação traz 100 e 50 na mesma página e
+  # a janela é móvel. O `max_per_day` daqui é o teto do PROJETO, e sai do
+  # mesmo balde dos outros — some os três antes de subir qualquer um.
+  instagram_reel:
+    enabled: false
+    max_per_day: 2           # 1 de manhã, o 2º só a partir da metade da janela
   # Fase 5F: story COM figurinha de link, pelo instagrapi (API PRIVADA). Existe
   # porque a Graph API NEGA figurinhas e o Meta Business Suite só põe link em
   # story do Facebook — ver docs/superpowers/reviews/2026-08-27-sticker-de-link.md.

@@ -36,6 +36,17 @@ FEED_TIPOS = ("termometro", "flagrante")
 # Onde `--dry-run` grava as artes para o dono olhar antes de publicar.
 PREVIEWS_DIR = Path(".claude/previews")
 
+# Fase 5T: o `afiliado run --dry-run` grava também o REEL da primeira oferta
+# que sairia. É o critério de aceite do formato — o canal nasce desligado, e o
+# dono liga depois de VER a peça (cinco defeitos de desenho passaram
+# despercebidos neste projeto por serem julgados no código, inclusive um botão
+# que era elipse).
+PREVIEW_DO_REEL = "reel.mp4"
+AVISO_PREVIEW_SEM_FFMPEG = (
+    "ℹ️ preview do Reel não gerado: ffmpeg não encontrado — rode "
+    "`pip install -e .[reel]` (ou ponha um ffmpeg no PATH); "
+    "ver docs/runbooks/meta-setup.md")
+
 # O carrossel é publicado pelo `InstagramFeedChannel` (mesmo endpoint, mesma
 # cota da Meta), mas tem TETO PRÓPRIO — ele é um post por vez e não deve
 # competir com o feed de oferta única pelo `max_per_day` daquele canal.
@@ -403,9 +414,19 @@ def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[
     Fase 5E: os dois pedem exatamente as mesmas envs (IG_USER_ID,
     IG_ACCESS_TOKEN e o par do Telegram que hospeda a arte), o mesmo construtor
     e o mesmo aviso diário de `ART_HOST_BOT_TOKEN` — o que muda é a classe e a
-    chave em `channels:`. Canal ligado sem env: aviso e segue sem ele."""
+    chave em `channels:`. Canal ligado sem env: aviso e segue sem ele.
+
+    Fase 5T: e o `instagram_reel`, que é o mesmo construtor mais uma condição —
+    ele precisa de ffmpeg (extra opcional `reel`). Sem ffmpeg o canal não sobe
+    e o dia diz por quê; o resto do pipeline segue inteiro. Quem responde é o
+    próprio canal (`desarme`), e os outros dois não precisam do método."""
     enabled, max_per_day = _channel_settings(ch_cfg.get(cls.name))
     if not enabled:
+        return
+    desarme = getattr(cls, "desarme", None)
+    motivo = desarme() if desarme is not None else ""
+    if motivo:
+        _aviso(avisos, motivo)
         return
     ig_user = _env("IG_USER_ID")
     ig_token = _env("IG_ACCESS_TOKEN")
@@ -492,7 +513,11 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
     # feed. Ele NÃO declara `manual` — quem continua na trilha de despacho
     # (`summary.dispatched`, `posted.manual`) é só o `story_dispatch`, agora
     # desligado no config.yaml como fallback manual.
-    for cls in (InstagramFeedChannel, InstagramStoryChannel):
+    # Fase 5T: o Reel entra na mesma lista — mesmas envs, mesma cota da Meta,
+    # mesmo aviso de hospedagem. Depois do feed e do story porque é o mais
+    # caro de gerar (~3,5 s de ffmpeg): se o teto do dia já fechou, ninguém
+    # paga isso.
+    for cls in (InstagramFeedChannel, InstagramStoryChannel, InstagramReelChannel):
         _monta_instagram(cls, ch_cfg, cfg, channels, avisos,
                          brand_handle=brand_handle, brand_name=brand_name)
 
@@ -992,15 +1017,54 @@ def _marca(cfg: dict) -> tuple[str | None, str]:
     return brand.get("handle") or None, brand.get("name") or "Fiscal da Promo"
 
 
-def _grava_previews(prefixo: str, imagens: list[bytes]) -> list[Path]:
+def _grava_preview(nome: str, dados: bytes) -> Path:
     PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
-    caminhos = []
-    for i, png in enumerate(imagens, start=1):
-        nome = f"{prefixo}.png" if len(imagens) == 1 else f"{prefixo}-{i:02d}.png"
-        caminho = PREVIEWS_DIR / nome
-        caminho.write_bytes(png)
-        caminhos.append(caminho)
-    return caminhos
+    caminho = PREVIEWS_DIR / nome
+    caminho.write_bytes(dados)
+    return caminho
+
+
+def _grava_previews(prefixo: str, imagens: list[bytes]) -> list[Path]:
+    return [_grava_preview(f"{prefixo}.png" if len(imagens) == 1
+                           else f"{prefixo}-{i:02d}.png", png)
+            for i, png in enumerate(imagens, start=1)]
+
+
+def _preview_do_reel(cfg: dict, avisos: list[str]):
+    """O gancho que faz `afiliado run --dry-run` gravar o `.mp4` do Reel.
+
+    Ele NÃO olha se o canal está ligado, de propósito: `instagram_reel` nasce
+    DESLIGADO no config.yaml e quem o liga é o dono depois de ver a peça — se o
+    preview exigisse o canal ligado, ligar seria às cegas.
+
+    Um vídeo por run: a peça é sempre a mesma, o que muda é a oferta, e gerar
+    seis clipes de ~3,5 s para o dono olhar um não é preview, é espera.
+    """
+    if not video.tem_ffmpeg():
+        _aviso(avisos, AVISO_PREVIEW_SEM_FFMPEG)
+        return None
+    handle, nome_da_marca = _marca(cfg)
+    feitos: list[Path] = []
+
+    def preview(post: Post) -> None:
+        if feitos:
+            return
+        try:
+            with _cliente_http() as client:
+                mp4 = creative.render_reel(post.offer, post.copy, post.verdict,
+                                           client=client, handle=handle,
+                                           brand_name=nome_da_marca)
+        except Exception as exc:      # noqa: BLE001 - preview NUNCA derruba o dry-run
+            print(f"⚠️ preview do Reel: {exc}")
+            return
+        caminho = _grava_preview(PREVIEW_DO_REEL, mp4)
+        feitos.append(caminho)
+        largura, altura = creative.REEL_SIZE
+        print(f"🎬 preview do Reel: {caminho} "
+              f"({len(mp4) / 1024 / 1024:.2f} MB · {largura}x{altura} · "
+              f"{creative.REEL_DURACAO_S:.0f} s · {creative.REEL_FPS} fps · H.264)")
+
+    return preview
 
 
 def _watchlist(cfg: dict):
@@ -1603,6 +1667,10 @@ def main(argv: list[str] | None = None) -> int:
     db = _abre_estado(cfg, stories=somente_story)
     sources, avisos = _build_sources(cfg, db)
     leitor_de_preco = _build_preco_real(cfg, db, avisos)
+    # Fase 5T: em `--dry-run`, a peça de Reel da primeira oferta vai para
+    # `.claude/previews/`. Só no `run` — o `stories` é o comando da API privada
+    # e nem monta canal do Instagram oficial.
+    preview = _preview_do_reel(cfg, avisos) if args.dry_run and not somente_story else None
     channels = []
     if not args.dry_run:
         # A API privada só é montada sob `afiliado stories` — ver
@@ -1629,7 +1697,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = pipeline.run(cfg, sources, channels, db, dry_run=args.dry_run, watchlist=wl,
                                warnings_iniciais=avisos,
                                checa_cadencia=not somente_story,
-                               preco_real=leitor_de_preco)
+                               preco_real=leitor_de_preco, preview=preview)
     except pipeline.RunAborted as exc:
         # Todas as fontes falharam: a causa está no próprio motivo (os avisos
         # por fonte podem já ter sido deduplicados hoje) e vai ao journal e

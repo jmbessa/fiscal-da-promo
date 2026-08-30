@@ -406,3 +406,156 @@ def test_o_telegram_devolvendo_documento_em_vez_de_video_ainda_hospeda():
 
 def test_a_hospedagem_diz_no_chat_de_ops_que_aquilo_e_temporario():
     assert "Reel" in mod.InstagramReelChannel.host_caption
+
+
+# -- 7. montagem e preview (fase 5T, T2 e T4) ----------------------------------
+#
+# O canal nasce DESLIGADO. Quem o liga é o dono, depois de ver a peça — e é
+# para isso que o `afiliado run --dry-run` grava o .mp4.
+
+def _envs_do_instagram(monkeypatch):
+    for k, v in {"TELEGRAM_BOT_TOKEN": "TOKDOCANAL", "TELEGRAM_OPS_CHAT_ID": "999",
+                 "IG_USER_ID": "178", "IG_ACCESS_TOKEN": "igtok"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("ART_HOST_BOT_TOKEN", raising=False)
+
+
+def test_o_canal_nasce_desligado_no_config_real():
+    """T2: "nasce desligado — quem liga é o dono depois de ver a peça". Se
+    algum dia isto virar `true` sem o dono mandar, o teste conta."""
+    import yaml
+
+    with open("config.yaml", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    entrada = cfg["channels"]["instagram_reel"]
+    assert entrada["enabled"] is False
+    assert entrada["max_per_day"] >= 1        # o teto existe desde já
+
+
+def test_build_channels_monta_o_reel_quando_ligado(monkeypatch):
+    from afiliado import cli
+
+    _envs_do_instagram(monkeypatch)
+    monkeypatch.setattr(video, "_do_extra", lambda: "")
+    monkeypatch.setattr(video.shutil, "which", lambda nome: "/usr/bin/ffmpeg")
+    canais, avisos = cli._build_channels(
+        {"channels": {"instagram_reel": {"enabled": True, "max_per_day": 3}}})
+    assert [c.name for c in canais] == ["instagram_reel"]
+    assert canais[0].max_per_day == 3
+    assert avisos == [cli.ART_HOST_AVISO_TMPL.format(canal="instagram_reel")]
+
+
+def test_sem_ffmpeg_o_canal_nao_sobe_e_o_run_diz_por_que(monkeypatch, capsys):
+    """Molde do `playwright` da 5P: o extra é opcional, e a ausência dele
+    desarma UM canal com aviso — nunca derruba o run."""
+    from afiliado import cli
+
+    _envs_do_instagram(monkeypatch)
+    monkeypatch.setattr(video, "_do_extra", lambda: "")
+    monkeypatch.setattr(video.shutil, "which", lambda nome: None)
+    canais, avisos = cli._build_channels(
+        {"channels": {"telegram": False, "instagram_reel": True}})
+    assert canais == []
+    assert len(avisos) == 1 and ".[reel]" in avisos[0]
+    assert avisos[0] in capsys.readouterr().out
+
+
+def test_o_desarme_do_reel_nao_atrapalha_os_outros_canais(monkeypatch):
+    from afiliado import cli
+
+    _envs_do_instagram(monkeypatch)
+    monkeypatch.setattr(video, "_do_extra", lambda: "")
+    monkeypatch.setattr(video.shutil, "which", lambda nome: None)
+    canais, _ = cli._build_channels(
+        {"channels": {"instagram_feed": True, "instagram_story": True,
+                      "instagram_reel": True}})
+    assert [c.name for c in canais] == ["instagram_feed", "instagram_story"]
+
+
+def test_o_dry_run_grava_o_mp4_do_reel_em_previews(monkeypatch, tmp_path, capsys):
+    """T4: o critério de aceite da fase. O preview NÃO depende de o canal estar
+    ligado — o canal nasce desligado de propósito, e quem o liga é o dono
+    depois de ver a peça. Se o preview exigisse o canal ligado, ligar seria às
+    cegas."""
+    from afiliado import cli
+
+    monkeypatch.setattr(cli, "PREVIEWS_DIR", tmp_path / "previews")
+    monkeypatch.setattr(video, "_do_extra", lambda: "")
+    monkeypatch.setattr(video.shutil, "which", lambda nome: "/usr/bin/ffmpeg")
+    preview = cli._preview_do_reel({"brand": {"handle": "@ofiscaldapromo"}}, [])
+    preview(make_post())
+    caminho = tmp_path / "previews" / cli.PREVIEW_DO_REEL
+    assert caminho.is_file() and caminho.read_bytes() == MP4
+    assert str(caminho) in capsys.readouterr().out
+
+
+def test_o_dry_run_grava_um_mp4_so_por_run(monkeypatch, tmp_path):
+    """Um Reel por run: gerar seis vídeos de 3,5 s para o dono olhar UM não é
+    preview, é espera."""
+    from afiliado import cli
+
+    monkeypatch.setattr(cli, "PREVIEWS_DIR", tmp_path / "previews")
+    monkeypatch.setattr(video, "_do_extra", lambda: "")
+    monkeypatch.setattr(video.shutil, "which", lambda nome: "/usr/bin/ffmpeg")
+    feitos = []
+    monkeypatch.setattr(creative, "render_reel",
+                        lambda *a, **k: feitos.append(1) or MP4)
+    preview = cli._preview_do_reel({}, [])
+    for _ in range(3):
+        preview(make_post())
+    assert feitos == [1]
+
+
+def test_sem_ffmpeg_o_dry_run_nao_tem_preview_e_avisa(monkeypatch):
+    from afiliado import cli
+
+    monkeypatch.setattr(video, "_do_extra", lambda: "")
+    monkeypatch.setattr(video.shutil, "which", lambda nome: None)
+    avisos = []
+    assert cli._preview_do_reel({}, avisos) is None
+    assert len(avisos) == 1 and ".[reel]" in avisos[0]
+
+
+def test_o_preview_que_falha_nao_derruba_o_dry_run(monkeypatch, tmp_path, capsys):
+    from afiliado import cli
+
+    monkeypatch.setattr(cli, "PREVIEWS_DIR", tmp_path / "previews")
+    monkeypatch.setattr(video, "_do_extra", lambda: "")
+    monkeypatch.setattr(video.shutil, "which", lambda nome: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(creative, "render_reel",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    cli._preview_do_reel({}, [])(make_post())
+    assert "boom" in capsys.readouterr().out
+    assert not (tmp_path / "previews" / cli.PREVIEW_DO_REEL).exists()
+
+
+def test_o_pipeline_em_dry_run_chama_o_preview_com_o_post(tmp_path, monkeypatch):
+    """O caminho que liga `afiliado run --dry-run` ao arquivo: sem este gancho
+    o dry-run não tem `Post` nenhum na mão de quem desenha."""
+    from afiliado import llm, pipeline
+    from afiliado.state import StateDB
+    from tests.test_models import make_offer
+    from tests.test_pipeline import CFG, FakeSource, no_network_validator
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    vistos = []
+    pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [], db, dry_run=True,
+                 validator=no_network_validator, preview=vistos.append)
+    assert [p.offer.item_id for p in vistos] == ["a"]
+    db.close()
+
+
+def test_fora_do_dry_run_o_pipeline_nao_desenha_preview_nenhum(tmp_path, monkeypatch):
+    from afiliado import llm, pipeline
+    from afiliado.state import StateDB
+    from tests.test_models import make_offer
+    from tests.test_pipeline import CFG, FakeChannel, FakeSource, no_network_validator
+
+    monkeypatch.setattr(llm, "ask_json", lambda *a, **k: None)
+    db = StateDB(tmp_path / "s.db")
+    vistos = []
+    pipeline.run(CFG, [FakeSource([make_offer(item_id="a")])], [FakeChannel()], db,
+                 validator=no_network_validator, preview=vistos.append)
+    assert vistos == []
+    db.close()

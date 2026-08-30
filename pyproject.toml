@@ -32,6 +32,19 @@ stories = ["instagrapi>=2.18"]
 # (com `browser_channel: chrome`, o padrão, o segundo comando é dispensável: ele
 #  usa o Chrome que já está instalado, com um perfil vazio nosso.)
 preco = ["playwright>=1.44"]
+# Fase 5T: o REEL (`creative.render_reel` e o canal `instagram_reel`). Os
+# frames são desenhados pelo Pillow que já está nas dependências obrigatórias;
+# o que falta é EMPACOTÁ-LOS em H.264, e isso é ffmpeg. O `imageio-ffmpeg` é
+# só o binário — ele não importa nada em tempo de execução do pipeline.
+#
+# Opcional pelo mesmo motivo do `stories` e do `preco`, e com a mesma
+# disciplina: o import é preguiçoso, quem não instalar tem o pipeline inteiro
+# funcionando (o canal não sobe e o run avisa uma vez) e a suíte roda numa
+# máquina sem ele. Quem já tem um `ffmpeg` no PATH não precisa deste extra —
+# `afiliado.video` usa o do PATH quando não acha o do extra.
+#
+#   pip install -e .[reel]
+reel = ["imageio-ffmpeg>=0.5"]
 
 [project.scripts]
 afiliado = "afiliado.cli:main"

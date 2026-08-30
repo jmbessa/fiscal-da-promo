@@ -18,12 +18,14 @@ import functools
 import importlib.resources
 import io
 import math
+from collections.abc import Iterator
 from datetime import date
+from typing import NamedTuple
 
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from afiliado import pricing
+from afiliado import pricing, video
 from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts, Offer, Post, Verdict, format_brl
@@ -193,7 +195,23 @@ def _fit_card(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
     scale = min(max_w / img.width, max_h / img.height, 1.0)
     new_w = max(1, round(img.width * scale))
     new_h = max(1, round(img.height * scale))
+    if (new_w, new_h) == img.size:
+        # Já cabe: devolver `img` em vez de uma cópia idêntica. Numa arte é
+        # irrelevante; no Reel esta função é chamada 192 vezes, uma por frame,
+        # sempre com a foto JÁ ajustada — e a cópia era 0,1 s do orçamento de
+        # render por peça. Quem chama só desenha a imagem, nunca a altera.
+        return img
     return img.resize((new_w, new_h))
+
+
+@functools.lru_cache(maxsize=8)
+def _mascara_arredondada(w: int, h: int, radius: int) -> Image.Image:
+    """A máscara de canto arredondado do card. Em cache porque o Reel desenha
+    o MESMO card 192 vezes (uma por frame) e ela é sempre idêntica — quem
+    recebe a máscara só a lê, nunca a altera."""
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
+    return mask
 
 
 def _draw_badge(
@@ -222,9 +240,7 @@ def _draw_card(
     fx = margin + (inner_w - fitted.width) // 2
     fy = margin + (inner_h - fitted.height) // 2
     card.paste(fitted, (fx, fy))
-    mask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
-    canvas.paste(card, (x, y), mask)
+    canvas.paste(card, (x, y), _mascara_arredondada(w, h, radius))
     # 0 = sem desconto verificado: nada de selo de porcentagem (o post
     # desse item destaca prova social, não preço). O desconto do vendedor
     # (Offer.discount_pct) não entra aqui — ver afiliado.pricing.
@@ -984,19 +1000,40 @@ def feed_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict
 
 # --- Render principal -----------------------------------------------------------
 
+# Geometria do card da arte de story (x, y, largura, altura) e do brilho de
+# fundo. Viraram constantes na fase 5T porque o Reel desenha o MESMO card 192
+# vezes, com a foto em zoom: enquanto os números eram literais dentro de
+# `_render_story`, animar significava copiá-los — e número copiado é número que
+# diverge. Nada mudou no desenho.
+STORY_CARD_BOX = (72, 224, 936, 790)
+STORY_GLOW = (540, 154, 594, 528)
+
+
+def _story_canvas() -> Image.Image:
+    """O fundo do story: navy + brilho radial. É o passo mais caro da arte
+    (um desfoque gaussiano de raio 120 sobre 1080×1920) e o Reel o faz UMA
+    vez, não uma por frame."""
+    return _glow_background(*STORY_SIZE, *STORY_GLOW)
+
+
+def _draw_story_card(canvas: Image.Image, draw: ImageDraw.ImageDraw,
+                     product: Image.Image, badge_pct: int) -> None:
+    x, y, w, h = STORY_CARD_BOX
+    _draw_card(canvas, draw, product, x, y, w, h, 28, 24, badge_pct, 44, 14, 22, 28)
+
+
 def _render_story(offer: Offer, verdict: Verdict, client: httpx.Client | None,
                    handle: str | None, brand_name: str,
                    cta_figurinha: bool = False) -> bytes:
     width, height = STORY_SIZE
     product = _open_product_image(_get_image_bytes(offer, client))
 
-    canvas = _glow_background(width, height, 540, 154, 594, 528)
+    canvas = _story_canvas()
     draw = ImageDraw.Draw(canvas)
     plan = _story_plan(draw, offer, verdict, handle, cta_figurinha)
 
     _draw_header_story(draw, canvas, 72, 120, 68, brand_name)
-    _draw_card(canvas, draw, product, 72, 224, 936, 790, 28, 24,
-               plan["badge_pct"], 44, 14, 22, 28)
+    _draw_story_card(canvas, draw, product, plan["badge_pct"])
     _draw_story_body(draw, width, offer, plan["title"], plan["price"], plan["meta"], plan["selo"])
     _draw_story_footer(draw, width, handle, plan["footer"])
 
@@ -1780,3 +1817,288 @@ def render_carrossel(fotos: list[tuple[Post, Image.Image]], titulo: str, subtitu
                 for i, (post, foto) in enumerate(fotos, start=1)]
     imagens.append(_render_fecho(handle))
     return imagens
+
+
+# =============================================================================
+# Fase 5T — O REEL
+#
+# O Reel é a única superfície de AQUISIÇÃO que a conta não tem. Medido na conta
+# real em 2026-08-29 (Instagram Graph API): 2 seguidores, 5 posts, **0 do tipo
+# REEL**, alcance de **1 conta** em 7 dias, 0 interações. Conta nova tem alcance
+# baixo — isso é esperado; alcance 1 com 5 posts, não. O feed serve quem já
+# segue; o Reel é o mecanismo que entrega a quem NÃO segue, e é o formato com o
+# maior share rate medido na pesquisa do projeto (0,10%, `docs/feed.md`).
+#
+# **Nada aqui inventa layout.** A peça é a arte de story — que já é 1080×1920,
+# que já é 9:16 e que foi calibrada em pixel várias vezes nesta semana — com o
+# eixo do TEMPO por cima: a foto dá um zoom lento do começo ao fim, e título,
+# preço, meta e selo entram nos primeiros ~2,3 s. Depois disso o frame é
+# IDÊNTICO à arte de story, pixel a pixel, menos o zoom da foto.
+#
+# Como a animação é feita, e por que assim: um elemento que já chegou é
+# desenhado DIRETO no frame, pelas mesmas funções do story. Um elemento que
+# ainda está entrando é desenhado numa cópia da faixa da tela que ele ocupa e
+# misturado com `Image.blend`. Essa é a diferença entre uma transparência certa
+# e uma errada: `draw.text` numa folha transparente deixa o RGB multiplicado
+# pela cobertura do antialias, e recompor essa folha escurece a borda de toda
+# letra. Misturando duas versões OPACAS da mesma faixa, o antialias é o do
+# Pillow contra o fundo de verdade — e o último frame fecha idêntico ao story.
+# =============================================================================
+
+REEL_SIZE = STORY_SIZE          # 9:16 sem redimensionar nada
+REEL_FPS = 24
+REEL_DURACAO_S = 8.0            # a aba Reels aceita de 5 a 90 s
+# Zoom da foto do produto, do primeiro ao último frame. 8% em 8 s é lento o
+# bastante para não parecer efeito e vivo o bastante para o clipe não parecer
+# uma imagem parada — que é o que a aba despreza.
+REEL_ZOOM = 1.08
+# Subida do título enquanto ele aparece (px). Fade puro lê como "faltou
+# carregar"; fade + um empurrãozinho para cima lê como entrada.
+REEL_TITULO_SUBIDA = 12
+REEL_PILL_ESCALA = 0.9          # a pill de preço cresce de 0,9 até 1,0
+
+# (início, duração) de cada entrada, em SEGUNDOS. A ordem é a da leitura — o
+# título diz o QUE é, o preço diz QUANTO, a meta e o selo dizem por que
+# acreditar. Tudo assenta em ~2,3 s: o resto do clipe é a peça inteira parada
+# com o zoom correndo, que é o que faz o loop não ter costura.
+REEL_ENTRADAS = {
+    "titulo": (0.10, 0.70),
+    "preco": (0.70, 0.70),
+    "meta": (1.30, 0.50),
+    "selo": (1.70, 0.60),
+}
+
+# Folga em volta da faixa redesenhada de cada elemento: o antialias de uma
+# letra sangra um pixel para fora da caixa medida.
+REEL_FOLGA = 6
+
+
+def _ease_out(t: float) -> float:
+    """Cúbica de saída: entra rápido e assenta. Movimento linear lê como
+    máquina; movimento que desacelera lê como peso."""
+    t = min(1.0, max(0.0, t))
+    return 1 - (1 - t) ** 3
+
+
+def _entrada(t: float, chave: str) -> float:
+    """Quanto do elemento `chave` já entrou no instante `t` (0 a 1)."""
+    inicio, duracao = REEL_ENTRADAS[chave]
+    if t < inicio:
+        return 0.0
+    if duracao <= 0:
+        return 1.0
+    return _ease_out((t - inicio) / duracao)
+
+
+def _produto_com_zoom(ajustado: Image.Image, escala: float) -> Image.Image:
+    """A foto do produto com zoom `escala`, no MESMO tamanho de sempre.
+
+    O zoom é feito pela janela de ORIGEM (o `box` do `resize`), não pelo
+    tamanho de saída: uma janela em ponto flutuante dá um movimento contínuo,
+    enquanto ampliar-e-recortar só muda a imagem quando o tamanho arredondado
+    muda — 71 degraus em 8 s, que é tremida, não zoom. E como o tamanho de
+    saída não muda, a foto não escorrega meio pixel dentro do card.
+
+    Em `escala == 1` devolve exatamente o que entrou: o Reel abre na arte de
+    story, sem reamostragem nenhuma.
+    """
+    if escala <= 1.0:
+        return ajustado
+    w, h = ajustado.size
+    janela_w, janela_h = w / escala, h / escala
+    caixa = ((w - janela_w) / 2, (h - janela_h) / 2,
+             (w + janela_w) / 2, (h + janela_h) / 2)
+    return ajustado.resize((w, h), Image.BICUBIC, box=caixa)
+
+
+class _Corpo(NamedTuple):
+    """Onde cada peça do corpo é desenhada — as MESMAS coordenadas de
+    `_draw_story_body`, calculadas uma vez e reusadas em todos os frames."""
+    titulo_y: float
+    preco: tuple[float, float]
+    meta: tuple[float, float] | None
+    selo: tuple[float, float] | None
+
+
+def _corpo_do_reel(width: int, plan: dict) -> _Corpo:
+    """Roda a mesma sequência de `_draw_story_body` num rascunho, só para
+    colher os `y`. Não é uma segunda régua: é a régua do story, lida."""
+    title, price, meta, selo = plan["title"], plan["price"], plan["meta"], plan["selo"]
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    y = _draw_title(draw, width, 1050, title) + 34
+    preco_xy = ((width - price["width"]) / 2, y)
+    y = y + price["height"]
+    meta_xy = selo_xy = None
+    if meta is not None:
+        meta_xy = ((width - meta["width"]) / 2, y + STORY_META_GAP)
+        y += STORY_META_GAP + meta["height"]
+    if selo is not None:
+        selo_xy = ((width - selo["width"]) / 2, y + STORY_SELO_GAP)
+    return _Corpo(1050, preco_xy, meta_xy, selo_xy)
+
+
+def _faixa(canvas: Image.Image, topo: float, base: float) -> tuple[Image.Image, int]:
+    """A faixa horizontal do frame entre `topo` e `base`, com folga."""
+    y0 = max(0, int(topo) - REEL_FOLGA)
+    y1 = min(canvas.height, int(base) + REEL_FOLGA)
+    return canvas.crop((0, y0, canvas.width, y1)), y0
+
+
+def _mistura(canvas: Image.Image, faixa: Image.Image, pintada: Image.Image,
+             y0: int, alfa: float) -> None:
+    canvas.paste(Image.blend(faixa, pintada, alfa), (0, y0))
+
+
+def _pill_em_escala(pintada: Image.Image, price: dict, x: float, y: float,
+                    escala: float, radius: int = 16) -> None:
+    """A pill de preço desenhada e depois AMPLIADA a partir do centro.
+
+    Ela é recortada pela própria silhueta (o mesmo retângulo arredondado), e
+    não por transparência: assim o que cresce é a pill, e o fundo em volta
+    continua sendo o fundo do frame.
+    """
+    w, h = price["width"], price["height"]
+    caixa = (round(x) - 1, round(y) - 1, round(x) + round(w) + 1, round(y) + round(h) + 1)
+    tile = pintada.crop(caixa)
+    _draw_price_pill(ImageDraw.Draw(tile), 1, 1, price, radius)
+    silhueta = Image.new("L", tile.size, 0)
+    ImageDraw.Draw(silhueta).rounded_rectangle([1, 1, 1 + w, 1 + h], radius=radius, fill=255)
+    largura = max(1, round(tile.width * escala))
+    altura = max(1, round(tile.height * escala))
+    pintada.paste(tile.resize((largura, altura), Image.BICUBIC),
+                  (round(caixa[0] + (tile.width - largura) / 2),
+                   round(caixa[1] + (tile.height - altura) / 2)),
+                  silhueta.resize((largura, altura), Image.BICUBIC))
+
+
+def _desenha_corpo_animado(canvas: Image.Image, draw: ImageDraw.ImageDraw, t: float,
+                           width: int, offer: Offer, plan: dict, corpo: _Corpo) -> None:
+    """Título, preço, meta e selo no instante `t`.
+
+    Elemento que já chegou (`p >= 1`) é desenhado DIRETO, pelas funções do
+    story: é isso que faz o frame parado ser a arte de story, e não uma
+    aproximação dela.
+    """
+    title, price, meta, selo = plan["title"], plan["price"], plan["meta"], plan["selo"]
+
+    p = _entrada(t, "titulo")
+    if p >= 1:
+        _draw_title(draw, width, corpo.titulo_y, title)
+    elif p > 0:
+        subida = REEL_TITULO_SUBIDA * (1 - p)
+        faixa, y0 = _faixa(canvas, corpo.titulo_y - REEL_TITULO_SUBIDA,
+                           corpo.titulo_y + title["height"])
+        pintada = faixa.copy()
+        _draw_title(ImageDraw.Draw(pintada), width, corpo.titulo_y + subida - y0, title)
+        _mistura(canvas, faixa, pintada, y0, p)
+
+    px, py = corpo.preco
+    p = _entrada(t, "preco")
+    if p >= 1:
+        _draw_price_pill(draw, px, py, price)
+    elif p > 0:
+        escala = REEL_PILL_ESCALA + (1 - REEL_PILL_ESCALA) * p
+        faixa, y0 = _faixa(canvas, py, py + price["height"])
+        pintada = faixa.copy()
+        _pill_em_escala(pintada, price, px, py - y0, escala)
+        _mistura(canvas, faixa, pintada, y0, p)
+
+    if meta is not None and corpo.meta is not None:
+        mx, my = corpo.meta
+        p = _entrada(t, "meta")
+        if p >= 1:
+            _draw_meta(draw, mx, my, offer, meta["font"], MUTED)
+        elif p > 0:
+            faixa, y0 = _faixa(canvas, my, my + meta["height"])
+            pintada = faixa.copy()
+            _draw_meta(ImageDraw.Draw(pintada), mx, my - y0, offer, meta["font"], MUTED)
+            _mistura(canvas, faixa, pintada, y0, p)
+
+    if selo is not None and corpo.selo is not None:
+        sx, sy = corpo.selo
+        p = _entrada(t, "selo")
+        if p >= 1:
+            _draw_selo(draw, sx, sy, selo)
+        elif p > 0:
+            faixa, y0 = _faixa(canvas, sy, sy + selo["height"])
+            pintada = faixa.copy()
+            _draw_selo(ImageDraw.Draw(pintada), sx, sy - y0, selo)
+            _mistura(canvas, faixa, pintada, y0, p)
+
+
+def reel_plan(offer: Offer, verdict: Verdict, handle: str | None = None,
+              fps: int = REEL_FPS, duracao_s: float = REEL_DURACAO_S) -> dict:
+    """O que o Reel vai desenhar — o plano do STORY (mesmo selo, mesmo badge,
+    mesmas linhas de título) mais o que só o vídeo tem: tamanho, fps, número de
+    frames, duração e codec. É o hook que prova, por teste, que o Reel não
+    inventou layout nenhum."""
+    return {**story_plan(offer, verdict, handle),
+            "width": REEL_SIZE[0], "height": REEL_SIZE[1],
+            "fps": fps, "frames": round(fps * duracao_s),
+            "duracao_s": duracao_s, "codec": "h264"}
+
+
+def reel_frames(offer: Offer, verdict: Verdict, client: httpx.Client | None = None,
+                handle: str | None = None, brand_name: str = DEFAULT_BRAND_NAME,
+                fps: int = REEL_FPS,
+                duracao_s: float = REEL_DURACAO_S) -> Iterator[Image.Image]:
+    """Os frames do Reel, um a um.
+
+    GERADOR de propósito: 192 frames de 1080×1920 são 1,2 GB se alguém os
+    materializar numa lista. O fundo (navy + brilho desfocado), o cabeçalho e o
+    rodapé são pintados UMA vez — eles não se mexem, e o desfoque gaussiano de
+    raio 120 é o passo mais caro da arte.
+    """
+    width, _height = REEL_SIZE
+    product = _open_product_image(_get_image_bytes(offer, client))
+
+    base = _story_canvas()
+    draw_base = ImageDraw.Draw(base)
+    plan = _story_plan(draw_base, offer, verdict, handle)
+    _draw_header_story(draw_base, base, 72, 120, 68, brand_name)
+    _draw_story_footer(draw_base, width, handle, plan["footer"])
+
+    corpo = _corpo_do_reel(width, plan)
+    _, _, card_w, card_h = STORY_CARD_BOX
+    ajustado = _fit_card(product, card_w - 2 * 24, card_h - 2 * 24)
+
+    # Depois de `assentado` a peça não muda mais: é a arte de story parada, com
+    # o zoom correndo. Pintar o corpo UMA vez para esses ~3/4 dos frames tira
+    # seis desenhos de texto de cada um deles — e o card, que é o que ainda se
+    # mexe, não encosta no corpo (ele termina em y=1014; o título começa em
+    # 1050), então a ordem "corpo antes do card" não muda um pixel.
+    assentado = max(inicio + duracao for inicio, duracao in REEL_ENTRADAS.values())
+    pronto = base.copy()
+    _desenha_corpo_animado(pronto, ImageDraw.Draw(pronto), assentado, width, offer,
+                           plan, corpo)
+
+    total = max(1, round(fps * duracao_s))
+    for i in range(total):
+        # O último frame fecha o zoom em REEL_ZOOM; o primeiro abre em 1,00.
+        fracao = i / (total - 1) if total > 1 else 1.0
+        t = i / fps
+        entrando = t < assentado
+        canvas = (base if entrando else pronto).copy()
+        draw = ImageDraw.Draw(canvas)
+        _draw_story_card(canvas, draw,
+                         _produto_com_zoom(ajustado, 1 + (REEL_ZOOM - 1) * fracao),
+                         plan["badge_pct"])
+        if entrando:
+            _desenha_corpo_animado(canvas, draw, t, width, offer, plan, corpo)
+        yield canvas
+
+
+def render_reel(offer: Offer, copy: CopyParts, verdict: Verdict,
+                client: httpx.Client | None = None, handle: str | None = None,
+                brand_name: str = DEFAULT_BRAND_NAME, fps: int = REEL_FPS,
+                duracao_s: float = REEL_DURACAO_S) -> bytes:
+    """Os bytes do `.mp4` do Reel: 1080×1920, H.264, com faixa de som silenciosa.
+
+    Levanta `video.SemFFmpeg` quando não há ffmpeg nesta máquina — o extra
+    `reel` é OPCIONAL, e quem chama transforma isso em canal desarmado com
+    aviso, nunca em run derrubado (o molde é o `playwright` da fase 5P).
+    """
+    del copy  # como no story e no feed: o texto do post é montado à parte
+    frames = reel_frames(offer, verdict, client=client, handle=handle,
+                         brand_name=brand_name, fps=fps, duracao_s=duracao_s)
+    return video.encode_h264((frame.tobytes() for frame in frames), REEL_SIZE, fps)

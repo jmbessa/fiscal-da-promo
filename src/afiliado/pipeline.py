@@ -393,7 +393,14 @@ def _finish(summary: RunSummary, db: StateDB, dry_run: bool, sel: dict,
 def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
         dry_run: bool = False, validator=None, watchlist: Watchlist | None = None,
         warnings_iniciais: list[str] | None = None,
-        checa_cadencia: bool = True, preco_real=None) -> RunSummary:
+        checa_cadencia: bool = True, preco_real=None, preview=None) -> RunSummary:
+    """`preview` (fase 5T): chamado com o `Post` que SAIRIA, só em `--dry-run`.
+
+    Existe porque o dry-run é o único lugar do sistema onde há um `Post` pronto
+    e nada é publicado — e é ali que o Reel precisa ser desenhado para o dono
+    ver a peça antes de ligar o canal. Fora do dry-run ninguém o chama: quem
+    publica são os canais.
+    """
     if validator is None:
         # Dry-run (A10): nada de rede além de fetch_offers/refresh_price —
         # a imagem não é baixada (o link já é checado offline, C6).
@@ -686,6 +693,8 @@ def run(cfg: dict, sources: list[Source], channels: list[Channel], db: StateDB,
 
         if dry_run:
             print(f"--- DRY-RUN: post que seria publicado ---\n{post.message_text}\n")
+            if preview is not None:
+                preview(post)
             summary.published.append(f"[dry] {rotulo}")
             publicados_hoje[offer.source] = publicados_hoje.get(offer.source, 0) + 1
             count += 1

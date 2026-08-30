@@ -111,7 +111,15 @@ pedir ação, e é uma string constante no gerador.
 O guia CONAR em vigor desde 01/06/2026 inclui afiliados com todas as letras
 ("remuneração por performance não afasta a natureza publicitária") e exige
 identificação visível na primeira visualização. **A própria Shopee cobra
-isso** e pode suspender o afiliado. A decisão registrada é não sinalizar.
+isso** e pode suspender o afiliado.
+
+**A decisão MUDOU em 2026-08-30: passa a sinalizar.** O que a virou foi o
+ângulo contratual, que não estava no registro original — os Termos do Programa
+de Afiliados da Shopee (cláusulas 2.3 e 7.2) permitem rescisão unilateral, a
+critério dela, com 7 dias de aviso. O pior caso deixou de ser uma representação
+no CONAR e passou a ser o fim da comissão, da integração e do histórico. Custo
+de mitigar: uma linha na assinatura. Custo de alcance: zero. Ver A7 em
+`superpowers/reviews/2026-08-26-analise-adversarial.md`.
 
 O que a pesquisa acrescenta ao que já sabíamos: além do risco de perder o
 programa que paga a comissão, há uma contradição de posicionamento — uma conta

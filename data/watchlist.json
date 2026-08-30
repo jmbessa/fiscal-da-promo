@@ -9,53 +9,572 @@
     "100632": 1.05
   },
   "hot_items": {
-    "22991771385": {"boost": 1.5, "reason": "calça esportiva s/ costura: 40k vendas/30d, trend +3686%"},
-    "9212570285":  {"boost": 1.5, "reason": "creatina Soldiers: 30k vendas/30d, trend +1929%"},
-    "25306450685": {"boost": 1.5, "reason": "macacão fitness: 20k vendas/30d, trend +3106%"},
-    "19450049961": {"boost": 1.5, "reason": "depilatório Depilsam: 20k vendas/30d, trend +850%"},
-    "22736011414": {"boost": 1.5, "reason": "Omo Lavanderia 7L: 20k vendas/30d, trend +313%"},
-    "22094779551": {"boost": 1.5, "reason": "escovas OralGos 6un: 20k vendas/30d, trend +306%"},
-    "21497925934": {"boost": 1.4, "reason": "cuba gourmet inox: trend +58779%, ticket R$574"},
-    "22193188112": {"boost": 1.4, "reason": "cuba gourmet inox v2: trend +47937%"},
-    "40723848736": {"boost": 1.3, "reason": "kit Karseell Maca: 20k vendas/30d"},
-    "21599248399": {"boost": 1.3, "reason": "mesa de cabeceira retrô: 20k vendas/30d"},
-    "44424334471": {"boost": 1.3, "reason": "garrafa dobrável silicone: trend +8040%"},
-    "15574302938": {"boost": 1.3, "reason": "lentes de contato de grau: 10k vendas/30d, trend +5210%"},
-    "22398955541": {"boost": 1.3, "reason": "mop girassol: 10k vendas/30d, trend +172%"},
-    "58202630911": {"boost": 1.3, "reason": "kit travesseiros pluma: 10k vendas/30d"},
-    "22494186665": {"boost": 1.3, "reason": "revestimento ripado EVA: 10k vendas/30d"},
-    "17678610774": {"boost": 1.3, "reason": "sutiã esportivo algodão kit: 10k vendas/30d, trend +2410%"},
-    "7869832056":  {"boost": 1.2, "reason": "canudos reutilizáveis: trend +6813%"},
-    "9782568238":  {"boost": 1.2, "reason": "sweatband antitranspirante: trend +6080%"},
-    "9687196511":  {"boost": 1.2, "reason": "lentes coloridas AMARA: trend +6043%"},
-    "10734909410": {"boost": 1.2, "reason": "bolsa higiene 300ml: trend +5993%"},
-    "9697208996":  {"boost": 1.2, "reason": "creme área dos olhos: trend +5646%"},
-    "16759487956": {"boost": 1.2, "reason": "Etude House Sunprise SPF50: trend +5163%"},
-    "4842744492":  {"boost": 1.2, "reason": "massageador nasal: trend +7323%"}
+    "22991771385": {
+      "boost": 1.5,
+      "reason": "calça esportiva s/ costura: 40k vendas/30d, trend +3686%"
+    },
+    "9212570285": {
+      "boost": 1.5,
+      "reason": "creatina Soldiers: 30k vendas/30d, trend +1929%"
+    },
+    "25306450685": {
+      "boost": 1.5,
+      "reason": "macacão fitness: 20k vendas/30d, trend +3106%"
+    },
+    "19450049961": {
+      "boost": 1.5,
+      "reason": "depilatório Depilsam: 20k vendas/30d, trend +850%"
+    },
+    "22736011414": {
+      "boost": 1.5,
+      "reason": "Omo Lavanderia 7L: 20k vendas/30d, trend +313%"
+    },
+    "22094779551": {
+      "boost": 1.5,
+      "reason": "escovas OralGos 6un: 20k vendas/30d, trend +306%"
+    },
+    "21497925934": {
+      "boost": 1.4,
+      "reason": "cuba gourmet inox: trend +58779%, ticket R$574"
+    },
+    "22193188112": {
+      "boost": 1.4,
+      "reason": "cuba gourmet inox v2: trend +47937%"
+    },
+    "40723848736": {
+      "boost": 1.3,
+      "reason": "kit Karseell Maca: 20k vendas/30d"
+    },
+    "21599248399": {
+      "boost": 1.3,
+      "reason": "mesa de cabeceira retrô: 20k vendas/30d"
+    },
+    "44424334471": {
+      "boost": 1.3,
+      "reason": "garrafa dobrável silicone: trend +8040%"
+    },
+    "15574302938": {
+      "boost": 1.3,
+      "reason": "lentes de contato de grau: 10k vendas/30d, trend +5210%"
+    },
+    "22398955541": {
+      "boost": 1.3,
+      "reason": "mop girassol: 10k vendas/30d, trend +172%"
+    },
+    "58202630911": {
+      "boost": 1.3,
+      "reason": "kit travesseiros pluma: 10k vendas/30d"
+    },
+    "22494186665": {
+      "boost": 1.3,
+      "reason": "revestimento ripado EVA: 10k vendas/30d"
+    },
+    "17678610774": {
+      "boost": 1.3,
+      "reason": "sutiã esportivo algodão kit: 10k vendas/30d, trend +2410%"
+    },
+    "7869832056": {
+      "boost": 1.2,
+      "reason": "canudos reutilizáveis: trend +6813%"
+    },
+    "9782568238": {
+      "boost": 1.2,
+      "reason": "sweatband antitranspirante: trend +6080%"
+    },
+    "9687196511": {
+      "boost": 1.2,
+      "reason": "lentes coloridas AMARA: trend +6043%"
+    },
+    "10734909410": {
+      "boost": 1.2,
+      "reason": "bolsa higiene 300ml: trend +5993%"
+    },
+    "9697208996": {
+      "boost": 1.2,
+      "reason": "creme área dos olhos: trend +5646%"
+    },
+    "16759487956": {
+      "boost": 1.2,
+      "reason": "Etude House Sunprise SPF50: trend +5163%"
+    },
+    "4842744492": {
+      "boost": 1.2,
+      "reason": "massageador nasal: trend +7323%"
+    }
   },
   "price_floors": {
-    "22991771385": {"min_price_cents": 3500,  "window_days": 191},
-    "9212570285":  {"min_price_cents": 1699,  "window_days": 196},
-    "25306450685": {"min_price_cents": 5590,  "window_days": 195},
-    "19450049961": {"min_price_cents": 1533,  "window_days": 179},
-    "22736011414": {"min_price_cents": 6790,  "window_days": 200},
-    "22094779551": {"min_price_cents": 2790,  "window_days": 128},
-    "21497925934": {"min_price_cents": 47900, "window_days": 194},
-    "22193188112": {"min_price_cents": 47900, "window_days": 194},
-    "40723848736": {"min_price_cents": 4410,  "window_days": 185},
-    "21599248399": {"min_price_cents": 1990,  "window_days": 200},
-    "44424334471": {"min_price_cents": 2399,  "window_days": 103},
-    "15574302938": {"min_price_cents": 2080,  "window_days": 194},
-    "22398955541": {"min_price_cents": 1599,  "window_days": 169},
-    "58202630911": {"min_price_cents": 2799,  "window_days": 166},
-    "22494186665": {"min_price_cents": 3590,  "window_days": 183},
-    "17678610774": {"min_price_cents": 3469,  "window_days": 34},
-    "7869832056":  {"min_price_cents": 2197,  "window_days": 174},
-    "9782568238":  {"min_price_cents": 2699,  "window_days": 79},
-    "9687196511":  {"min_price_cents": 1799,  "window_days": 80},
-    "10734909410": {"min_price_cents": 2248,  "window_days": 79},
-    "9697208996":  {"min_price_cents": 1299,  "window_days": 197},
-    "16759487956": {"min_price_cents": 4213,  "window_days": 34},
-    "4842744492":  {"min_price_cents": 2939,  "window_days": 25}
+    "22991771385": {
+      "min_price_cents": 3500,
+      "window_days": 191
+    },
+    "9212570285": {
+      "min_price_cents": 1699,
+      "window_days": 196
+    },
+    "25306450685": {
+      "min_price_cents": 5590,
+      "window_days": 195
+    },
+    "19450049961": {
+      "min_price_cents": 1533,
+      "window_days": 179
+    },
+    "22736011414": {
+      "min_price_cents": 6790,
+      "window_days": 200
+    },
+    "22094779551": {
+      "min_price_cents": 2790,
+      "window_days": 128
+    },
+    "21497925934": {
+      "min_price_cents": 47900,
+      "window_days": 194
+    },
+    "22193188112": {
+      "min_price_cents": 47900,
+      "window_days": 194
+    },
+    "40723848736": {
+      "min_price_cents": 4410,
+      "window_days": 185
+    },
+    "21599248399": {
+      "min_price_cents": 1990,
+      "window_days": 200
+    },
+    "44424334471": {
+      "min_price_cents": 2399,
+      "window_days": 103
+    },
+    "15574302938": {
+      "min_price_cents": 2080,
+      "window_days": 194
+    },
+    "22398955541": {
+      "min_price_cents": 1599,
+      "window_days": 169
+    },
+    "58202630911": {
+      "min_price_cents": 2799,
+      "window_days": 166
+    },
+    "22494186665": {
+      "min_price_cents": 3590,
+      "window_days": 183
+    },
+    "17678610774": {
+      "min_price_cents": 3469,
+      "window_days": 34
+    },
+    "7869832056": {
+      "min_price_cents": 2197,
+      "window_days": 174
+    },
+    "9782568238": {
+      "min_price_cents": 2699,
+      "window_days": 79
+    },
+    "9687196511": {
+      "min_price_cents": 1799,
+      "window_days": 80
+    },
+    "10734909410": {
+      "min_price_cents": 2248,
+      "window_days": 79
+    },
+    "9697208996": {
+      "min_price_cents": 1299,
+      "window_days": 197
+    },
+    "16759487956": {
+      "min_price_cents": 4213,
+      "window_days": 34
+    },
+    "4842744492": {
+      "min_price_cents": 2939,
+      "window_days": 25
+    }
+  },
+  "checkout_prices": {
+    "9486027571": {
+      "price_cents": 9500,
+      "measured_at": "2026-08-25"
+    },
+    "16603921155": {
+      "price_cents": 4221,
+      "measured_at": "2026-08-27"
+    },
+    "18297829933": {
+      "price_cents": 8071,
+      "measured_at": "2026-08-28"
+    },
+    "18797319086": {
+      "price_cents": 10450,
+      "measured_at": "2026-08-25"
+    },
+    "18866975811": {
+      "price_cents": 6800,
+      "measured_at": "2026-08-27"
+    },
+    "19199190553": {
+      "price_cents": 5990,
+      "measured_at": "2026-08-16"
+    },
+    "19276310933": {
+      "price_cents": 4799,
+      "measured_at": "2026-08-24"
+    },
+    "19598142136": {
+      "price_cents": 12510,
+      "measured_at": "2026-08-25"
+    },
+    "19697676006": {
+      "price_cents": 7890,
+      "measured_at": "2026-08-21"
+    },
+    "21197629733": {
+      "price_cents": 8456,
+      "measured_at": "2026-08-25"
+    },
+    "21597316550": {
+      "price_cents": 7900,
+      "measured_at": "2026-08-25"
+    },
+    "21598329732": {
+      "price_cents": 8627,
+      "measured_at": "2026-08-23"
+    },
+    "21897981294": {
+      "price_cents": 5310,
+      "measured_at": "2026-08-28"
+    },
+    "21997026035": {
+      "price_cents": 11041,
+      "measured_at": "2026-08-25"
+    },
+    "22094996757": {
+      "price_cents": 6512,
+      "measured_at": "2026-08-23"
+    },
+    "22197178734": {
+      "price_cents": 11962,
+      "measured_at": "2026-08-25"
+    },
+    "22293557620": {
+      "price_cents": 8731,
+      "measured_at": "2026-08-25"
+    },
+    "22392792735": {
+      "price_cents": 11962,
+      "measured_at": "2026-08-25"
+    },
+    "22494461702": {
+      "price_cents": 8075,
+      "measured_at": "2026-08-28"
+    },
+    "22494941454": {
+      "price_cents": 6526,
+      "measured_at": "2026-08-28"
+    },
+    "22498685992": {
+      "price_cents": 10336,
+      "measured_at": "2026-08-21"
+    },
+    "22594631814": {
+      "price_cents": 6953,
+      "measured_at": "2026-08-27"
+    },
+    "22598544943": {
+      "price_cents": 13775,
+      "measured_at": "2026-08-29"
+    },
+    "22693341669": {
+      "price_cents": 11107,
+      "measured_at": "2026-08-27"
+    },
+    "22695782878": {
+      "price_cents": 11400,
+      "measured_at": "2026-08-27"
+    },
+    "22897149838": {
+      "price_cents": 11962,
+      "measured_at": "2026-08-25"
+    },
+    "22898459166": {
+      "price_cents": 9149,
+      "measured_at": "2026-08-25"
+    },
+    "23093226797": {
+      "price_cents": 10440,
+      "measured_at": "2026-08-29"
+    },
+    "23098236498": {
+      "price_cents": 7253,
+      "measured_at": "2026-08-28"
+    },
+    "23197485445": {
+      "price_cents": 7890,
+      "measured_at": "2026-08-21"
+    },
+    "23293805229": {
+      "price_cents": 8464,
+      "measured_at": "2026-08-26"
+    },
+    "23294422741": {
+      "price_cents": 13900,
+      "measured_at": "2026-08-25"
+    },
+    "23296759926": {
+      "price_cents": 12757,
+      "measured_at": "2026-08-28"
+    },
+    "23297373827": {
+      "price_cents": 14241,
+      "measured_at": "2026-08-13"
+    },
+    "23297431426": {
+      "price_cents": 11962,
+      "measured_at": "2026-08-25"
+    },
+    "23297485141": {
+      "price_cents": 6291,
+      "measured_at": "2026-08-28"
+    },
+    "23329177792": {
+      "price_cents": 10947,
+      "measured_at": "2026-08-28"
+    },
+    "23391852937": {
+      "price_cents": 17955,
+      "measured_at": "2026-08-24"
+    },
+    "23394690451": {
+      "price_cents": 10901,
+      "measured_at": "2026-08-25"
+    },
+    "23493587723": {
+      "price_cents": 13443,
+      "measured_at": "2026-08-27"
+    },
+    "23494815662": {
+      "price_cents": 9404,
+      "measured_at": "2026-08-27"
+    },
+    "23592671152": {
+      "price_cents": 4780,
+      "measured_at": "2026-08-28"
+    },
+    "23594327858": {
+      "price_cents": 9491,
+      "measured_at": "2026-08-28"
+    },
+    "23594392251": {
+      "price_cents": 6939,
+      "measured_at": "2026-08-28"
+    },
+    "23697731904": {
+      "price_cents": 8713,
+      "measured_at": "2026-08-29"
+    },
+    "23792785771": {
+      "price_cents": 13964,
+      "measured_at": "2026-08-25"
+    },
+    "23793912225": {
+      "price_cents": 6990,
+      "measured_at": "2026-08-29"
+    },
+    "23898813796": {
+      "price_cents": 4698,
+      "measured_at": "2026-08-28"
+    },
+    "23997561932": {
+      "price_cents": 6119,
+      "measured_at": "2026-08-25"
+    },
+    "23998061053": {
+      "price_cents": 7553,
+      "measured_at": "2026-08-29"
+    },
+    "23998906495": {
+      "price_cents": 11240,
+      "measured_at": "2026-08-25"
+    },
+    "25316598909": {
+      "price_cents": 7695,
+      "measured_at": "2026-08-25"
+    },
+    "26176180447": {
+      "price_cents": 10481,
+      "measured_at": "2026-08-25"
+    },
+    "27035836352": {
+      "price_cents": 7800,
+      "measured_at": "2026-08-26"
+    },
+    "27189338384": {
+      "price_cents": 10901,
+      "measured_at": "2026-08-25"
+    },
+    "27620799823": {
+      "price_cents": 8454,
+      "measured_at": "2026-08-25"
+    },
+    "28250431151": {
+      "price_cents": 8550,
+      "measured_at": "2026-08-25"
+    },
+    "28632658626": {
+      "price_cents": 12445,
+      "measured_at": "2026-08-25"
+    },
+    "28867680104": {
+      "price_cents": 11875,
+      "measured_at": "2026-08-27"
+    },
+    "29144732868": {
+      "price_cents": 9975,
+      "measured_at": "2026-08-28"
+    },
+    "29424706558": {
+      "price_cents": 12892,
+      "measured_at": "2026-08-25"
+    },
+    "29842873054": {
+      "price_cents": 7890,
+      "measured_at": "2026-08-21"
+    },
+    "42316314316": {
+      "price_cents": 9990,
+      "measured_at": "2026-08-27"
+    },
+    "43073116025": {
+      "price_cents": 10716,
+      "measured_at": "2026-08-25"
+    },
+    "45411353075": {
+      "price_cents": 11115,
+      "measured_at": "2026-08-27"
+    },
+    "46706538469": {
+      "price_cents": 11317,
+      "measured_at": "2026-08-27"
+    },
+    "52057077465": {
+      "price_cents": 12198,
+      "measured_at": "2026-08-20"
+    },
+    "53010439922": {
+      "price_cents": 6800,
+      "measured_at": "2026-08-27"
+    },
+    "54906654179": {
+      "price_cents": 9490,
+      "measured_at": "2026-08-25"
+    },
+    "55263300334": {
+      "price_cents": 13205,
+      "measured_at": "2026-08-27"
+    },
+    "55761873036": {
+      "price_cents": 12920,
+      "measured_at": "2026-08-28"
+    },
+    "56112498326": {
+      "price_cents": 12964,
+      "measured_at": "2026-08-28"
+    },
+    "56114053186": {
+      "price_cents": 10441,
+      "measured_at": "2026-08-28"
+    },
+    "56457073810": {
+      "price_cents": 12198,
+      "measured_at": "2026-08-27"
+    },
+    "56556653787": {
+      "price_cents": 8542,
+      "measured_at": "2026-08-25"
+    },
+    "56662594431": {
+      "price_cents": 13300,
+      "measured_at": "2026-08-26"
+    },
+    "57864113263": {
+      "price_cents": 10708,
+      "measured_at": "2026-08-24"
+    },
+    "57906653359": {
+      "price_cents": 9390,
+      "measured_at": "2026-08-26"
+    },
+    "58200183117": {
+      "price_cents": 10396,
+      "measured_at": "2026-08-28"
+    },
+    "58200979776": {
+      "price_cents": 8991,
+      "measured_at": "2026-08-28"
+    },
+    "58202329642": {
+      "price_cents": 7191,
+      "measured_at": "2026-08-28"
+    },
+    "58205979239": {
+      "price_cents": 10066,
+      "measured_at": "2026-08-29"
+    },
+    "58207584816": {
+      "price_cents": 13013,
+      "measured_at": "2026-08-21"
+    },
+    "58209769278": {
+      "price_cents": 8877,
+      "measured_at": "2026-08-28"
+    },
+    "58211345817": {
+      "price_cents": 8541,
+      "measured_at": "2026-08-27"
+    },
+    "58252962219": {
+      "price_cents": 11799,
+      "measured_at": "2026-08-28"
+    },
+    "58254142416": {
+      "price_cents": 9931,
+      "measured_at": "2026-08-25"
+    },
+    "58254142906": {
+      "price_cents": 6984,
+      "measured_at": "2026-08-25"
+    },
+    "58255657495": {
+      "price_cents": 7209,
+      "measured_at": "2026-08-27"
+    },
+    "58255743791": {
+      "price_cents": 11892,
+      "measured_at": "2026-08-28"
+    },
+    "58256588757": {
+      "price_cents": 5405,
+      "measured_at": "2026-08-19"
+    },
+    "58261587690": {
+      "price_cents": 12851,
+      "measured_at": "2026-08-27"
+    },
+    "58262387632": {
+      "price_cents": 6939,
+      "measured_at": "2026-08-28"
+    },
+    "58262972685": {
+      "price_cents": 11020,
+      "measured_at": "2026-08-29"
+    }
+  },
+  "section_dates": {
+    "checkout_prices": "2026-08-30"
   }
 }

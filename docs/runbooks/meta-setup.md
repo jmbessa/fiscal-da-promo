@@ -1,7 +1,7 @@
 # Runbook — Setup Meta/Instagram (fase 2)
 
-Checklist para habilitar os dois canais automáticos do Instagram
-(`instagram_feed` e, desde a fase 5E, `instagram_story`). Existem **duas
+Checklist para habilitar os canais automáticos do Instagram (`instagram_feed`;
+`instagram_story` desde a fase 5E; `instagram_reel` desde a 5T). Existem **duas
 variantes** da API do Instagram; o pipeline suporta as duas (`instagram.api` no
 `config.yaml`).
 
@@ -50,11 +50,122 @@ publicou. O que foi medido, e que o canal `instagram_story` codifica:
 fallback manual: se a conta perder `instagram_content_publish`, ligue-o e
 desligue o `instagram_story` — o dia volta a sair, na mão.
 
+## Reel pela API oficial (fase 5T) — o motor de aquisição que faltava
+
+**Por que.** Em **2026-08-29**, medido na conta real pela Graph API:
+
+| | |
+|---|---|
+| seguidores | **2** |
+| posts | 5 (3 imagem, 2 carrossel) |
+| alcance em 7 dias | **1 conta** |
+| views em 7 dias | 2 |
+| interações | **0** |
+| posts do tipo REEL | **0** |
+
+Conta nova tem alcance baixo — isso é esperado. Alcance **1 com cinco posts,
+não**. O feed serve principalmente quem já segue; o Reel é o mecanismo que a
+Meta usa para entregar a quem **não** segue. Sem ele o sistema publica para 2
+pessoas por construção. A pesquisa do projeto tinha chegado ao mesmo lugar por
+outro caminho (`docs/feed.md`): o Reel tem o maior *share rate* medido (0,10%)
+e é "o motor de AQUISIÇÃO, que não existe: hoje a conta só tem o motor de
+retenção".
+
+**A peça.** É a arte de story (que já é 1080×1920) com o eixo do tempo por
+cima: zoom lento da foto do produto (1,00 → 1,08) do primeiro ao último frame,
+título entrando com fade e subida de 12 px, pill de preço crescendo de 0,9 a
+1,0, meta e selo em fade. Tudo assenta em ~2,3 s; do 2,3 s em diante o frame é
+a arte de story **idêntica, pixel a pixel**, com o zoom correndo — é isso que
+faz o loop não ter costura. Nenhum layout novo foi inventado.
+
+### O que foi MEDIDO nesta fase (2026-08-30, render local)
+
+1. **Arquivo.** `1080×1920`, `8,00 s`, `24 fps`, **H.264 High / yuv420p**
+   (`avc1`), mais uma faixa **AAC 48 kHz estéreo silenciosa**, e `+faststart`
+   (o `moov` na frente, para a Meta não precisar baixar o arquivo todo antes
+   de começar). A faixa silenciosa é SEGURO, não fato medido: a especificação
+   de Reels da Meta lista AAC entre os requisitos de áudio e não diz o que
+   acontece sem faixa nenhuma — custa 2 kb/s descobrir do jeito caro.
+2. **Tamanho.** `0,19 MB` com foto real da Shopee (`0,13 MB` com foto
+   sintética). O bot do Telegram, que é a hospedagem, baixa até **20 MB** —
+   duas ordens de grandeza de folga. **Se algum dia passar de 20 MB, o defeito
+   é do gerador**, não da hospedagem: o canal recusa antes de enviar, dizendo
+   isso.
+3. **Tempo de render.** `~3,5 s por peça` (2,5 s de frames + encode em
+   paralelo), medido três vezes nesta máquina. O orçamento da fase era ~4 s a
+   24 fps; ficou dentro, e por isso o projeto **não** caiu para 15 fps.
+4. **Elegibilidade da aba Reels.** 9:16 ✅, entre 5 e 90 s ✅ (8 s), H.264 ✅.
+
+### O que este canal manda à Graph API
+
+Mesmos três passos do story (criar container → esperar `status_code` →
+`media_publish`, medidos ao vivo em 2026-08-27, seção acima). O que muda:
+
+1. `POST /{ig_user_id}/media` com **`media_type=REELS`** e **`video_url`** (não
+   `image_url`);
+2. **`caption`** — o Reel aceita legenda, o story não. Curta em cima (o Reel só
+   mostra duas linhas sobre o vídeo) e com o bloco indexável embaixo: os posts
+   do Instagram são lidos pelo Google desde 10/07/2025;
+3. **`share_to_feed=true`** — o mesmo Reel também aparece na grade do perfil.
+   Uma unidade de cota, duas superfícies;
+4. **espera mais**: 15 leituras de `status_code` com 2 s entre elas (28 s no
+   pior caso), contra as 5 de 1 s do story. Container de vídeo não é um JPEG —
+   a Meta **transcodifica** o arquivo, e publicar antes do `FINISHED` é o que
+   falha. Esgotadas as tentativas, ele publica assim mesmo, como o story: e aí
+   o erro da Meta diz que o container não terminou, que é uma informação;
+5. **a cota é PERGUNTADA, não chutada.** A documentação da Meta traz **100 e 50
+   na mesma página**, e a janela é **MÓVEL** — ela libera 24 h depois de *cada*
+   publicação, não à meia-noite. A fonte da verdade é
+   `GET /{ig_user_id}/content_publishing_limit`, a mesma rota que o `doctor`
+   imprime, e ela é a **primeira** chamada do publish: com a cota estourada não
+   há por que pagar 3,5 s de ffmpeg e um upload de vídeo. Cota que não
+   respondeu **não** é cota estourada — o canal segue, senão uma mudança de
+   formato da Meta o calaria em silêncio.
+
+**A hospedagem é a mesma da arte de imagem**: `sendVideo` ao chat de operações
+e a URL do `getFile` como `video_url`, com o mesmo `ART_HOST_BOT_TOKEN` (A5) —
+o token do bot administrador do canal público nunca vai à Meta. O Telegram às
+vezes devolve `document` no lugar de `video`; a URL é a mesma e o canal aceita
+as duas.
+
+### O que NÃO foi medido, e é o que falta
+
+**Nada foi publicado ao vivo.** Os passos acima são a extrapolação direta do
+fluxo de story/carrossel que ESTE projeto mediu na conta real, mas nenhum
+container `REELS` foi criado nesta conta ainda. O que a primeira publicação de
+verdade vai responder, e que ninguém sabe hoje:
+
+- se o container de vídeo termina dentro dos 28 s de polling (se não terminar,
+  suba `InstagramReelChannel.max_polls`);
+- se a Meta aceita o `.mp4` gerado sem reclamar de bitrate/keyframes;
+- se `share_to_feed=true` se comporta como documentado nesta conta;
+- se o Reel conta 1 ou mais unidades na cota de publicação.
+
+### Ligar (depois de ver a peça)
+
+- [ ] `pip install -e .[reel]` — ou tenha um `ffmpeg` no PATH. **Sem ffmpeg o
+      canal não sobe**, o run avisa uma vez por dia e o resto do pipeline segue
+      inteiro (é o molde do `playwright` da fase 5P).
+- [ ] `afiliado run --dry-run` → ele grava **`.claude/previews/reel.mp4`** da
+      primeira oferta que sairia e imprime tamanho, dimensão, duração e fps.
+      **Abra o arquivo e olhe.** Cinco defeitos de desenho passaram
+      despercebidos neste projeto por serem julgados no código — inclusive um
+      botão que era elipse.
+- [ ] Gostou: `channels.instagram_reel.enabled: true` no `config.yaml`. Ele
+      **nasce desligado** de propósito.
+- [ ] `max_per_day: 2` é o teto do PROJETO, e sai do MESMO balde da cota da
+      Meta que o feed e o story: 2 posts + 2 Reels + N stories somam. Antes de
+      subir qualquer um dos três, some os três.
+- [ ] As envs são as mesmas dos outros dois canais do Instagram
+      (`IG_USER_ID`, `IG_ACCESS_TOKEN`, `TELEGRAM_BOT_TOKEN`,
+      `TELEGRAM_OPS_CHAT_ID`, e o `ART_HOST_BOT_TOKEN` da A5). Nada novo.
+
 ## Hospedagem da arte: use um bot secundário (fase 5C, A5)
 
 A arte do feed **e a do story** é enviada ao chat de operações do Telegram e a
-URL de `getFile` é o `image_url` que a Meta busca. **Essa URL carrega o bot
-token** — e o que expira nela é o `file_path`, não o token.
+URL de `getFile` é o `image_url` que a Meta busca — e desde a 5T o **vídeo do
+Reel** faz o mesmo caminho, por `sendVideo`, virando o `video_url`. **Essa URL
+carrega o bot token** — e o que expira nela é o `file_path`, não o token.
 
 - [ ] Crie um **segundo bot** no @BotFather (ex.: `@fiscalarte_bot`).
 - [ ] Adicione-o SÓ ao chat de operações — ele não precisa (e não deve) ser

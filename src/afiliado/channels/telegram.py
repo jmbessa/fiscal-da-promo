@@ -165,6 +165,33 @@ def send_photo_bytes(bot_token: str, chat_id: str, png_bytes: bytes,
         return {"ok": False, "description": f"rede: {exc}"}
 
 
+def send_video_bytes(bot_token: str, chat_id: str, mp4_bytes: bytes,
+                     caption: str = "", client: httpx.Client | None = None,
+                     filename: str = "reel.mp4", mime: str = "video/mp4") -> dict:
+    """sendVideo multipart — a hospedagem temporária do Reel (fase 5T).
+
+    Mesmo caminho da arte de imagem (`send_photo_bytes` + `get_file_url`): o
+    arquivo vai ao chat de operações e a URL de `getFile` é o `video_url` que a
+    Meta busca. O bot só BAIXA até 20 MB (`video.LIMITE_TELEGRAM_BYTES`), e um
+    clipe de 8 s em 1080×1920 H.264 fica uma ordem de grandeza abaixo disso.
+
+    Retorna o dict da API; em erro de rede/parse retorna
+    `{"ok": False, "description": ...}`. Nunca levanta.
+    """
+    c = client or httpx.Client(timeout=120)
+    try:
+        r = c.post(f"{API}/bot{bot_token}/sendVideo",
+                   files={"video": (filename, mp4_bytes, mime)},
+                   data={"chat_id": chat_id, "caption": caption})
+        return r.json()
+    except ValueError:
+        return {"ok": False, "description": "resposta não-JSON"}
+    except Exception as exc:
+        # Mesmo contrato do `send_photo_bytes`: cobre httpx.HTTPError (rede) e
+        # o que está fora dessa hierarquia, como httpx.InvalidURL.
+        return {"ok": False, "description": f"rede: {exc}"}
+
+
 def get_file_url(bot_token: str, file_id: str, client: httpx.Client | None = None) -> str | None:
     """getFile → https://api.telegram.org/file/bot{token}/{file_path}; None em falha."""
     c = client or httpx.Client(timeout=30)

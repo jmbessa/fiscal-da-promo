@@ -11,10 +11,12 @@ from pathlib import Path
 import httpx
 
 from afiliado import (categorias, config, creative, flagrante, llm, pipeline, preco_real,
-                      pricing, selection, shopee_checkout)
+                      pricing, selection, shopee_checkout, video)
 from afiliado.channels import instagram_story_link
-from afiliado.channels.instagram_common import GRAPH_HOSTS, graph_error
+from afiliado.channels.instagram_common import (GRAPH_HOSTS, cota_de_publicacao,
+                                                graph_error)
 from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
+from afiliado.channels.instagram_reel import InstagramReelChannel
 from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.instagram_story_link import InstagramStoryLinkChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
@@ -537,36 +539,12 @@ def _doctor_links_do_meli(meli: MeliSource, offers: list, cfg: dict) -> bool:
     return True
 
 
-def _inteiro(valor) -> int | None:
-    try:
-        return int(valor)
-    except (TypeError, ValueError):
-        return None
-
-
-def _cota_de_publicacao(data) -> tuple[int | None, int | None, int]:
-    """`quota_usage` e `config.quota_total`/`quota_duration` da resposta de
-    `content_publishing_limit`.
-
-    Ao vivo (2026-08-27) a Meta devolveu
-    `{"data": [{"config": {"quota_total": 100, "quota_duration": 86400},
-    "quota_usage": 1}]}`; o mesmo objeto sem o envelope `data` também é lido.
-    Qualquer outra forma — lista vazia, campo ausente, número que não é número
-    — vira `(None, None, 24)`, e o doctor diz o que sabe em vez de estourar
-    (nunca vi esta rota falhar, e é justamente por isso que ela não pode
-    derrubar o diagnóstico inteiro). `quota_duration` vem em segundos."""
-    linha: dict = {}
-    if isinstance(data, dict):
-        linhas = data.get("data")
-        if isinstance(linhas, list) and linhas and isinstance(linhas[0], dict):
-            linha = linhas[0]
-        elif "quota_usage" in data or "config" in data:
-            linha = data
-    conf = linha.get("config")
-    conf = conf if isinstance(conf, dict) else {}
-    segundos = _inteiro(conf.get("quota_duration"))
-    return (_inteiro(linha.get("quota_usage")), _inteiro(conf.get("quota_total")),
-            segundos // 3600 if segundos else 24)
+# A leitura da resposta de `content_publishing_limit` mudou de casa na fase 5T:
+# ela ganhou um SEGUNDO leitor (o canal `instagram_reel`, que recusa publicar
+# com a cota estourada) e passou a morar junto de quem faz a chamada. O doctor
+# continua chamando pelo nome de sempre; o comportamento é o mesmo, incluindo
+# o "(None, None, 24)" para forma que a Meta nunca devolveu.
+_cota_de_publicacao = cota_de_publicacao
 
 
 def _no_windows() -> bool:

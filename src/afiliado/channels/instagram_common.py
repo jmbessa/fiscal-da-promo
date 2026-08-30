@@ -19,7 +19,7 @@ from typing import Callable, NamedTuple
 import httpx
 from PIL import Image
 
-from afiliado.channels.telegram import get_file_url, send_photo_bytes
+from afiliado.channels.telegram import get_file_url, send_photo_bytes, send_video_bytes
 
 GRAPH_HOSTS = {
     # Conta business vinculada a Página do Facebook; escopos instagram_basic + instagram_content_publish.
@@ -65,6 +65,43 @@ def graph_error(resp) -> str:
         if isinstance(err, dict) and err.get("message"):
             return str(err["message"])
     return f"resposta inesperada da Graph API: {resp!r}"
+
+
+def _inteiro(valor) -> int | None:
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def cota_de_publicacao(data) -> tuple[int | None, int | None, int]:
+    """`(usadas, total, horas da janela)` da resposta de
+    `content_publishing_limit`.
+
+    Ao vivo (2026-08-27) a Meta devolveu
+    `{"data": [{"config": {"quota_total": 100, "quota_duration": 86400},
+    "quota_usage": 1}]}`; o mesmo objeto sem o envelope `data` também é lido.
+    Qualquer outra forma — lista vazia, campo ausente, número que não é número
+    — vira `(None, None, 24)`, e quem chama diz o que sabe em vez de estourar.
+
+    Mora aqui desde a fase 5T porque tem DOIS leitores: o `doctor` (que imprime
+    "1 de 100 na cota de 24 h") e o canal `instagram_reel`, que recusa publicar
+    com a cota estourada. A documentação da Meta traz 100 e 50 na mesma página
+    e a janela é MÓVEL — libera 24 h depois de cada publicação, não à
+    meia-noite. Nenhum desses números pode virar constante do projeto.
+    """
+    linha: dict = {}
+    if isinstance(data, dict):
+        linhas = data.get("data")
+        if isinstance(linhas, list) and linhas and isinstance(linhas[0], dict):
+            linha = linhas[0]
+        elif "quota_usage" in data or "config" in data:
+            linha = data
+    conf = linha.get("config")
+    conf = conf if isinstance(conf, dict) else {}
+    segundos = _inteiro(conf.get("quota_duration"))
+    return (_inteiro(linha.get("quota_usage")), _inteiro(conf.get("quota_total")),
+            segundos // 3600 if segundos else 24)
 
 
 def to_jpeg(png_bytes: bytes, quality: int = 90) -> bytes:
@@ -138,6 +175,34 @@ class InstagramBase:
         if not file_id:
             return None
         return get_file_url(token, file_id, client=self.client)
+
+    def _host_video(self, mp4: bytes) -> str | None:
+        """URL pública temporária do vídeo (fase 5T) — `sendVideo` + `getFile`,
+        exatamente o caminho da arte de imagem, com o mesmo bot de hospedagem.
+
+        O Telegram entrega `document` no lugar de `video` quando decide não
+        tratar o arquivo como vídeo; a URL de `getFile` é a mesma, e recusar
+        por causa do nome do campo seria perder a peça por um detalhe da
+        resposta.
+        """
+        token = self.art_host_bot_token
+        resposta = send_video_bytes(token, self.ops_chat_id, mp4,
+                                    caption=self.host_caption, client=self.client)
+        if not resposta.get("ok"):
+            return None
+        resultado = resposta.get("result") or {}
+        midia = resultado.get("video") or resultado.get("document") or {}
+        file_id = midia.get("file_id")
+        if not file_id:
+            return None
+        return get_file_url(token, file_id, client=self.client)
+
+    def _cota(self) -> tuple[int | None, int | None, int]:
+        """A cota de publicação da conta, PERGUNTADA à Meta (fase 5T)."""
+        resposta = self._graph_get(
+            f"{self.graph}/{self.ig_user_id}/content_publishing_limit",
+            {"fields": "config,quota_usage", "access_token": self.access_token})
+        return cota_de_publicacao(resposta)
 
     def _graph_post(self, url: str, payload: dict) -> dict:
         return self._graph_call("post", url, data=payload)

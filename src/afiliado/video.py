@@ -19,11 +19,13 @@ Duas fontes de binário, nesta ordem:
    outro de 25 MB só para rodar este canal.
 
 O comando é montado à mão (e não pelo `write_frames` do imageio-ffmpeg) por
-dois motivos que valem o custo: a trilha de ÁUDIO SILENCIOSA — a especificação
-de Reels da Meta pede AAC, e um vídeo sem faixa de áudio nenhuma é o tipo de
-detalhe que faz o container ser recusado sem explicação — e o `-movflags
-+faststart`, que põe o `moov` na frente para a Meta começar a baixar sem puxar
-o arquivo todo.
+dois motivos que valem o custo: a trilha de ÁUDIO SILENCIOSA e o `-movflags
++faststart`, que põe o `moov` na frente para a Meta não precisar baixar o
+arquivo todo antes de começar.
+
+A faixa silenciosa é SEGURO, não fato medido: a especificação de Reels da Meta
+lista AAC entre os requisitos de áudio e não diz o que acontece com um arquivo
+sem faixa nenhuma. Custa 2 kb/s não descobrir isso do jeito caro.
 """
 
 from __future__ import annotations
@@ -113,8 +115,8 @@ def comando_h264(exe: str, largura: int, altura: int, fps: int, destino) -> list
     combinação que a Meta documenta para 1080p.
 
     A segunda entrada é uma faixa de áudio SILENCIOSA (`anullsrc`), cortada no
-    tamanho do vídeo por `-shortest`: a especificação de Reels pede AAC, e um
-    arquivo sem faixa nenhuma é recusado sem mensagem que explique.
+    tamanho do vídeo por `-shortest` — ver o cabeçalho do módulo: é seguro
+    barato contra um requisito que a Meta lista e não explica.
     """
     return [
         exe, "-hide_banner", "-loglevel", "error", "-y",

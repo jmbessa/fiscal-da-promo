@@ -604,6 +604,12 @@ channels:
   # NASCE DESLIGADO, e é assim de propósito: quem liga é o dono, depois de VER
   # a peça. `afiliado run --dry-run` grava o .mp4 em `.claude/previews/`.
   #
+  # LIGADO EM 2026-08-31, depois de o dono ver a peça e de o passo que nunca
+  # tinha sido exercitado ser testado ao vivo: `sendVideo` devolveu o arquivo
+  # como `video` (mime video/mp4, 8 s, 1080×1920) e a URL do `getFile`
+  # respondeu 200 com os bytes exatos. O que ainda NÃO foi provado é a Meta
+  # baixar essa URL — ela chega com `content-type: application/octet-stream`.
+  #
   # Ele precisa do extra `reel` (`pip install -e .[reel]`) ou de um ffmpeg no
   # PATH. Sem isso o canal não sobe e o run avisa uma vez — o resto do
   # pipeline segue inteiro.
@@ -613,8 +619,8 @@ channels:
   # a janela é móvel. O `max_per_day` daqui é o teto do PROJETO, e sai do
   # mesmo balde dos outros — some os três antes de subir qualquer um.
   instagram_reel:
-    enabled: false
-    max_per_day: 2           # 1 de manhã, o 2º só a partir da metade da janela
+    enabled: true
+    max_per_day: 2         # 1 de manhã, o 2º só a partir da metade da janela
     audiencia: {piso: 1, divisor: 1000}
   # Fase 5F: story COM figurinha de link, pelo instagrapi (API PRIVADA). Existe
   # porque a Graph API NEGA figurinhas e o Meta Business Suite só põe link em

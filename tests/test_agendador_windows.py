@@ -105,7 +105,7 @@ def test_o_doctor_procura_exatamente_as_tarefas_que_o_script_cria():
     for nome in cli.TAREFAS_DA_PRODUCAO:
         assert nome in _script()
     assert set(cli.TAREFAS_DA_PRODUCAO) == {_param("TarefaRun"), _param("TarefaFeed"),
-                                            _param("TarefaFlagrante")}
+                                            _param("TarefaFlagrante"), _param("TarefaPainel")}
     assert cli.SCRIPT_DO_AGENDADOR == SCRIPT
 
 
@@ -349,3 +349,25 @@ def test_a_tarefa_de_stories_nao_e_criada_e_a_existente_e_removida():
     assert "$TarefaStories, $TarefaFeed" in texto
     # E o doctor não pode pedir uma tarefa que o script apaga.
     assert cli.TAREFA_STORIES not in cli.TAREFAS_DA_PRODUCAO
+
+
+def test_a_tarefa_do_painel_e_DIARIA_de_verdade():
+    """Fase 5V. As outras tarefas se repetem porque um disparo perdido custa
+    uma peça; o painel se repetindo custaria 200 chamadas por repetição para
+    gravar o MESMO dia — `price_log` guarda um preço por dia.
+
+    Então ela usa gatilho diário SIMPLES, sem `Repetition`, e conta com o
+    `StartWhenAvailable` (que o `$configuracao` já traz) para a máquina que
+    estava desligada às 07:47.
+
+    E ela roda ANTES da janela de publicação: ler os mesmos itens sempre na
+    mesma hora é o que torna a série comparável de um dia para o outro."""
+    texto = _script()
+    assert _param("TarefaPainel") == "FiscalDaPromo-Painel"
+    assert '"`"$VbsOculto`" `"$AfiliadoExe`" painel"' in texto
+    # Gatilho próprio, e não a fábrica repetida das outras.
+    assert "New-GatilhoRepetido -Inicio $InicioPainel" not in texto
+    assert "New-ScheduledTaskTrigger -Daily `\n    -At ([datetime]::ParseExact($InicioPainel" in texto
+    assert _hora(_param("InicioPainel")) < _hora(_param("InicioRun"))
+    # Minuto irregular também aqui: nada do Fiscal acorda no minuto zero.
+    assert int(_param("InicioPainel").split(":")[1]) != 0

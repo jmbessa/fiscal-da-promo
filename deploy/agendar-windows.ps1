@@ -17,11 +17,12 @@
          uptime contínuo, plano de energia "Ultimate Performance" e suspensão
          em corrente alternada = 0 (nunca suspende).
 
-    Três tarefas, todas idempotentes (rodar de novo ATUALIZA, não duplica):
+    Quatro tarefas, todas idempotentes (rodar de novo ATUALIZA, não duplica):
 
       FiscalDaPromo-Run        -> afiliado run --posts-per-run N
       FiscalDaPromo-Feed       -> afiliado feed --tipo termometro
       FiscalDaPromo-Flagrante  -> afiliado feed --tipo flagrante
+      FiscalDaPromo-Painel     -> afiliado painel   (1x/dia, não publica nada)
 
     Eram quatro. `FiscalDaPromo-Stories` (`afiliado stories`) deixou de ser
     criada em 2026-08-30 e este script REMOVE a que já existir — o canal que ela
@@ -73,6 +74,7 @@ param(
     [string]$TarefaStories = "FiscalDaPromo-Stories",
     [string]$TarefaFeed = "FiscalDaPromo-Feed",
     [string]$TarefaFlagrante = "FiscalDaPromo-Flagrante",
+    [string]$TarefaPainel = "FiscalDaPromo-Painel",
     # A cadência. 60 ofertas/dia distribuídas em ~15 h pedem uma a cada ~15 min,
     # e é isso que o `pacing_budget` já assume (config.yaml, channels.telegram).
     # Ao mudar este número, mude `schedule.max_gap_minutes` no config.yaml e
@@ -90,6 +92,11 @@ param(
     [string]$InicioRun = "08:03",
     [string]$InicioFeed = "08:11",
     [string]$InicioFlagrante = "08:16",
+    # O painel (fase 5V) e UMA VEZ por dia, e ANTES da janela de publicacao:
+    # ele nao publica nada, e ler os mesmos itens sempre na mesma hora e o que
+    # torna a serie comparavel de um dia para o outro. Uma leitura de 200 itens
+    # levou 101 s medidos.
+    [string]$InicioPainel = "07:47",
     # O fim da janela é o `schedule.window_end` do config.yaml. Um disparo
     # depois dele teria orçamento 0 (o ritmo não libera nada fora da janela).
     [string]$FimDaJanela = "23:15",
@@ -102,7 +109,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$TAREFAS = @($TarefaRun, $TarefaStories, $TarefaFeed, $TarefaFlagrante)
+$TAREFAS = @($TarefaRun, $TarefaStories, $TarefaFeed, $TarefaFlagrante, $TarefaPainel)
 
 # -- desfazer ------------------------------------------------------------------
 
@@ -301,8 +308,28 @@ Register-TarefaDoFiscal -Nome $TarefaFlagrante -Inicio $InicioFlagrante `
     -Descricao ("Fiscal da Promo: flagrante do 'de' que nao se sustenta, despachado ao chat " +
                 "de operacoes (NAO publica). Criado por deploy/agendar-windows.ps1.")
 
+# O PAINEL (fase 5V) e a unica tarefa DIARIA de verdade — gatilho simples, sem
+# repeticao. As outras se repetem porque um disparo perdido custa uma peca; o
+# painel se repetindo custaria 200 chamadas por repeticao para gravar o MESMO
+# dia (o `price_log` guarda um preco por dia). `StartWhenAvailable`, que o
+# `$configuracao` ja traz, cobre a maquina desligada as 07:47.
+$acaoPainel = New-ScheduledTaskAction -Execute "wscript.exe" `
+    -Argument ("`"$VbsOculto`" `"$AfiliadoExe`" painel") `
+    -WorkingDirectory $ProjetoDir
+$gatilhoPainel = New-ScheduledTaskTrigger -Daily `
+    -At ([datetime]::ParseExact($InicioPainel, "HH:mm", $null))
+Register-ScheduledTask -TaskName $TarefaPainel -Action $acaoPainel -Trigger $gatilhoPainel `
+    -Settings $configuracao -Principal $principal -Force `
+    -Description ("Fiscal da Promo: le o preco dos itens do painel de observacao, UMA vez por " +
+                  "dia, para o price_log ganhar profundidade. NAO publica nada. " +
+                  "Criado por deploy/agendar-windows.ps1.") | Out-Null
+Write-Host "ok: $TarefaPainel — $InicioPainel, UMA vez por dia"
+Write-Host "    $AfiliadoExe painel"
+Write-Host "    (sem janela, via deploy/afiliado-oculto.vbs)"
+Write-Host "    iniciar em: $ProjetoDir"
+
 Write-Host ""
-Write-Host "Confira com: afiliado doctor   (ele checa as três tarefas acima)"
+Write-Host "Confira com: afiliado doctor   (ele checa as quatro tarefas acima)"
 Write-Host "O publish.yml ja esta sem schedule: — o Actions so roda por workflow_dispatch."
 Write-Host "Ate ver um run de verdade destas tarefas, a producao nao esta publicando."
 Write-Host "Runbook: docs/runbooks/producao-windows.md"

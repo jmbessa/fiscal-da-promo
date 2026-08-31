@@ -450,6 +450,33 @@ preco_checkout:
   # vencida vira aviso ao chat de operações.
   idade_max_dias: 3
 
+# Fase 5V — O PAINEL DE OBSERVAÇÃO. Lido uma vez por dia por `afiliado painel`,
+# que não publica nada: ele só lê o preço dos MESMOS itens todo dia para o
+# `price_log` ganhar profundidade.
+#
+# O defeito que ele conserta, medido em 2026-08-31: a régua honesta exige
+# `selection.ref_min_observations` (14) DIAS DISTINTOS do mesmo item, e a
+# descoberta rotativa nunca ia entregar isso. Ela mede LARGURA e faz bem —
+# 16.523 itens distintos em 6 dias — mas **nenhum** item tinha sido visto nos
+# 6; o melhor tinha 5 dias, e eram 14 itens em 16 mil. `price_refs` não estava
+# esperando o tempo passar: estava esperando o que não ia acontecer.
+#
+# Isso travava, junto: o modo A (0% dos posts), o selo, o carrossel do
+# termômetro reenquadrado, o flagrante com dado real e o Reel do gráfico.
+painel:
+  enabled: true
+  # 200 leituras/dia, uma chamada cada, contra as ~608 que o pipeline já faz —
+  # e a VPS da 5C rodava a ~1.920/dia sem um único 429.
+  #
+  # Subir este número NÃO acelera a régua: o que a régua espera é TEMPO, e ele
+  # é o mesmo para 20 itens ou 2.000. O que o tamanho decide é quantos itens
+  # chegam lá JUNTOS, daqui a 14 dias.
+  tamanho: 200
+  # Leituras SEGUIDAS falhando antes de o item sair do painel. A Shopee
+  # rotaciona a própria oferta de afiliado, e um item pode sumir por um dia e
+  # voltar — sair na primeira falha esvaziaria o painel a cada soluço da API.
+  max_falhas: 3
+
 validation:
   # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio
   # link de afiliado (igual a um destes domínios ou subdomínio dele) + ausência

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import httpx
 
-from afiliado import (categorias, config, creative, flagrante, llm, narracao, pipeline,
-                      preco_real, pricing, selection, shopee_checkout, video)
+from afiliado import (categorias, config, creative, flagrante, llm, narracao, painel,
+                      pipeline, preco_real, pricing, selection, shopee_checkout, video)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import (GRAPH_HOSTS, cota_de_publicacao,
                                                 graph_error, le_seguidores)
@@ -106,7 +106,12 @@ TAREFA_FLAGRANTE = "FiscalDaPromo-Flagrante"
 # Manter a tarefa na lista faria o doctor pedir uma tarefa que o script REMOVE —
 # um ❌ permanente num sistema saudável, que é a forma mais rápida de ensinar o
 # dono a ignorar o ❌ (o mesmo critério do data feed da 5L).
-TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_FEED, TAREFA_FLAGRANTE)
+# Fase 5V: a leitura diária do painel de observação. Ela não publica nada, mas
+# entra na lista pelo mesmo motivo das outras — se ninguém a chamar, o
+# `price_log` para de ganhar profundidade e a régua nunca sai do zero, EM
+# SILÊNCIO.
+TAREFA_PAINEL = "FiscalDaPromo-Painel"
+TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_FEED, TAREFA_FLAGRANTE, TAREFA_PAINEL)
 SCRIPT_DO_AGENDADOR = "deploy/agendar-windows.ps1"
 RUNBOOK_DA_PRODUCAO = "docs/runbooks/producao-windows.md"
 
@@ -160,6 +165,18 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="o preço da API em reais (ex.: 599,00) — obrigatório "
                              "quando o alvo é uma URL; é a ÂNCORA da leitura")
     ppreco.add_argument("--config", default="config.yaml")
+    # Fase 5V: a passada de observação do painel. Comando próprio, UMA vez por
+    # dia — ela não publica nada e não compete com o `run`; o que ela faz é
+    # ler o preço dos mesmos itens todo dia para o `price_log` ganhar
+    # PROFUNDIDADE, que é o que a régua exige e o que a descoberta rotativa,
+    # por construção, nunca ia entregar (ver afiliado.painel).
+    ppainel = sub.add_parser("painel",
+                             help="lê o preço dos itens do painel de observação "
+                                  "(1×/dia; não publica nada)")
+    ppainel.add_argument("--dry-run", action="store_true",
+                         help="consulta a API de verdade e imprime, sem gravar "
+                              "no price_log nem mexer no painel")
+    ppainel.add_argument("--config", default="config.yaml")
     return p
 
 
@@ -899,6 +916,7 @@ def doctor(cfg: dict) -> int:
         ok = False
 
     _doctor_preco_checkout(cfg, _watchlist(cfg))
+    _doctor_painel(cfg)
 
     # Por último de propósito: é o item que responde "quem me chama?", e ele
     # fala do MUNDO (o agendador), não das credenciais.
@@ -942,6 +960,35 @@ def _doctor_preco_real(cfg: dict) -> bool:
           f"(channel={opcoes['browser_channel'] or 'chromium empacotado'}, "
           f"teto={opcoes['timeout_s']:.0f}s, desarma em {opcoes['max_falhas']} "
           "falhas seguidas)")
+    return True
+
+
+def _doctor_painel(cfg: dict) -> bool:
+    """Fase 5V: o painel de observação está enchendo? SEM rede — só o banco.
+
+    Ele NUNCA fica vermelho, e é decisão: um painel novo tem 0 itens prontos
+    por construção, e ficar 14 dias com ❌ é a forma mais rápida de ensinar o
+    dono a ignorar o ❌ que importa. O que ele faz é DIZER O NÚMERO — e quem
+    olha vê se ele anda de um dia para o outro.
+    """
+    conf = painel.config_de(cfg)
+    if not conf.get("enabled", True):
+        print("ℹ️ painel: desligado no config — a régua fica dependendo do JoomPulse")
+        return True
+    db = _abre_estado(cfg)
+    try:
+        tamanho, prontos, minimo = painel.progresso(db, cfg)
+    except Exception as exc:      # noqa: BLE001 - um item de diagnóstico não derruba o doctor
+        print(f"⚠️ painel: não consegui ler o estado ({exc})")
+        return True
+    finally:
+        db.close()
+    if not tamanho:
+        print(f"⚠️ painel: vazio — rode `afiliado painel` (ou espere a tarefa "
+              f"{TAREFA_PAINEL}); sem ele a régua não sai do zero")
+        return True
+    print(f"✅ painel: {tamanho} item(ns) observados · {prontos} com os {minimo} "
+          f"dias que a régua exige para o modo A")
     return True
 
 
@@ -1501,6 +1548,57 @@ def _alvo_no_estoque(db: StateDB, item_id: str):
     return None
 
 
+def passada_do_painel(cfg: dict, args) -> int:
+    """Fase 5V — a leitura diária do painel de observação.
+
+    Ela NÃO publica nada e não decide nada: lê o preço vivo dos mesmos itens
+    todo dia e grava no `price_log`, para que a régua honesta tenha de onde
+    sair. O motivo inteiro está em `afiliado.painel` — em resumo, a descoberta
+    rotativa mede LARGURA (16.523 itens em 6 dias) e a régua precisa de
+    PROFUNDIDADE (14 dias do mesmo item), que nenhum item tinha.
+
+    Sai com 0 mesmo quando falha item nenhum: uma leitura que não deu é um
+    número no relatório, não um run derrubado. O que faz o comando falhar é o
+    painel não conseguir sequer subir.
+    """
+    conf = painel.config_de(cfg)
+    if not conf.get("enabled", True):
+        print("ℹ️ painel desligado no config (painel.enabled: false) — nada a fazer")
+        return 0
+    db = _abre_estado(cfg)
+    try:
+        # Em dry-run o painel não ganha membro nem perde: a passada é só para
+        # ver o que ela FARIA, e mexer no painel já seria fazer.
+        entraram = 0 if args.dry_run else painel.completa(db, cfg, _watchlist(cfg))
+        saíram = [] if args.dry_run else db.painel_expurgar(painel.FONTE,
+                                                            int(conf["max_falhas"]))
+        if not db.painel(painel.FONTE):
+            if args.dry_run:
+                print("(dry-run) painel vazio — ele só é preenchido fora do dry-run")
+                return 0
+            print("⚠️ painel vazio: não há candidatas no estoque para preenchê-lo — "
+                  "rode um `afiliado run` primeiro")
+            return 0
+        if entraram:
+            print(f"➕ {entraram} item(ns) entraram no painel")
+        if saíram:
+            print(f"➖ {len(saíram)} item(ns) saíram por {conf['max_falhas']} leituras "
+                  f"seguidas falhando (saíram da listagem de afiliados)")
+        lidos, falharam = painel.observa(db, _shopee(db), cfg, dry_run=args.dry_run)
+        tamanho, prontos, minimo = painel.progresso(db, cfg)
+        marca = "(dry-run) " if args.dry_run else ""
+        print(f"{marca}📈 painel: {lidos} preço(s) lido(s), {falharam} falha(s) · "
+              f"{tamanho} item(ns) no painel")
+        print(f"   {prontos} de {tamanho} já têm os {minimo} dias que a régua exige "
+              f"para o modo A")
+        if not prontos:
+            print("   (é o esperado enquanto o painel for novo — a régua não "
+                  "acelera com mais itens, só com mais DIAS)")
+    finally:
+        db.close()
+    return 0
+
+
 def preco_real_a_mao(cfg: dict, args) -> int:
     """`afiliado preco-real <url|itemId>`: lê o preço de checkout de UM anúncio
     e imprime o que o post publicaria. Não publica, não escreve no banco.
@@ -1803,6 +1901,8 @@ def main(argv: list[str] | None = None) -> int:
         return feed(cfg, args)
     if args.cmd == "preco-real":
         return preco_real_a_mao(cfg, args)
+    if args.cmd == "painel":
+        return passada_do_painel(cfg, args)
 
     # `stories` (fase 5F) é o MESMO run — mesmo ritmo, dedupe, teto diário e
     # resumo de operações — com os canais recortados nos de story. O nome do

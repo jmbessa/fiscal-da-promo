@@ -11,7 +11,8 @@ from pathlib import Path
 import httpx
 
 from afiliado import (categorias, config, creative, flagrante, llm, narracao, painel,
-                      pipeline, preco_real, pricing, selection, shopee_checkout, video)
+                      pipeline, preco_real, pricing, selection, shopee_checkout, temas,
+                      video)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import (GRAPH_HOSTS, cota_de_publicacao,
                                                 graph_error, le_seguidores)
@@ -32,7 +33,7 @@ from afiliado.watchlist import load_watchlist
 
 # --- Fase 5D: a peça de feed -------------------------------------------------
 
-FEED_TIPOS = ("termometro", "flagrante")
+FEED_TIPOS = ("termometro", "flagrante", "tema")
 
 # Onde `--dry-run` grava as artes para o dono olhar antes de publicar.
 PREVIEWS_DIR = Path(".claude/previews")
@@ -111,7 +112,12 @@ TAREFA_FLAGRANTE = "FiscalDaPromo-Flagrante"
 # `price_log` para de ganhar profundidade e a régua nunca sai do zero, EM
 # SILÊNCIO.
 TAREFA_PAINEL = "FiscalDaPromo-Painel"
-TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_FEED, TAREFA_FLAGRANTE, TAREFA_PAINEL)
+# Fase 5W: o carrossel EDITORIAL. Ele divide a vaga diária do
+# `instagram_carrossel` com o termômetro e roda depois dele — hoje, com
+# `price_refs` em 0, o termômetro se cala e a vaga é sempre do tema.
+TAREFA_TEMA = "FiscalDaPromo-Tema"
+TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_FEED, TAREFA_FLAGRANTE, TAREFA_PAINEL,
+                       TAREFA_TEMA)
 SCRIPT_DO_AGENDADOR = "deploy/agendar-windows.ps1"
 RUNBOOK_DA_PRODUCAO = "docs/runbooks/producao-windows.md"
 
@@ -151,7 +157,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pfeed.add_argument("--tipo", choices=FEED_TIPOS, default=FEED_TIPOS[0],
                        help="termometro (padrão): carrossel do dia, publicado. "
                             "flagrante: gráfico do 'de' que não se sustenta, "
-                            "despachado ao chat de operações SEM publicar")
+                            "despachado ao chat de operações SEM publicar. "
+                            "tema: carrossel editorial (data/temas.yaml), o "
+                            "único conteúdo inteiramente nosso do feed")
     pfeed.add_argument("--config", default="config.yaml")
     # Fase 5P: exercitar a leitura do preço de checkout À MÃO, com a leitura
     # ainda DESLIGADA no config. É o instrumento da decisão: o dono roda isto,
@@ -1430,6 +1438,101 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str,
         hashtags, [p.offer.category for p in posts])
 
 
+def _feed_tema(cfg: dict, args, db: StateDB) -> int:
+    """Fase 5W — o carrossel TEMÁTICO.
+
+    Ele divide o teto e o ritmo do `instagram_carrossel` com o termômetro, de
+    propósito: são o mesmo espaço no feed, e dois álbuns no mesmo dia é o
+    dobro do que o canal se propõe a publicar. Quem sair primeiro no dia gasta
+    a vaga — e como o termômetro hoje não sai (sem régua, ele não tem o que
+    mostrar), na prática a vaga é do tema.
+    """
+    avisos: list[str] = []
+    canal = None
+    if not args.dry_run:
+        pode, motivo = _carrossel_pode_sair(cfg, db)
+        if not pode:
+            print(f"ℹ️ carrossel temático não sai agora — {motivo}")
+            return 0
+        canal = _canal_do_carrossel(cfg, avisos)
+        if canal is None:
+            print("❌ carrossel temático: canal do Instagram não montado "
+                  "(ver docs/runbooks/meta-setup.md)")
+            return 1
+
+    try:
+        acervo = temas.carrega((cfg.get("temas") or {}).get("path", temas.CAMINHO))
+    except SourceError as exc:
+        # Erro de REDAÇÃO no arquivo de conteúdo: vermelho, e com o motivo. Se
+        # isto só fosse ao log, o feed pararia sem ninguém notar.
+        print(f"❌ carrossel temático: {exc}")
+        if not args.dry_run:
+            _notifica_ops(cfg, f"❌ Carrossel temático não foi gerado: {exc}")
+        return 1
+    tema = temas.escolhe(acervo, db)
+    if tema is None:
+        print(f"ℹ️ carrossel temático: nenhum tema em {temas.CAMINHO}")
+        return 0
+
+    handle, nome_marca = _marca(cfg)
+    imagens = creative.render_carrossel_tema(tema, handle=handle, brand_name=nome_marca)
+    legenda = legenda_do_tema(tema, cfg.get("hashtags"))
+
+    if args.dry_run:
+        caminhos = _grava_previews(f"tema-{tema.slug}", imagens)
+        print(f"--- DRY-RUN: tema '{tema.slug}', {len(imagens)} slides ---")
+        for caminho in caminhos:
+            print(f"  {caminho}")
+        print(f"\n{legenda}\n")
+        for aviso in avisos:
+            print(aviso)
+        return 0
+
+    resultado = canal.publish_carrossel(imagens, legenda)
+    avisos.extend(pipeline.drena_avisos(canal))
+    for aviso in avisos:
+        print(aviso)
+    if not resultado.ok:
+        print(f"❌ carrossel temático não publicado: {resultado.error}")
+        _notifica_ops(cfg, "\n".join(
+            [f"❌ Carrossel temático '{tema.slug}' não publicado: {resultado.error}",
+             *avisos]))
+        return 1
+    # As duas marcas só são gravadas DEPOIS de publicar: marcar antes tiraria o
+    # tema da frente da fila por uma peça que não foi ao ar.
+    temas.marca_publicado(db, tema)
+    # E ele conta para o teto do canal — é a mesma vaga do termômetro.
+    db.record_peca("tema", tema.slug, CANAL_CARROSSEL, tema.titulo,
+                   resultado.message_id)
+    print(f"✅ carrossel temático '{tema.slug}' publicado ({resultado.message_id})")
+    _notifica_ops(cfg, "\n".join(
+        [f"✅ Carrossel temático '{tema.slug}' publicado: {tema.titulo}", *avisos]))
+    return 0
+
+
+def legenda_do_tema(tema, hashtags: dict | None = None) -> str:
+    """A legenda do carrossel TEMÁTICO.
+
+    Ela NÃO abre com `creative.AFILIADO`, e isso não é esquecimento. Aquela
+    linha diz "o link direciona para a página do produto na loja" — e neste
+    álbum não há link de produto nenhum: ele não vende nada, não tem oferta e
+    não leva a lugar de compra. Repeti-la aqui seria afirmar uma coisa falsa
+    para cumprir um hábito.
+
+    O corpo repete as teses dos slides em texto: o Instagram é indexado pelo
+    Google desde 10/07/2025, e é este bloco que faz o post responder a quem
+    procurou "como saber se o desconto é falso".
+    """
+    linhas = [tema.titulo, tema.subtitulo, ""]
+    for i, slide in enumerate(tema.slides, start=1):
+        linhas.append(f"{i}. {slide.titulo} — {slide.corpo}")
+    linhas += ["", creative.ASSINATURA]
+    # As hashtags da marca, sem categoria: o álbum não fala de categoria
+    # nenhuma, e etiquetar "Beleza" num post de método seria endereçá-lo para
+    # quem não o procurou.
+    return "\n".join(linhas) + rodape_de_hashtags(hashtags, [])
+
+
 def _notifica_ops(cfg: dict, texto: str) -> None:
     token, ops = _env("TELEGRAM_BOT_TOKEN"), _env("TELEGRAM_OPS_CHAT_ID")
     if token and ops:
@@ -1463,6 +1566,27 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
     posts = _posts_do_carrossel(escolhidas, by_name, cfg, db, args.dry_run, avisos)
     if not posts:
         print("ℹ️ carrossel: nenhuma oferta sobreviveu à atualização de preço")
+        return 0
+
+    # Fase 5W: SEM NENHUMA APROVADA, o termômetro não sai.
+    #
+    # A capa dele nesse estado é "NENHUMA DAS 6 PASSOU" — um álbum que lista
+    # seis produtos, com nome e preço, e termina sem oferta nenhuma. O dono já
+    # tinha dito que a ideia "não está sendo boa", a pesquisa de 2026-08-29
+    # concluiu o mesmo por outro caminho (a peça contradiz a bio, e nomear
+    # reprovada é a exposição que tirou o flagrante do feed), e enquanto
+    # `price_refs` está em 0 esse é o ÚNICO estado possível: 100% das ofertas
+    # caem em modo B.
+    #
+    # A vaga não fica vazia — quem a ocupa é o carrossel TEMÁTICO
+    # (`--tipo tema`), que é conteúdo nosso e não depende de régua. E no dia em
+    # que o painel de observação fechar os 14 dias, o termômetro volta sozinho,
+    # com o que a capa sempre quis dizer: as que PASSARAM.
+    aprovadas = sum(1 for p in posts if p.verdict.mode == "A" or p.verdict.seal)
+    if not aprovadas:
+        print(f"ℹ️ termômetro não sai: nenhuma das {len(posts)} ofertas passou na "
+              f"régua, e a peça \"NENHUMA DAS N PASSOU\" contradiz a bio. "
+              f"Use `afiliado feed --tipo tema`.")
         return 0
 
     handle, nome_marca = _marca(cfg)
@@ -1829,6 +1953,8 @@ def feed(cfg: dict, args) -> int:
     try:
         if args.tipo == "flagrante":
             return _feed_flagrante(cfg, args, db)
+        if args.tipo == "tema":
+            return _feed_tema(cfg, args, db)
         return _feed_termometro(cfg, args, db)
     finally:
         db.close()

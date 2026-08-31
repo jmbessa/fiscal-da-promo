@@ -40,6 +40,14 @@ def _param(nome: str) -> str:
     return achado.group(1).strip()
 
 
+def _param_bloco(nome: str) -> str:
+    """O lado direito de uma atribuição de ARRAY do script (`$TAREFAS = @(...)`),
+    inclusive quando ela quebra em várias linhas."""
+    achado = re.search(rf"\${nome}\s*=\s*@\((.*?)\)", _script(), re.S)
+    assert achado, f"array ${nome} não encontrado em {SCRIPT}"
+    return achado.group(1)
+
+
 def _hora(hhmm: str) -> datetime:
     h, m = (int(x) for x in hhmm.split(":"))
     return datetime(2026, 8, 26, h, m)
@@ -104,8 +112,13 @@ def test_o_doctor_procura_exatamente_as_tarefas_que_o_script_cria():
     pior do que não checar nada."""
     for nome in cli.TAREFAS_DA_PRODUCAO:
         assert nome in _script()
-    assert set(cli.TAREFAS_DA_PRODUCAO) == {_param("TarefaRun"), _param("TarefaFeed"),
-                                            _param("TarefaFlagrante"), _param("TarefaPainel")}
+    # As tarefas que o script CRIA são as do `$TAREFAS` menos a de stories, que
+    # ele mantém na lista só para o `-Remover` alcançar uma instalação antiga.
+    # Lê-las do script, e não repeti-las aqui, é o que faz este teste continuar
+    # valendo quando uma tarefa nova entrar — em vez de virar mais um lugar
+    # para lembrar de atualizar.
+    criadas = {_param(p) for p in re.findall(r"\$(Tarefa\w+)", _param_bloco("TAREFAS"))}
+    assert set(cli.TAREFAS_DA_PRODUCAO) == criadas - {_param("TarefaStories")}
     assert cli.SCRIPT_DO_AGENDADOR == SCRIPT
 
 
@@ -371,3 +384,19 @@ def test_a_tarefa_do_painel_e_DIARIA_de_verdade():
     assert _hora(_param("InicioPainel")) < _hora(_param("InicioRun"))
     # Minuto irregular também aqui: nada do Fiscal acorda no minuto zero.
     assert int(_param("InicioPainel").split(":")[1]) != 0
+
+
+def test_a_tarefa_do_tema_roda_DEPOIS_do_termometro():
+    """Fase 5W. As duas dividem a MESMA vaga diária do `instagram_carrossel`, e
+    a ordem no relógio é a prioridade: se o termômetro tiver o que mostrar
+    (alguma oferta aprovada na régua), ele gasta a vaga e o tema imprime "não
+    sai agora"; se não tiver — o caso enquanto `price_refs` for 0 —, a vaga é
+    do tema.
+
+    Invertido, o tema tomaria a vaga todo dia e o termômetro nunca sairia, nem
+    no dia em que voltasse a ter o que dizer."""
+    texto = _script()
+    assert _param("TarefaTema") == "FiscalDaPromo-Tema"
+    assert "feed --tipo tema" in texto
+    assert _hora(_param("InicioTema")) > _hora(_param("InicioFeed"))
+    assert int(_param("InicioTema").split(":")[1]) != 0

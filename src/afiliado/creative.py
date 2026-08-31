@@ -25,7 +25,7 @@ from typing import NamedTuple
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from afiliado import pricing, video
+from afiliado import pricing, temas, video
 from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts, Offer, Post, Verdict, format_brl
@@ -1956,6 +1956,74 @@ def _render_slide_oferta(post: Post, product: Image.Image, indice: int, total: i
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
     return buffer.getvalue()
+
+
+# Fase 5W — o slide de TEXTO, do carrossel temático. Ele não tem produto, não
+# tem preço e não tem foto: é a tese e o corpo, centrados no mesmo miolo em que
+# o slide de oferta põe o card.
+#
+# O título vai em DOURADO e o corpo em texto normal — a mesma hierarquia do
+# resto do design system, onde o dourado é sempre o que se quer que seja lido
+# primeiro (a pill de preço, o botão do rodapé, o handle da capa).
+TEMA_TITULO_SIZE = 66
+TEMA_CORPO_SIZE = 40
+TEMA_RESPIRO = 44          # entre o título e o corpo
+
+
+def _render_slide_tema(titulo: str, corpo: str, indice: int, total: int,
+                       handle: str | None, brand_name: str) -> bytes:
+    largura, altura = CARROSSEL_SIZE
+    canvas = _glow_background(largura, altura, 540, 81, 594, 338)
+    draw = ImageDraw.Draw(canvas)
+    _draw_header_feed(draw, canvas, *FEED_HEADER[:3], brand_name, handle)
+    _draw_contador(draw, largura, indice, total)
+    disponivel = largura - 2 * FEED_PAD
+    # Os máximos de linha são os mesmos que `afiliado.temas` valida ao carregar
+    # — quem passar disso é reprovado ANTES de chegar aqui, porque `_wrap_title`
+    # corta em silêncio e um slide truncado é a peça mentindo sobre si mesma.
+    t_dims = _texto_dims(draw, titulo, TEMA_TITULO_SIZE, disponivel,
+                         temas.TITULO_MAX_LINHAS, 800, 1.08)
+    c_dims = _texto_dims(draw, corpo, TEMA_CORPO_SIZE, disponivel,
+                         temas.CORPO_MAX_LINHAS, 500, 1.38)
+    topo_t, topo_c = _centro_do_bloco([t_dims["height"], c_dims["height"]],
+                                      [TEMA_RESPIRO])
+    _draw_bloco_centralizado(draw, largura, topo_t, t_dims, GOLD)
+    _draw_bloco_centralizado(draw, largura, topo_c, c_dims, TEXT)
+    _draw_feed_footer_tema(draw, largura, handle)
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _draw_feed_footer_tema(draw: ImageDraw.ImageDraw, largura: int,
+                           handle: str | None) -> None:
+    """O rodapé do slide temático: só a assinatura e o handle.
+
+    O slide de oferta fecha com "LINK NA SHOPEE" porque ele TEM um destino;
+    este não tem — mandar para a loja num slide que fala de método seria a peça
+    prometendo o que ela não entrega. Quem tem o destino é o fecho do álbum.
+    """
+    y = CARROSSEL_SIZE[1] - 132
+    _draw_centered(draw, largura, y, ASSINATURA, _font("sans", 34, 700), TEXT)
+    _draw_centered(draw, largura, y + 52, (handle or DEFAULT_HANDLE).upper(),
+                   _font("mono", 26, 500), MUTED)
+
+
+def render_carrossel_tema(tema, handle: str | None = None,
+                          brand_name: str = DEFAULT_BRAND_NAME) -> list[bytes]:
+    """Os PNGs do carrossel TEMÁTICO: capa, um slide de texto por tese, fecho.
+
+    Reusa a capa e o fecho do carrossel de ofertas sem uma linha nova — o que
+    muda é o miolo. É de propósito: o álbum temático tem de parecer o mesmo
+    perfil, e não uma segunda marca.
+    """
+    total = len(tema.slides) + 2
+    imagens = [_render_capa(tema.titulo, tema.subtitulo, handle)]
+    for i, slide in enumerate(tema.slides, start=2):
+        imagens.append(_render_slide_tema(slide.titulo, slide.corpo, i, total,
+                                          handle, brand_name))
+    imagens.append(_render_fecho(handle))
+    return imagens
 
 
 def render_carrossel(fotos: list[tuple[Post, Image.Image]], titulo: str, subtitulo: str,

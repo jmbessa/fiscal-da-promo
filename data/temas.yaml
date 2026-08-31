@@ -1,0 +1,83 @@
+# Os temas do carrossel editorial (fase 5W).
+#
+# ESTE ARQUIVO É CONTEÚDO, não configuração. Ele é escrito por gente, revisado
+# como texto, e o pipeline só o lê e desenha. Mexer aqui muda o que a conta
+# diz — mexa com o mesmo cuidado com que se escreve um post.
+#
+# POR QUE ELE EXISTE. Todo o resto que a conta publica é foto do vendedor com a
+# nossa moldura em volta. A moldura é gráfico próprio e provavelmente passa na
+# regra de originalidade que o Instagram estendeu em 30/04/2026 — mas é a parte
+# FRACA do argumento, e hoje ela é 100% do feed. Um carrossel temático é
+# integralmente nosso: texto nosso, tese nossa, zero repostagem. Ele não é só
+# mais um formato; é o que protege a elegibilidade de recomendação do resto.
+# (docs/superpowers/reviews/2026-08-31-reels-e-carrossel.md, §8 e §9.)
+#
+# A REGRA QUE TODO TEMA OBEDECE, e o teste a impõe: acuse a PRÁTICA, nunca o
+# produto ou a loja. Nenhum tema aqui nomeia vendedor, marca ou anúncio — é a
+# mesma invariante de `2026-08-29-feed-sem-contradicao.md`, e é ela que
+# permite falar do "de" inflado sem virar acusação individual.
+#
+# FORMATO. Cada tema tem uma `capa` (título + subtítulo), de 3 a 6 `slides`
+# (título + corpo) e um `slug` que é a chave da rotação — mudar o slug faz o
+# tema parecer novo e voltar à frente da fila. O fecho é o mesmo de todo
+# carrossel e não se escreve aqui.
+#
+# TAMANHO. O título de slide cabe em 3 linhas e o corpo em 7; o que passar
+# disso é CORTADO no desenho, e o teste reprova antes de chegar lá. Escreva
+# curto — quem lê está no celular, com o polegar em cima do próximo post.
+
+- slug: como-eu-confiro
+  capa:
+    titulo: "COMO EU CONFIRO UM DESCONTO"
+    subtitulo: "O método, em 5 passos — e por que quase nada passa"
+  slides:
+    - titulo: "O “de” não é prova"
+      corpo: >-
+        A loja escreve o “de” que ela quiser. Esse número não passa por
+        ninguém antes de aparecer na sua tela. Ele é a alegação, não a prova.
+    - titulo: "Eu anoto o preço todo dia"
+      corpo: >-
+        Todo dia eu guardo quanto o produto está custando. Sem uma série de
+        preço não existe comparação — existe promessa.
+    - titulo: "Comparo com o preço de sempre"
+      corpo: >-
+        O que interessa não é o “de”: é a mediana do que o produto custou nos
+        últimos 90 dias. É quanto ele custa quando ninguém está anunciando
+        nada.
+    - titulo: "A régua é o quartil de baixo"
+      corpo: >-
+        Só chamo de achado quando o preço de hoje está entre os 25% mais
+        baratos que eu já vi. Acima disso é preço normal com etiqueta bonita.
+    - titulo: "Se não passa, eu não afirmo"
+      corpo: >-
+        Quando eu não tenho série suficiente, eu publico o preço e calo a
+        boca sobre desconto. Prefiro não dizer nada a dizer o que não medi.
+
+- slug: o-de-que-nao-existe
+  capa:
+    titulo: "O “DE” QUE NÃO EXISTE"
+    subtitulo: "Como a âncora inflada funciona — e como se defender dela"
+  slides:
+    - titulo: "Primeiro sobe, depois “baixa”"
+      corpo: >-
+        O preço sobe por um ou dois dias, e é desse pico inflado que o
+        desconto é calculado. O produto volta ao que sempre custou, com uma
+        etiqueta de -40% em cima.
+    - titulo: "Por que funciona"
+      corpo: >-
+        A gente não julga preço no vácuo: julga contra o primeiro número que
+        vê. Se o primeiro número é alto, o segundo parece barato — mesmo
+        sendo o de sempre.
+    - titulo: "O sinal que entrega"
+      corpo: >-
+        Pico curto. Um preço que subiu, ficou um dia lá em cima e desceu não
+        é um preço: é um degrau construído para a foto.
+    - titulo: "Como se defender em 10 segundos"
+      corpo: >-
+        Abra o histórico de preço do produto antes de comprar. Se o “de” só
+        existiu nesta semana, o desconto também só existe nesta semana.
+    - titulo: "O que a lei diz"
+      corpo: >-
+        O Código de Defesa do Consumidor trata publicidade enganosa no
+        artigo 37, e o Procon-SP recomenda que o desconto seja calculado
+        sobre o preço praticado antes — não sobre um pico.

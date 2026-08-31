@@ -229,6 +229,24 @@ class StateDB:
         )
         self.conn.commit()
 
+    def record_peca(self, source: str, item_id: str, channel: str, title: str,
+                    message_id: str) -> None:
+        """Registra a entrega de uma peça que NÃO é oferta — hoje, o carrossel
+        temático da 5W.
+
+        Ela precisa entrar em `posted` pelo mesmo motivo que o álbum de ofertas
+        entra: é `count_posts_today(channel)` que faz o teto e o ritmo do canal
+        valerem, e uma peça que publica sem contar deixaria dois álbuns saírem
+        no mesmo dia. O que ela não tem é `Offer` — daí não dar para usar
+        `record_post`, que lê preço e título de um produto que aqui não existe.
+        """
+        self.conn.execute(
+            "INSERT OR REPLACE INTO posted (source, item_id, channel, title, "
+            "price_cents, message_id, posted_at, manual) VALUES (?,?,?,?,?,?,?,?)",
+            (source, item_id, channel, title, 0, message_id, _now().isoformat(), 0),
+        )
+        self.conn.commit()
+
     # -- histórico próprio de preços (fase 4: régua honesta) ----------------
 
     def record_price(self, source: str, item_id: str, price_cents: int,

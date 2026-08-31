@@ -17,12 +17,13 @@
          uptime contínuo, plano de energia "Ultimate Performance" e suspensão
          em corrente alternada = 0 (nunca suspende).
 
-    Quatro tarefas, todas idempotentes (rodar de novo ATUALIZA, não duplica):
+    Cinco tarefas, todas idempotentes (rodar de novo ATUALIZA, não duplica):
 
       FiscalDaPromo-Run        -> afiliado run --posts-per-run N
       FiscalDaPromo-Feed       -> afiliado feed --tipo termometro
       FiscalDaPromo-Flagrante  -> afiliado feed --tipo flagrante
       FiscalDaPromo-Painel     -> afiliado painel   (1x/dia, não publica nada)
+      FiscalDaPromo-Tema       -> afiliado feed --tipo tema
 
     Eram quatro. `FiscalDaPromo-Stories` (`afiliado stories`) deixou de ser
     criada em 2026-08-30 e este script REMOVE a que já existir — o canal que ela
@@ -75,6 +76,7 @@ param(
     [string]$TarefaFeed = "FiscalDaPromo-Feed",
     [string]$TarefaFlagrante = "FiscalDaPromo-Flagrante",
     [string]$TarefaPainel = "FiscalDaPromo-Painel",
+    [string]$TarefaTema = "FiscalDaPromo-Tema",
     # A cadência. 60 ofertas/dia distribuídas em ~15 h pedem uma a cada ~15 min,
     # e é isso que o `pacing_budget` já assume (config.yaml, channels.telegram).
     # Ao mudar este número, mude `schedule.max_gap_minutes` no config.yaml e
@@ -92,6 +94,12 @@ param(
     [string]$InicioRun = "08:03",
     [string]$InicioFeed = "08:11",
     [string]$InicioFlagrante = "08:16",
+    # O TEMA (fase 5W) roda DEPOIS do termometro de proposito: os dois dividem
+    # a mesma vaga diaria do `instagram_carrossel`, e a ordem e a prioridade.
+    # Se o termometro tiver o que mostrar (alguma oferta aprovada na regua),
+    # ele gasta a vaga e o tema imprime "nao sai agora"; se nao tiver — que e o
+    # caso enquanto `price_refs` for 0 —, a vaga e do tema.
+    [string]$InicioTema = "08:21",
     # O painel (fase 5V) e UMA VEZ por dia, e ANTES da janela de publicacao:
     # ele nao publica nada, e ler os mesmos itens sempre na mesma hora e o que
     # torna a serie comparavel de um dia para o outro. Uma leitura de 200 itens
@@ -109,7 +117,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$TAREFAS = @($TarefaRun, $TarefaStories, $TarefaFeed, $TarefaFlagrante, $TarefaPainel)
+$TAREFAS = @($TarefaRun, $TarefaStories, $TarefaFeed, $TarefaFlagrante, $TarefaPainel,
+             $TarefaTema)
 
 # -- desfazer ------------------------------------------------------------------
 
@@ -308,6 +317,12 @@ Register-TarefaDoFiscal -Nome $TarefaFlagrante -Inicio $InicioFlagrante `
     -Descricao ("Fiscal da Promo: flagrante do 'de' que nao se sustenta, despachado ao chat " +
                 "de operacoes (NAO publica). Criado por deploy/agendar-windows.ps1.")
 
+Register-TarefaDoFiscal -Nome $TarefaTema -Inicio $InicioTema `
+    -Cadencia $CadenciaFeedMinutos -Argumentos "feed --tipo tema" `
+    -Descricao ("Fiscal da Promo: carrossel EDITORIAL (data/temas.yaml), o unico conteudo " +
+                "inteiramente nosso do feed. Divide a vaga diaria com o termometro. " +
+                "Criado por deploy/agendar-windows.ps1.")
+
 # O PAINEL (fase 5V) e a unica tarefa DIARIA de verdade — gatilho simples, sem
 # repeticao. As outras se repetem porque um disparo perdido custa uma peca; o
 # painel se repetindo custaria 200 chamadas por repeticao para gravar o MESMO
@@ -329,7 +344,7 @@ Write-Host "    (sem janela, via deploy/afiliado-oculto.vbs)"
 Write-Host "    iniciar em: $ProjetoDir"
 
 Write-Host ""
-Write-Host "Confira com: afiliado doctor   (ele checa as quatro tarefas acima)"
+Write-Host "Confira com: afiliado doctor   (ele checa as cinco tarefas acima)"
 Write-Host "O publish.yml ja esta sem schedule: — o Actions so roda por workflow_dispatch."
 Write-Host "Ate ver um run de verdade destas tarefas, a producao nao esta publicando."
 Write-Host "Runbook: docs/runbooks/producao-windows.md"

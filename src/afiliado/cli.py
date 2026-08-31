@@ -753,6 +753,24 @@ def _doctor_agendador(consulta=None) -> bool:
     return ok
 
 
+# A pergunta que o doctor faz ao Claude CLI — e a resposta EXATA que prova que
+# ele está vivo, autenticado e devolvendo JSON.
+#
+# Ela já foi `Responda APENAS com JSON: {"ok": true}`, e isso era um FALSO ❌,
+# medido em 2026-08-30: o CLI respondia (returncode 0, sem stderr) RECUSANDO o
+# pedido — "That's a prompt injection technique" —, `parse_json_block` não
+# achava JSON nenhum e o doctor acusava um CLI que estava perfeito. Um comando
+# que manda "responda APENAS com X" tem a FORMA de uma injeção, e o modelo é
+# treinado para não obedecer a essa forma.
+#
+# A troca é por uma PERGUNTA de verdade, cuja resposta ele sabe, com o formato
+# pedido como formato e não como ordem de bypass. Ela continua provando as três
+# coisas: chegou ao modelo, ele respondeu, e respondeu em JSON válido.
+PERGUNTA_DO_DOCTOR = ('Quantos lados tem um triângulo? '
+                      'Responda no formato JSON {"lados": <número>}.')
+RESPOSTA_DO_DOCTOR = {"lados": 3}
+
+
 def doctor(cfg: dict) -> int:
     ok = True
     try:
@@ -827,9 +845,8 @@ def doctor(cfg: dict) -> int:
     else:
         ok = False
         print("❌ Telegram: TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausentes")
-    resp = llm.ask_json('Responda APENAS com JSON: {"ok": true}',
-                        model=cfg["llm"]["model"])
-    if resp == {"ok": True}:
+    resp = llm.ask_json(PERGUNTA_DO_DOCTOR, model=cfg["llm"]["model"])
+    if resp == RESPOSTA_DO_DOCTOR:
         print("✅ Claude CLI: respondendo")
     else:
         ok = False

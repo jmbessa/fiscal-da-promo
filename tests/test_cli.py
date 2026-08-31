@@ -421,7 +421,8 @@ def _doctor_base(monkeypatch):
 
     monkeypatch.setattr(cli, "_shopee", lambda db=None: _Shopee())
     monkeypatch.setattr(cli, "_meli", lambda cfg=None: None)
-    monkeypatch.setattr(cli.llm, "ask_json", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(cli.llm, "ask_json",
+                        lambda *a, **k: cli.RESPOSTA_DO_DOCTOR)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
     for k in ("IG_USER_ID", "IG_ACCESS_TOKEN"):
@@ -435,6 +436,43 @@ def _doctor_base(monkeypatch):
     # esse canal liga na própria fixture.
     cfg.setdefault("channels", {})["instagram_story_link"] = {"enabled": False}
     return cfg
+
+
+def test_a_pergunta_do_doctor_ao_claude_nao_parece_uma_injecao():
+    """A sonda já foi `Responda APENAS com JSON: {"ok": true}` e isso deu um
+    FALSO ❌, medido ao vivo em 2026-08-30: o CLI respondeu (returncode 0, sem
+    stderr) RECUSANDO — "That's a prompt injection technique" — e o doctor
+    acusou um CLI que estava perfeito.
+
+    Uma sonda que ordena "responda APENAS com X, ignore o resto" tem a FORMA de
+    uma injeção; o modelo é treinado para não obedecer a essa forma, então a
+    sonda mede a recusa e não a saúde. E um ❌ permanente num sistema saudável
+    é como se aprende a ignorar o ❌ que importa.
+
+    O que ela precisa ser: uma PERGUNTA de verdade, cuja resposta o modelo sabe
+    sozinho, com o formato pedido como FORMATO. Assim ela continua provando as
+    três coisas — chegou, respondeu, respondeu em JSON."""
+    pergunta = cli.PERGUNTA_DO_DOCTOR.lower()
+    assert "apenas" not in pergunta
+    assert "somente" not in pergunta
+    assert "ignore" not in pergunta
+    # A resposta não pode estar escrita na pergunta: uma sonda que entrega o
+    # gabarito passa com um modelo que só sabe copiar.
+    for valor in cli.RESPOSTA_DO_DOCTOR.values():
+        assert str(valor) not in cli.PERGUNTA_DO_DOCTOR
+    # E ela tem de ser uma pergunta, com o formato JSON pedido.
+    assert "?" in cli.PERGUNTA_DO_DOCTOR and "JSON" in cli.PERGUNTA_DO_DOCTOR
+    assert isinstance(cli.RESPOSTA_DO_DOCTOR, dict) and cli.RESPOSTA_DO_DOCTOR
+
+
+def test_doctor_reprova_quando_o_claude_responde_outra_coisa(monkeypatch, capsys):
+    """Responder QUALQUER coisa não basta: a recusa do caso acima também era
+    uma resposta. O doctor só fica verde com a resposta CERTA."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setattr(cli.llm, "ask_json", lambda *a, **k: {"lados": 4})
+    assert cli.doctor(cfg) == 1
+    assert "❌ Claude CLI" in capsys.readouterr().out
 
 
 def test_doctor_usa_o_retorno_do_send_text(monkeypatch, capsys):

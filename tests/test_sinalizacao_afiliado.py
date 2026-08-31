@@ -87,20 +87,32 @@ def test_um_lugar_so_decide_a_frase(monkeypatch):
         assert texto.startswith("Isto é publicidade paga"), superficie
 
 
-def test_a_frase_diz_o_que_o_dono_ganha_e_o_que_o_seguidor_nao_perde():
-    """A escolha de TEXTO da fase, e o que ela recusa: `#publi` é jargão de
-    influenciador, e esta conta se chama Fiscal — explicar a própria
-    remuneração é coerente com ela, o jargão a contradiz."""
-    assert "afiliado" in creative.AFILIADO.lower()
-    assert "comissão" in creative.AFILIADO.lower()
+def test_a_frase_descreve_o_destino_do_link():
+    """O TEXTO EM VIGOR, decidido pelo dono em 2026-08-30 — e ele NÃO é
+    sinalização de afiliado.
+
+    A frase anterior dizia "ganho comissão"; o dono a retirou ("afasta a
+    possibilidade de compra"). O que ficou descreve para onde o link leva.
+    Este teste afirma o que a frase É, para que ninguém a leia como
+    conformidade: o risco do A7 segue NÃO mitigado, e está escrito assim no
+    documento e na constante."""
+    assert "link" in creative.AFILIADO.lower()
+    assert "comissão" not in creative.AFILIADO.lower()
     assert "#publi" not in creative.AFILIADO.lower()
 
 
-def test_a_forma_da_arte_e_curta_e_diz_o_essencial():
-    """Na arte não cabe a frase inteira sem desestabilizar um layout calibrado
-    em pixel — a forma reduzida carrega a parte que identifica."""
-    assert creative.AFILIADO_NA_ARTE.lower() == "link de afiliado"
-    assert len(creative.AFILIADO_NA_ARTE) < len(creative.AFILIADO)
+def test_o_chip_da_arte_esta_desligado_e_religa_por_uma_constante():
+    """Vazio = desligado, no molde de `pricing.MOSTRAR_SEM_CUPOM`.
+
+    Está vazio porque o botão do rodapé já diz "LINK NA SHOPEE" / "LINK NO
+    MERCADO LIVRE" — um chip repetindo que o link leva à loja seria a mesma
+    informação duas vezes, na faixa de identidade da conta. O teste afirma os
+    DOIS estados para que a geometria calibrada na 5U continue guardada."""
+    assert creative.AFILIADO_NA_ARTE == ""
+    # Desligado, o desenho não acontece — e não estoura por falta de caixa.
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    creative._draw_afiliado_chip(d, {"text": "", "box": (0, 0, 0, 0)})
 
 
 def test_a_frase_nao_vira_alegacao_de_desconto():
@@ -191,10 +203,10 @@ def test_a_sinalizacao_nao_encosta_no_contador_do_carrossel():
     assert plan["afiliado_box"][2] < contador[0]
 
 
-def test_o_chip_e_desenhado_de_verdade_no_story_e_no_feed():
-    """O plano é uma promessa; isto confere o pixel. A pill tem contorno
-    `PILL_BORDER` sólido de 2 px sobre preenchimento `SURFACE` — as duas cores
-    existem exatas na caixa, antialias nenhum."""
+def test_o_chip_desligado_nao_pinta_nada_na_faixa_do_cabecalho():
+    """O inverso do teste da 5U: com `AFILIADO_NA_ARTE` vazio, a caixa onde o
+    chip ficaria não tem NENHUMA das duas cores dele. É o que prova que
+    desligar é desligar, e não desenhar por baixo de outra coisa."""
     cliente = _client_da_foto()
     for png, plan in ((creative.render_story(make_offer(), COPY, SELO, client=cliente),
                        c.story_plan(make_offer(), SELO)),
@@ -204,8 +216,8 @@ def test_o_chip_e_desenhado_de_verdade_no_story_e_no_feed():
         x0, y0, x1, y1 = (round(v) for v in plan["afiliado_box"])
         cores = set(img.crop((x0, y0, x1 + 1, y1 + 1)).convert("RGB").getcolors(1 << 20) or [])
         cores = {cor for _, cor in cores}
-        assert c.PILL_BORDER in cores
-        assert c.SURFACE in cores
+        assert c.PILL_BORDER not in cores
+        assert c.SURFACE not in cores
 
 
 def test_o_grafico_do_flagrante_nao_se_diz_link_de_afiliado():

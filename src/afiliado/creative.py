@@ -117,22 +117,27 @@ ASSINATURA = "Quem conferiu? O Fiscal."
 # a natureza publicitária") e exige identificação **visível na primeira
 # visualização**, não em nota de rodapé.
 #
-# POR QUE ESTA FRASE, e não o "🔗 link de afiliado · #publi" que o registro
-# antigo sugeria: `#publi` é jargão de influenciador, e esta conta não é isso —
-# ela se chama Fiscal. Explicar a própria remuneração ("ganho comissão") e
-# desarmar a única objeção que o seguidor tem ("o preço é o mesmo para você") é
-# coerente com o nome; a hashtag o contradiz. E ela é DECLARATIVA: nenhuma
-# palavra de desconto, para que a legenda de um post de modo B continue
-# passando na régua do `copywriter`.
-AFILIADO = "Link de afiliado — ganho comissão, o preço é o mesmo para você"
+# O TEXTO EM VIGOR — decisão do dono em 2026-08-30, e ele NÃO é sinalização de
+# afiliado. A frase anterior ("Link de afiliado — ganho comissão, o preço é o
+# mesmo para você") foi retirada a pedido dele: "não gostei e afasta a
+# possibilidade de compra por parte do usuário".
+#
+# **O risco do A7 continua NÃO MITIGADO.** Esta frase descreve o destino do
+# link; ela não identifica o post como publicidade nem revela a comissão, que é
+# o que o CDC art. 36, o guia CONAR de 01/06/2026 e os Termos da Shopee pedem.
+# Quem for reavaliar: não leia a existência desta linha como conformidade — ela
+# é informação ao leitor, e a exposição contratual descrita acima segue de pé,
+# aceita conscientemente. Ver A7 em
+# `docs/superpowers/reviews/2026-08-26-analise-adversarial.md`.
+AFILIADO = "O link direciona para a página do produto na loja"
 
-# A forma reduzida, para a ARTE. A frase inteira em 62 caracteres não cabe numa
-# peça calibrada em pixel sem empurrar o corpo contra o rodapé — e o guarda de
-# overflow já cortou coisa demais neste projeto. O que a lei pede é a
-# IDENTIFICAÇÃO ("link de afiliado"); o resto é serviço, e ele viaja na legenda,
-# que acompanha toda peça publicada. Desenhada em caixa alta (ver
-# `_afiliado_chip_dims`), na voz mono do sistema.
-AFILIADO_NA_ARTE = "Link de afiliado"
+# A forma para a ARTE. **Vazia = chip desligado** (ver `_draw_afiliado_chip`),
+# e é o estado atual: na peça, o botão de rodapé já diz "LINK NA SHOPEE" / "LINK
+# NO MERCADO LIVRE", então um chip repetindo que o link leva à loja seria a
+# mesma informação duas vezes, ocupando a faixa de identidade da conta.
+# Preencher esta constante liga o chip de volta, com a geometria que a fase 5U
+# calibrou e que os testes continuam guardando.
+AFILIADO_NA_ARTE = ""
 
 
 # --- Fontes -------------------------------------------------------------------
@@ -342,6 +347,11 @@ def _afiliado_centrado(draw: ImageDraw.ImageDraw, largura: int, top: float) -> d
 
 
 def _draw_afiliado_chip(draw: ImageDraw.ImageDraw, geo: dict) -> None:
+    # `AFILIADO_NA_ARTE` vazio = chip desligado, e o desenho não acontece. É o
+    # mesmo padrão de `pricing.MOSTRAR_SEM_CUPOM`: interruptor, não remoção —
+    # religar é preencher a constante, e a geometria continua testada.
+    if not geo.get("text"):
+        return
     x0, y0, x1, y1 = geo["box"]
     # METADE DA ALTURA, nunca 999: raio maior que o lado curto faz o Pillow
     # devolver uma ELIPSE — o defeito que já saiu no rodapé do story, no fecho

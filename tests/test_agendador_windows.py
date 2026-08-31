@@ -57,7 +57,7 @@ def _disparos(inicio: str, cadencia: str = "CadenciaMinutos") -> list[datetime]:
     return horarios
 
 
-INICIOS = ("InicioRun", "InicioStories", "InicioFeed", "InicioFlagrante")
+INICIOS = ("InicioRun", "InicioFeed", "InicioFlagrante")
 
 
 def _orcamentos(disparos: list[datetime]) -> list[int]:
@@ -70,15 +70,12 @@ def _orcamentos(disparos: list[datetime]) -> list[int]:
 
 # -- o que as tarefas são -----------------------------------------------------
 
-def test_o_script_cria_as_tarefas_da_producao():
-    """`afiliado run` (as 60 ofertas do dia) e `afiliado stories` (o story com
-    figurinha, que NÃO pode rodar no Actions: IP de datacenter diferente a cada
-    execução é o padrão que mais dispara `challenge_required`)."""
+def test_o_script_cria_a_tarefa_do_run():
+    """`afiliado run` — as 60 ofertas do dia, e desde 2026-08-30 também o story
+    (Graph API) que a tarefa separada de figurinha publicava."""
     texto = _script()
     assert _param("TarefaRun") == "FiscalDaPromo-Run"
-    assert _param("TarefaStories") == "FiscalDaPromo-Stories"
     assert "run --posts-per-run" in texto
-    assert "stories --posts" in texto
 
 
 def test_as_pecas_de_feed_tambem_ganham_agendador():
@@ -107,8 +104,8 @@ def test_o_doctor_procura_exatamente_as_tarefas_que_o_script_cria():
     pior do que não checar nada."""
     for nome in cli.TAREFAS_DA_PRODUCAO:
         assert nome in _script()
-    assert set(cli.TAREFAS_DA_PRODUCAO) == {_param("TarefaRun"), _param("TarefaStories"),
-                                            _param("TarefaFeed"), _param("TarefaFlagrante")}
+    assert set(cli.TAREFAS_DA_PRODUCAO) == {_param("TarefaRun"), _param("TarefaFeed"),
+                                            _param("TarefaFlagrante")}
     assert cli.SCRIPT_DO_AGENDADOR == SCRIPT
 
 
@@ -120,8 +117,8 @@ def test_a_cadencia_fecha_o_dia_de_60_ofertas():
     a meta de 60/dia é inalcançável por construção (o menor da revisão da 5C,
     que a mudança de host podia reintroduzir sem ninguém notar)."""
     teto = _config()["channels"]["telegram"]["max_per_day"]
-    for inicio in (_param("InicioRun"), _param("InicioStories")):
-        assert _orcamentos(_disparos(inicio))[-1] == teto, inicio
+    inicio = _param("InicioRun")
+    assert _orcamentos(_disparos(inicio))[-1] == teto, inicio
 
 
 def test_posts_por_run_cobre_dois_disparos_perdidos():
@@ -168,10 +165,12 @@ def test_o_minuto_de_inicio_e_irregular_e_as_tarefas_nao_colidem():
     minutos = {int(_param(p).split(":")[1]) for p in INICIOS}
     assert 0 not in minutos
     assert len(minutos) == len(INICIOS)
-    cadencia = int(_param("CadenciaMinutos"))
     # E nem por acaso: a diferença entre os inícios das duas tarefas de mesma
     # cadência não é múltipla dela, senão elas se encontrariam em todo disparo.
-    diferenca = abs(_hora(_param("InicioRun")) - _hora(_param("InicioStories")))
+    # As duas de mesma cadência hoje são as de FEED (a de stories saiu em
+    # 2026-08-30, e a de run ficou sozinha nos 15 min).
+    cadencia = int(_param("CadenciaFeedMinutos"))
+    diferenca = abs(_hora(_param("InicioFeed")) - _hora(_param("InicioFlagrante")))
     assert diferenca.total_seconds() // 60 % cadencia != 0
 
 
@@ -332,3 +331,21 @@ def test_o_script_falha_alto_se_o_atalho_sumir():
     texto = _script()
     assert "não achei $VbsOculto" in texto
     assert "throw" in texto.split("$VbsOculto = Join-Path")[1][:400]
+
+
+def test_a_tarefa_de_stories_nao_e_criada_e_a_existente_e_removida():
+    """O canal que ela servia (`instagram_story_link`) foi desligado em
+    2026-08-30. Story passou a sair pela Graph API, dentro do `afiliado run`.
+
+    Deixar a tarefa no ar custava 8 chamadas de descoberta a cada 15 min
+    (~490/dia) para nao publicar nada — e o script precisa REMOVER a que ja
+    existe, senao ela sobrevive a atualizacao e continua rodando calada."""
+    texto = _script()
+    assert "Register-TarefaDoFiscal -Nome $TarefaStories" not in texto
+    assert "Unregister-ScheduledTask -TaskName $TarefaStories" in texto
+    # O -Remover continua tendo de alcançá-la: é o único jeito de limpar uma
+    # instalação antiga que ainda a tenha.
+    assert _param("TarefaStories") == "FiscalDaPromo-Stories"
+    assert "$TarefaStories, $TarefaFeed" in texto
+    # E o doctor não pode pedir uma tarefa que o script apaga.
+    assert cli.TAREFA_STORIES not in cli.TAREFAS_DA_PRODUCAO

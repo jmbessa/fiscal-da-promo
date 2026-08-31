@@ -238,9 +238,13 @@ como voltar para o Actions — está em
 [`docs/runbooks/producao-windows.md`](producao-windows.md). O que vale saber
 aqui:
 
-- a tarefa é `FiscalDaPromo-Stories`, roda `afiliado stories --posts 4` **a
-  cada 15 minutos** das 08:08 às 23:15, e **inicia na pasta do projeto** (é de
-  onde saem `config.yaml`, `.env` e `data/`);
+- **a tarefa `FiscalDaPromo-Stories` não existe mais.** Ela saiu em
+  2026-08-30, junto com o canal que este runbook descreve, e o
+  `agendar-windows.ps1` **remove** a que ainda existir na máquina. O que segue
+  descreve como ela ERA, para quem for religar o canal;
+- era `afiliado stories --posts 4` **a cada 15 minutos** das 08:08 às 23:15, e
+  **iniciava na pasta do projeto** (é de onde saem `config.yaml`, `.env` e
+  `data/`);
 - 15 min, e não as 2 h que este runbook pedia até a 5F: com
   `max_per_day: 60`, 2 h entregariam 8 stories/dia — ou rajadas de 7 pelo
   ritmo, que é justamente o que `pacing_budget` existe para evitar. Um story a

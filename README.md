@@ -238,31 +238,35 @@ prompt promete 30 candidatas e precisa entregar 30.
 
 ## Agendamento
 
-- **A máquina do dono (produção desde 2026-08-28, fase 5I)** — quatro tarefas
+- **A máquina do dono (produção desde 2026-08-28, fase 5I)** — três tarefas
   no **Agendador de Tarefas do Windows**, criadas por
   `deploy/agendar-windows.ps1` (idempotente, com `-Remover`):
-  `FiscalDaPromo-Run` (`afiliado run --posts-per-run 4`) e
-  `FiscalDaPromo-Stories` (`afiliado stories --posts 4`) **a cada 15 min** das
-  08:03/08:08 às 23:15, mais `FiscalDaPromo-Feed` e `FiscalDaPromo-Flagrante`
-  **a cada 2 h**. Runbook completo — a ordem da virada, como conferir que
+  `FiscalDaPromo-Run` (`afiliado run --posts-per-run 4`) **a cada 15 min** das
+  08:03 às 23:15, mais `FiscalDaPromo-Feed` e `FiscalDaPromo-Flagrante`
+  **a cada 2 h**. Eram quatro: `FiscalDaPromo-Stories` saiu em **2026-08-30**
+  junto com o canal `instagram_story_link` que ela servia, e o script remove a
+  que já existir — story hoje sai pela Graph API dentro do `afiliado run`.
+  Runbook completo — a ordem da virada, como conferir que
   rodou, como voltar — em `docs/runbooks/producao-windows.md`.
   **Por que saiu do Actions**, com os três fatos medidos: (1) o agendador do
   GitHub entregou **1 run em toda a história do repositório** contra ~16
   disparos esperados em ~25 h, e o único saiu **51 min atrasado**; (2) o story
-  com figurinha **não pode** rodar num IP de datacenter (`challenge_required`)
-  e a Graph API não publica figurinha nenhuma; (3) a máquina foi medida em
+  com figurinha **não podia** rodar num IP de datacenter
+  (`challenge_required`) — e o argumento sobrevive ao desligamento dele, porque
+  é a mesma conta que segura o token da Graph API; (3) a máquina foi medida em
   2026-08-28 com **48,7 h de uptime** e suspensão em corrente alternada = 0.
   **Por que 15 min:** medido, um `afiliado run` gasta **8 chamadas** de
   descoberta (sempre, mesmo sem publicar nada) + 2 por oferta publicada — 608
-  por tarefa por dia, ~1.216 com as duas, contra os ~1.920/dia que a VPS já
-  fazia. E é a cadência que faz o maior salto do `pacing_budget` cair para 1,
+  por dia, contra os ~1.920/dia que a VPS já fazia (eram ~1.216 enquanto a
+  tarefa de stories existia, e as ~490 que ela gastava para não publicar nada
+  foram o argumento que a tirou do ar). E é a cadência que faz o maior salto do `pacing_budget` cair para 1,
   com `--posts-per-run 4` cobrindo três disparos perdidos.
 - **O buraco na cadência é o sensor (fase 5G, recalibrado na 5I)** — o resumo
   do chat de operações **acusa buracos** — em horas e em disparos perdidos —
   acima de `schedule.max_gap_minutes` (**40**, para a cadência de 15 min:
   tolera um disparo perdido e acusa a partir do segundo). É ele que denuncia
   uma máquina parada. O `afiliado doctor` completa: no Windows ele confere se
-  as quatro tarefas existem e estão habilitadas.
+  as três tarefas existem e estão habilitadas.
 - **GitHub Actions (fallback manual)** — `.github/workflows/publish.yml`
   perdeu o `schedule:` e ficou só com `workflow_dispatch`: dois hosts
   publicando ao mesmo tempo postariam a mesma oferta duas vezes (cada um tem o

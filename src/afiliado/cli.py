@@ -101,7 +101,12 @@ TAREFA_STORIES = "FiscalDaPromo-Stories"
 # SILÊNCIO, que é o defeito que esta fase existe para acabar.
 TAREFA_FEED = "FiscalDaPromo-Feed"
 TAREFA_FLAGRANTE = "FiscalDaPromo-Flagrante"
-TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_STORIES, TAREFA_FEED, TAREFA_FLAGRANTE)
+# `TAREFA_STORIES` saiu da lista em 2026-08-30, com o canal `instagram_story_link`
+# que ela servia. Story agora sai pela Graph API, dentro do `afiliado run`.
+# Manter a tarefa na lista faria o doctor pedir uma tarefa que o script REMOVE —
+# um ❌ permanente num sistema saudável, que é a forma mais rápida de ensinar o
+# dono a ignorar o ❌ (o mesmo critério do data feed da 5L).
+TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_FEED, TAREFA_FLAGRANTE)
 SCRIPT_DO_AGENDADOR = "deploy/agendar-windows.ps1"
 RUNBOOK_DA_PRODUCAO = "docs/runbooks/producao-windows.md"
 

@@ -9,20 +9,25 @@
       1. O agendador do GitHub não entrega: o workflow `publish` teve UM run em
          toda a história do repositório (2026-08-27T20:51Z, 51 min atrasado)
          contra ~16 disparos esperados em 25 h.
-      2. Story com figurinha de link NÃO PODE rodar no Actions — IP de
+      2. Nada que toque a conta do Instagram pode rodar no Actions — IP de
          datacenter, diferente a cada execução, é o padrão que mais dispara
-         `challenge_required`, e a Graph API não publica figurinha nenhuma. O
-         próprio código recusa (AVISO_STORY_LINK_FORA_DO_RUN).
+         `challenge_required`. Valia para a figurinha (hoje desligada) e vale
+         para o token da Graph API, que é a mesma conta.
       3. A máquina do dono é um host viável, medido em 2026-08-28: 48,7 h de
          uptime contínuo, plano de energia "Ultimate Performance" e suspensão
          em corrente alternada = 0 (nunca suspende).
 
-    Quatro tarefas, todas idempotentes (rodar de novo ATUALIZA, não duplica):
+    Três tarefas, todas idempotentes (rodar de novo ATUALIZA, não duplica):
 
       FiscalDaPromo-Run        -> afiliado run --posts-per-run N
-      FiscalDaPromo-Stories    -> afiliado stories --posts N
       FiscalDaPromo-Feed       -> afiliado feed --tipo termometro
       FiscalDaPromo-Flagrante  -> afiliado feed --tipo flagrante
+
+    Eram quatro. `FiscalDaPromo-Stories` (`afiliado stories`) deixou de ser
+    criada em 2026-08-30 e este script REMOVE a que já existir — o canal que ela
+    servia (`instagram_story_link`, figurinha por instagrapi) está desligado, e
+    quem publica story agora é a Graph API dentro do `afiliado run`. O motivo
+    inteiro está no bloco que faz a remoção, mais abaixo.
 
     As duas de FEED existem porque o único lugar que chamava `afiliado feed`
     era o passo "Conteúdo do feed" do publish.yml — desligar o `schedule:` de
@@ -83,7 +88,6 @@ param(
     # minuto zero de cada hora parece robô, e duas tarefas no mesmo instante são
     # dois processos Python disputando a máquina e as mesmas APIs.
     [string]$InicioRun = "08:03",
-    [string]$InicioStories = "08:08",
     [string]$InicioFeed = "08:11",
     [string]$InicioFlagrante = "08:16",
     # O fim da janela é o `schedule.window_end` do config.yaml. Um disparo
@@ -268,10 +272,24 @@ Register-TarefaDoFiscal -Nome $TarefaRun -Inicio $InicioRun -Cadencia $CadenciaM
     -Descricao ("Fiscal da Promo: publica as ofertas do dia (Telegram + feed do Instagram). " +
                 "Criado por deploy/agendar-windows.ps1 — nao edite a mao.")
 
-Register-TarefaDoFiscal -Nome $TarefaStories -Inicio $InicioStories -Cadencia $CadenciaMinutos `
-    -Argumentos "stories --posts $PostsPorRun" `
-    -Descricao ("Fiscal da Promo: story com figurinha de link (instagrapi). NAO roda no " +
-                "GitHub Actions. Criado por deploy/agendar-windows.ps1 — nao edite a mao.")
+# A tarefa de STORIES nao e mais criada, e a existente e REMOVIDA (2026-08-30).
+#
+# Ela chamava `afiliado stories`, que so monta o canal `instagram_story_link`
+# (instagrapi, API privada). Esse canal foi desligado no config: com 2
+# seguidores e ZERO toques em link do perfil em 7 dias, o que a figurinha
+# entregava nao pagava o risco de automatizar a conta que segura o token da
+# Graph API e a integracao de afiliado.
+#
+# Quem publica story agora e o `instagram_story` (Graph API), e ele sai pelo
+# `afiliado run` — a tarefa acima. Deixar a de stories no ar custava 8 chamadas
+# de descoberta a cada 15 min (~490/dia) para nao publicar nada.
+#
+# Para religar: `instagram_story_link.enabled: true` no config (a REGRA DE OURO
+# exige desligar o `instagram_story` junto) e devolver este bloco.
+if (Get-ScheduledTask -TaskName $TarefaStories -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $TarefaStories -Confirm:$false
+    Write-Host "removida: $TarefaStories (o canal de figurinha esta desligado)"
+}
 
 Register-TarefaDoFiscal -Nome $TarefaFeed -Inicio $InicioFeed -Cadencia $CadenciaFeedMinutos `
     -Argumentos "feed --tipo termometro" `
@@ -284,7 +302,7 @@ Register-TarefaDoFiscal -Nome $TarefaFlagrante -Inicio $InicioFlagrante `
                 "de operacoes (NAO publica). Criado por deploy/agendar-windows.ps1.")
 
 Write-Host ""
-Write-Host "Confira com: afiliado doctor   (ele checa as quatro tarefas acima)"
+Write-Host "Confira com: afiliado doctor   (ele checa as três tarefas acima)"
 Write-Host "O publish.yml ja esta sem schedule: — o Actions so roda por workflow_dispatch."
 Write-Host "Ate ver um run de verdade destas tarefas, a producao nao esta publicando."
 Write-Host "Runbook: docs/runbooks/producao-windows.md"

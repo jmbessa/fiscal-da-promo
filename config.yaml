@@ -464,6 +464,40 @@ validation:
 copy:
   tone: "empolgado, direto, sem exageros enganosos, pt-BR"
 
+# Fase 5U (U4) — HASHTAGS, e o que elas NÃO são.
+#
+# Nenhum dos 5 posts publicados até 2026-08-29 tinha hashtag. Numa conta sem
+# audiência isso é um sinal de categorização a menos: a hashtag é o que diz ao
+# Instagram DE QUE o post é, para quem ainda não segue.
+#
+# De 4 a 6 derivadas da categoria da oferta + as 2 fixas da marca, no FIM da
+# legenda, depois do bloco indexável (que é conteúdo; hashtag é endereçamento).
+# Nada de bloco de 30 genéricas: além de ser o padrão que o Instagram trata
+# como spam, ele dilui o sinal das poucas certas. Os tetos estão em
+# `afiliado.categorias` (MAX_DERIVADAS/MAX_FIXAS) e são de desenho, não de
+# operação; o CONTEÚDO das listas é decisão de negócio e mora aqui.
+#
+# Categoria desconhecida não quebra o post: cai só nas fixas. O ID vem de
+# dados de terceiros e a Shopee cria categoria nova sem avisar ninguém.
+#
+# As chaves são as MESMAS de `selection.category_ids` (Shopee) e as raízes do
+# pool do ML que aparecem em `afiliado.categorias.NOMES` — um teste cobra a
+# cobertura das duas listas.
+hashtags:
+  fixas: ["#fiscaldapromo", "#achadinhos"]
+  por_categoria:
+    # Shopee
+    "100630": ["#beleza", "#skincare", "#maquiagem", "#autocuidado"]
+    "100636": ["#casa", "#organizacao", "#utilidadesdomesticas", "#decoracao"]
+    "100001": ["#saude", "#suplementos", "#bemestar", "#vidasaudavel"]
+    "100637": ["#fitness", "#treino", "#academia", "#esportes"]
+    "100632": ["#maternidade", "#bebe", "#enxovaldebebe", "#maternidadereal"]
+    # Mercado Livre — as raízes do pool curado
+    "MLB1246": ["#beleza", "#skincare", "#cuidadopessoal", "#autocuidado"]
+    "MLB1276": ["#fitness", "#treino", "#academia", "#esportes"]
+    "MLB1574": ["#casa", "#organizacao", "#decoracao", "#utilidadesdomesticas"]
+    "MLB264586": ["#saude", "#suplementos", "#bemestar", "#vidasaudavel"]
+
 # Identidade: nome e handle desenhados nas artes de story/feed (ver docs/brand-guidelines.md).
 brand:
   name: "Fiscal da Promo"

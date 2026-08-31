@@ -15,7 +15,8 @@ from afiliado import (categorias, config, creative, flagrante, llm, pipeline, pr
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import (GRAPH_HOSTS, cota_de_publicacao,
                                                 graph_error, le_seguidores)
-from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
+from afiliado.channels.instagram_feed import (InstagramFeedChannel,
+                                             rodape_de_hashtags, sanitiza_titulo)
 from afiliado.channels.instagram_reel import InstagramReelChannel
 from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.instagram_story_link import InstagramStoryLinkChannel
@@ -449,7 +450,8 @@ def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[
                        "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
         return
     ch = cls(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
-             brand_name=brand_name, api=_instagram_api(cfg), art_host_bot_token=art_host)
+             brand_name=brand_name, api=_instagram_api(cfg), art_host_bot_token=art_host,
+             hashtags=cfg.get("hashtags"))
     if max_per_day is not None:
         ch.max_per_day = int(max_per_day)
     channels.append(ch)
@@ -1313,7 +1315,8 @@ def capa_do_termometro(posts: list[Post]) -> tuple[str, str]:
     return titulo, SUBTITULO_TERMOMETRO
 
 
-def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
+def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str,
+                        hashtags: dict | None = None) -> str:
     """A legenda do álbum — página de busca, não pedido de curtida.
 
     Um item por linha com o nome COMPLETO e o preço, as categorias por nome, e
@@ -1345,7 +1348,10 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
     if janelas:
         linhas.append(f"Preço verificado nos últimos {min(janelas)} dias.")
     linhas.append(creative.ASSINATURA)
-    return "\n".join(linhas)
+    # Fase 5U: as hashtags das categorias de TODAS as ofertas do álbum, sem
+    # repetir e com o mesmo teto — é uma legenda só, não seis.
+    return "\n".join(linhas) + rodape_de_hashtags(
+        hashtags, [p.offer.category for p in posts])
 
 
 def _notifica_ops(cfg: dict, texto: str) -> None:
@@ -1392,7 +1398,8 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
             fotos = creative.carrossel_fotos(posts, client, avisos)
             posts = [post for post, _ in fotos]
             titulo, subtitulo = capa_do_termometro(posts)
-            legenda = legenda_do_carrossel(posts, titulo, subtitulo)
+            legenda = legenda_do_carrossel(posts, titulo, subtitulo,
+                                           cfg.get("hashtags"))
             imagens = creative.render_carrossel(fotos, titulo, subtitulo, handle=handle,
                                                 brand_name=nome_marca)
         except SourceError as exc:

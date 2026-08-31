@@ -172,6 +172,15 @@ escreve no banco nem chama a Graph API.
 5. **Legenda indexável**: nome completo do produto, categoria por nome, "Preço
    verificado nos últimos N dias" (só com N medido) e a frase-assinatura. Nada
    de pedido de curtida, comentário, compartilhamento ou marcação.
+6. **Sinalização de afiliado na PRIMEIRA linha** (fase 5U): a legenda abre
+   dizendo que o link é de afiliado, porque o Instagram esconde tudo depois de
+   ~125 caracteres atrás do "mais" e o guia CONAR de 01/06/2026 pede
+   identificação visível na primeira visualização. A arte carrega a forma
+   curta, no cabeçalho.
+7. **Hashtags no fim** (fase 5U): de 4 a 6 derivadas da categoria da oferta
+   mais as 2 fixas da marca, DEPOIS do bloco indexável — o bloco é conteúdo, a
+   hashtag é endereçamento. Nada de bloco de 30 genéricas: o mapa categoria →
+   hashtags está em `config.yaml` e categoria desconhecida cai só nas fixas.
 
 ### Cadência entregue
 

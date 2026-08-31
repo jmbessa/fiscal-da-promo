@@ -43,7 +43,8 @@ from afiliado import creative, pricing, video
 from afiliado.channels.base import PublishResult
 from afiliado.channels.instagram_common import (STATUS_TERMINAIS, InstagramBase,
                                                 graph_error)
-from afiliado.channels.instagram_feed import bloco_indexavel, sanitiza_titulo
+from afiliado.channels.instagram_feed import (bloco_indexavel, rodape_de_hashtags,
+                                              sanitiza_titulo)
 from afiliado.errors import SourceError
 from afiliado.models import Post
 
@@ -168,4 +169,5 @@ class InstagramReelChannel(InstagramBase):
             f"{bloco_preco}\n\n"
             "🔗 Link na bio e no canal do Telegram\n\n"
             f"{bloco_indexavel(titulo, offer, post.verdict)}"
+            + rodape_de_hashtags(self.hashtags, [offer.category])
         )

@@ -27,7 +27,7 @@ from afiliado.errors import SourceError
 from afiliado.models import Offer, Post, Verdict
 
 __all__ = ["GRAPH", "GRAPH_HOSTS", "MAX_ITENS_CARROSSEL", "bloco_indexavel",
-           "sanitiza_titulo", "InstagramFeedChannel"]
+           "rodape_de_hashtags", "sanitiza_titulo", "InstagramFeedChannel"]
 
 # Teto da Meta para um álbum. O teto do DESENHO é outro e menor
 # (`creative.CARROSSEL_MAX_SLIDES`, 8); este aqui é o da API, e existe para o
@@ -43,6 +43,17 @@ def sanitiza_titulo(title: str) -> str:
     if idx == -1:
         return title
     return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
+
+
+def rodape_de_hashtags(secao, categories) -> str:
+    """As hashtags precedidas da linha em branco que as separa do bloco
+    indexável — ou "" quando não há nenhuma.
+
+    Existe para que as três legendas (feed, carrossel e Reel) não repitam a
+    decisão "acrescento um bloco vazio?": sem a seção `hashtags:` no config, a
+    legenda fica byte a byte igual à de antes da fase 5U."""
+    linha = categorias.linha_de_hashtags(secao, categories)
+    return "\n\n" + linha if linha else ""
 
 
 def bloco_indexavel(titulo: str, offer: Offer, verdict: Verdict) -> str:
@@ -215,4 +226,8 @@ class InstagramFeedChannel(InstagramBase):
             # Fase 5D: a legenda fecha com o bloco indexável — o Google lê esta
             # página desde 10/07/2025.
             f"{bloco_indexavel(titulo, offer, post.verdict)}"
+            # Fase 5U: e DEPOIS dele as hashtags. O bloco indexável é conteúdo
+            # (nome do produto, categoria por nome, janela); a hashtag é
+            # endereçamento — quem lê a legenda quer o primeiro primeiro.
+            + rodape_de_hashtags(self.hashtags, [offer.category])
         )

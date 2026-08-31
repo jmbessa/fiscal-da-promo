@@ -170,6 +170,7 @@ class InstagramBase:
                  client: httpx.Client | None = None, brand_handle: str | None = None,
                  brand_name: str = "Fiscal da Promo", api: str = "facebook_login",
                  art_host_bot_token: str = "",
+                 hashtags: dict | None = None,
                  sleep: Callable[[float], None] = time.sleep):
         # .strip() mata o footgun clássico de segredo colado com espaço/quebra
         # de linha nas pontas (env var, clipboard); não cobre caractere de
@@ -185,6 +186,10 @@ class InstagramBase:
         self.client = client or httpx.Client(timeout=30)
         self.brand_handle = brand_handle
         self.brand_name = brand_name
+        # Fase 5U (U4): a seção `hashtags:` do config, como ela é — quem a lê e
+        # a normaliza é `afiliado.categorias`. `None` (ou seção ausente) deixa
+        # a legenda exatamente como era antes da fase.
+        self.hashtags = hashtags
         self.graph = GRAPH_HOSTS.get(api, GRAPH_HOSTS["facebook_login"])
         # Injetável para o teste não dormir de verdade.
         self.sleep = sleep

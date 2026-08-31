@@ -110,7 +110,9 @@ Fluxo completo (pool curado de ofertas → preço ao vivo → link) em
 - `afiliado run` — executa e publica de verdade.
 - `afiliado stories [--posts N] [--dry-run]` — o mesmo pipeline com **só o
   canal de API privada** (`instagram_story_link`, instagrapi, story com
-  figurinha de link), para o dono rodar da própria máquina (fase 5F). É o
+  figurinha de link), para o dono rodar da própria máquina (fase 5F).
+  **Desde a fase 5U esse canal está desligado** e o comando fica ocioso: quem
+  publica story é o `instagram_story` (Graph API), pelo `afiliado run`. É o
   único comando que o monta; `afiliado run` o ignora mesmo ligado, porque ele
   não pode rodar no GitHub Actions. O contrário também vale: os canais que o
   Actions publica — inclusive o `instagram_story` da Graph API — **não** sobem
@@ -291,8 +293,9 @@ run pode chegar a publicar; quem distribui os 60/dia pela janela é o
 
 Cada canal tem um teto diário (`max_per_day` em `config.yaml`, contado no
 SQLite **no dia local** de `schedule.timezone`): `telegram` em 60/dia (a meta
-do canal), `instagram_story_link` em 60/dia e `instagram_feed` em 2/dia
-(`instagram_story` e `story_dispatch`, os dois fallbacks, estão desligados).
+do canal), `instagram_story` em 60/dia e `instagram_feed` em 2/dia
+(`instagram_story_link` e `story_dispatch`, os dois fallbacks, estão
+desligados — ver a fase 5U em `config.yaml`).
 Desde a fase 5A o teto é **distribuído pela janela** (`schedule.window_start`
 – `window_end`): um canal só publica enquanto o que já postou hoje está
 abaixo de `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`

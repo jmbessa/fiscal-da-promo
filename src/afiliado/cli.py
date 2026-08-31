@@ -216,6 +216,17 @@ AVISO_STORY_OFICIAL_FORA_DO_STORIES = (
     "Graph API e sai pelo `afiliado run`; montá-lo aqui daria dois tetos diários e "
     "dois dedupes sobre a mesma conta")
 
+# Fase 5U: e o mesmo fato quando ele NÃO é um problema. Com o
+# `instagram_story_link` desligado, `afiliado stories` não tem canal nenhum — o
+# story passou a sair pela Graph API, no `afiliado run`. É o estado DESEJADO, e
+# repetir o ⚠️ de cima todo dia sobre uma troca deliberada é como se ensina o
+# dono a ignorar avisos; o próximo, o de verdade, morre junto.
+AVISO_STORIES_OCIOSO = (
+    "ℹ️ `afiliado stories` não tem canal ligado: o story sai pela Graph API, pelo "
+    "`afiliado run` (fase 5U). A tarefa FiscalDaPromo-Stories fica ociosa de "
+    "propósito — ela volta a servir no dia em que o instagram_story_link for "
+    "religado")
+
 # I3: a regra de ouro deixa de ser conselho. Com os dois canais ligados, o
 # mesmo post saía pela API privada e pela oficial dentro da MESMA iteração do
 # laço — mesma conta, mesmo minuto: o padrão que a investigação identificou
@@ -472,8 +483,13 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
     if somente is not None:
         # I1: o canal oficial de story é o único do recorte que o dono pode
         # esperar ver aqui — e ele não vem. Dizer isso é diferente de omitir.
+        # Fase 5U: com o canal privado DESLIGADO, o mesmo fato deixa de ser
+        # aviso e vira informação — a troca foi deliberada e este comando ficou
+        # ocioso de propósito.
         if _channel_settings(ch_cfg.get(InstagramStoryChannel.name))[0]:
-            avisos_do_recorte.append(AVISO_STORY_OFICIAL_FORA_DO_STORIES)
+            privado, _ = _channel_settings(ch_cfg.get(InstagramStoryLinkChannel.name))
+            avisos_do_recorte.append(AVISO_STORY_OFICIAL_FORA_DO_STORIES if privado
+                                     else AVISO_STORIES_OCIOSO)
         ch_cfg = {k: v for k, v in ch_cfg.items() if k in somente}
     brand_cfg = cfg.get("brand") or {}
     brand_handle = brand_cfg.get("handle") or None

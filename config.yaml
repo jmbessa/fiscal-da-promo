@@ -523,9 +523,18 @@ channels:
   # Fase 5E: story publicado pela API oficial (media_type=STORIES, sem legenda
   # e sem sticker de link — a API não tem um). A cota de publicação da Meta é
   # COMPARTILHADA com o feed: 100 por 24 h; 2 + 6 usam 8.
+  #
+  # LIGADO EM 2026-08-30 (fase 5U), trocando de lugar com o
+  # `instagram_story_link` abaixo. O QUE SE PERDE nessa troca: a figurinha de
+  # link — a Graph API nega figurinhas, então o story sai sem nada tocável e o
+  # seguidor precisa ir ao link da bio. O QUE SUSTENTA a troca: **0 toques no
+  # link do perfil em 7 dias**, com 2 seguidores. A figurinha só vale o que
+  # entrega, e hoje ela entrega perto de zero — contra uma credencial de senha
+  # numa conta que segura o token da Graph API, a integração de afiliado e o
+  # histórico.
   instagram_story:
-    enabled: false
-    max_per_day: 60           # DESLIGADO: quem publica story é o instagram_story_link abaixo
+    enabled: true
+    max_per_day: 60
   # Fase 5T: o REEL — a única superfície de AQUISIÇÃO que a conta não tem.
   # Medido na conta real em 2026-08-29 pela Graph API: 2 seguidores, 5 posts,
   # ZERO do tipo REEL, alcance de 1 conta em 7 dias. O feed serve quem já
@@ -558,8 +567,25 @@ channels:
   # E ele NÃO roda no GitHub Actions nem na VPS: só no `afiliado stories`, na
   # máquina do dono (IP residencial, sessão e device estáveis). O `afiliado run`
   # ignora este canal com aviso, mesmo ligado.
+  #
+  # DESLIGADO EM 2026-08-30 (fase 5U). O canal continua inteiro — código,
+  # testes, runbook e o comando `afiliado stories` —, e o que saiu de cena foi
+  # o INTERRUPTOR: ele volta no dia em que a conta tiver alcance que justifique
+  # o risco. Enquanto isso, `afiliado stories` fica ocioso (a tarefa
+  # FiscalDaPromo-Stories do agendador roda e não publica nada; o run diz isso
+  # uma vez por dia, sem ⚠️).
+  #
+  # O que ele entregava e deixou de entregar: a figurinha de link, a única
+  # superfície do projeto com um destino tocável dentro do Instagram.
+  # O número que decidiu: **0 toques no link do perfil em 7 dias**, com 2
+  # seguidores (medido na conta real em 2026-08-29 pela Graph API, junto do
+  # alcance de 1 conta em 7 dias). Zero toques é o teto do que a figurinha
+  # poderia ter melhorado — e o preço dela é a SENHA da conta, entregue a uma
+  # API privada, na conta que segura o token da Graph API, a integração de
+  # afiliado e o histórico. Com alcance real o cálculo muda; hoje não há
+  # cálculo, há só o risco.
   instagram_story_link:
-    enabled: true           # o dono liga depois de rodar `afiliado ig-login`
+    enabled: false          # o dono liga depois de rodar `afiliado ig-login`
     # 60/dia = um a cada ~15 min na janela de 08:00-23:15. Cabe na cota da
     # Meta (100/24h, compartilhada com o feed), mas este canal é API PRIVADA:
     # volume alto é justamente o que atrai verificação de segurança, e o ativo

@@ -169,3 +169,26 @@ def test_load_config_rejects_missing_keys(tmp_path):
     p.write_text("llm:\n  model: haiku\n", encoding="utf-8")
     with pytest.raises(ValueError, match="obrigat"):
         load_config(p)
+
+
+def test_a_regra_de_ouro_dos_dois_canais_de_story_vale_no_CONFIG(): 
+    """Fase 5U. `cli._monta_story_link` já recusa montar o canal privado com o
+    oficial ligado, e o doctor reclama — mas nada afirmava a regra sobre o
+    ARQUIVO que a produção lê. Este teste afirma a REGRA, não a configuração:
+    ele continua valendo no dia em que o dono inverter os dois de novo.
+
+    Publicar pela API privada (instagrapi, senha da conta) e pela oficial na
+    MESMA conta, no mesmo dia, é o padrão que atrai verificação de segurança —
+    e o ativo em risco é a conta que segura o token da Graph API, a integração
+    de afiliado e o histórico."""
+    canais = load_config("config.yaml")["channels"]
+
+    def ligado(nome):
+        raw = canais.get(nome)
+        return bool(raw if isinstance(raw, bool) else (raw or {}).get("enabled"))
+
+    assert not (ligado("instagram_story") and ligado("instagram_story_link")), (
+        "os dois canais de story ligados ao mesmo tempo em config.yaml")
+    # E ALGUM dos dois publica story: desligar os dois cala a superfície
+    # inteira em silêncio, que é o zero silencioso que a fase 5A caçou.
+    assert ligado("instagram_story") or ligado("instagram_story_link")

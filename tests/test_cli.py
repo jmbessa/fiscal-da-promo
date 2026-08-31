@@ -1270,8 +1270,43 @@ def test_stories_nao_monta_o_canal_da_graph_api(monkeypatch, tmp_path):
 
     assert cli.main(["stories", "--config", cfg_file]) == 0
     assert chamado["channels"] == []
-    assert cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES in chamado["avisos"]
+    # O que o I1 exige é que o comando local NÃO monte o canal da Graph API e
+    # diga de quem ele é. Qual das duas frases sai depende do canal privado
+    # (fase 5U): desligado, é a informativa; ligado, o ⚠️ do I1 — e as duas
+    # mandam para o `afiliado run`.
+    dito = next(a for a in chamado["avisos"]
+                if a in (cli.AVISO_STORIES_OCIOSO,
+                         cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES))
+    assert dito == cli.AVISO_STORIES_OCIOSO      # este teste desliga o privado
+    assert "afiliado run" in dito
     assert "afiliado run" in cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES
+
+
+def test_stories_ocioso_nao_alarma_quando_o_privado_esta_desligado(monkeypatch, tmp_path,
+                                                                   capsys):
+    """Fase 5U: com o `instagram_story_link` DESLIGADO e o oficial ligado, o
+    `afiliado stories` não tem mais o que fazer — e isso é o estado desejado,
+    não um defeito de configuração.
+
+    O aviso do I1 ("canal instagram_story ligado, mas ignorado") existe para
+    quem ESPERA story deste comando. Repetido todo dia no chat de operações
+    depois que a troca foi deliberada, ele vira o ⚠️ que o dono aprende a
+    ignorar — e o próximo ⚠️, o de verdade, morre junto."""
+    _ambiente_de_stories(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+    cfg_file = _config_com_story_link(tmp_path, oficial="true")
+    texto = open(cfg_file, encoding="utf-8").read().replace(
+        "  instagram_story_link:\n    enabled: true\n",
+        "  instagram_story_link:\n    enabled: false\n")
+    open(cfg_file, "w", encoding="utf-8").write(texto)
+
+    assert cli.main(["stories", "--config", cfg_file]) == 0
+
+    assert chamado["channels"] == []
+    assert cli.AVISO_STORIES_OCIOSO in chamado["avisos"]
+    assert cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES not in chamado["avisos"]
+    assert "afiliado run" in cli.AVISO_STORIES_OCIOSO
+    assert not cli.AVISO_STORIES_OCIOSO.startswith("⚠")
 
 
 def test_stories_recusa_o_canal_privado_com_o_oficial_ligado(monkeypatch, tmp_path,

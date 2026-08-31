@@ -3,6 +3,16 @@
 Como ligar, operar e desligar o canal `instagram_story_link`: o story que sai
 com **figurinha de link clicável** para o produto.
 
+> **Estado em 2026-08-30 (fase 5U): DESLIGADO.** Quem publica story hoje é o
+> `instagram_story` (Graph API, sem figurinha), pelo `afiliado run`. O canal
+> aqui descrito continua inteiro — código, testes e este runbook —; o que saiu
+> foi o interruptor em `config.yaml`. O número que decidiu: **0 toques no link
+> do perfil em 7 dias**, com 2 seguidores. O que se perde é a figurinha, a
+> única superfície tocável dentro do Instagram; o que se ganha é não expor a
+> senha da conta enquanto ela não entrega nada. Religar é inverter os dois
+> interruptores (a REGRA DE OURO abaixo continua valendo) e rodar
+> `afiliado doctor`.
+
 > **O risco, em uma frase honesta:** o instagrapi se faz passar pelo aplicativo
 > móvel do Instagram, exige **usuário e senha** (não é token revogável), o
 > próprio mantenedor diz que ele serve para "testing, research and controlled

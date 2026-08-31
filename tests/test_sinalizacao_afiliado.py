@@ -110,3 +110,112 @@ def test_a_frase_nao_vira_alegacao_de_desconto():
     from afiliado import copywriter
     copy = CopyParts(headline=creative.AFILIADO, description="", cta="")
     assert not copywriter.alega_desconto(copy)
+
+
+# =============================================================================
+# A ARTE. O texto viaja na legenda; a PEÇA precisa dizer o mesmo, porque é ela
+# que aparece no story (onde não há legenda nenhuma) e é ela que alguém salva,
+# recorta ou reposta sem o texto junto.
+# =============================================================================
+
+import io
+
+from PIL import Image
+
+from afiliado import creative as c
+from afiliado.models import Verdict
+
+CHIP = creative.AFILIADO_NA_ARTE.upper()
+SELO = Verdict("B", 0, "🏷️ Menor preço dos últimos 6 meses (verificado)", 180)
+NOME_LONGUISSIMO = "Fiscal da Promo do Brasil e Arredores S/A"
+
+
+def _foto_png() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (600, 600), (120, 40, 200)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _client_da_foto() -> httpx.Client:
+    return httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, content=_foto_png(),
+                                 headers={"content-type": "image/png"})))
+
+
+def _planos():
+    offer = make_offer()
+    posts = [Post(offer=offer, copy=COPY, affiliate_link="x", verdict=SELO)] * 2
+    slides = c.carrossel_plan(posts, "2 OFERTAS. 1 É REAL.", "O Fiscal olhou.")
+    return {
+        "story": c.story_plan(offer, SELO),
+        "feed": c.feed_plan(offer, SELO),
+        "reel": c.reel_plan(offer, SELO),
+        **{f"carrossel-{i}/{s['tipo']}": s for i, s in enumerate(slides, start=1)},
+    }
+
+
+def test_toda_peca_publicada_carrega_a_sinalizacao():
+    """Story, feed, Reel e os TRÊS tipos de slide do carrossel — capa e fecho
+    inclusive. A capa é a primeira visualização do álbum: se alguma peça
+    pudesse sair sem a marca, seria justamente ela."""
+    for nome, plan in _planos().items():
+        assert plan.get("afiliado") == CHIP, nome
+
+
+def test_a_sinalizacao_da_arte_nao_come_o_corpo_da_peca():
+    """Ela mora na FAIXA DO CABEÇALHO, acima do card da foto. O corpo
+    (título, pill, meta, selo) tem um guarda de overflow que já derrubou meta e
+    selo por 30 px — a sinalização não pode disputar aquele orçamento."""
+    story = c.story_plan(make_offer(), SELO)
+    assert story["afiliado_box"][3] <= c.STORY_CARD_BOX[1]
+    feed = c.feed_plan(make_offer(), SELO)
+    assert feed["afiliado_box"][3] <= 158            # topo do card do feed
+
+
+def test_a_sinalizacao_nunca_sai_do_canvas_nem_com_um_nome_de_marca_enorme():
+    for largura, pad, plan in (
+            (c.STORY_SIZE[0], c.STORY_PAD,
+             c.story_plan(make_offer(), SELO, brand_name=NOME_LONGUISSIMO)),
+            (c.FEED_SIZE[0], c.FEED_PAD,
+             c.feed_plan(make_offer(), SELO, brand_name=NOME_LONGUISSIMO))):
+        x0, _, x1, _ = plan["afiliado_box"]
+        assert x0 >= 0 and x1 <= largura - pad
+
+
+def test_a_sinalizacao_nao_encosta_no_contador_do_carrossel():
+    """O contador ("2/6") mora no canto superior direito do slide, na mesma
+    faixa. Dois elementos disputando aquela linha é como se perde um deles."""
+    draw = c.ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    contador = c._contador_box(draw, c.CARROSSEL_SIZE[0], 2, 6)
+    plan = c.feed_plan(make_offer(), SELO)
+    assert plan["afiliado_box"][2] < contador[0]
+
+
+def test_o_chip_e_desenhado_de_verdade_no_story_e_no_feed():
+    """O plano é uma promessa; isto confere o pixel. A pill tem contorno
+    `PILL_BORDER` sólido de 2 px sobre preenchimento `SURFACE` — as duas cores
+    existem exatas na caixa, antialias nenhum."""
+    cliente = _client_da_foto()
+    for png, plan in ((creative.render_story(make_offer(), COPY, SELO, client=cliente),
+                       c.story_plan(make_offer(), SELO)),
+                      (creative.render_feed(make_offer(), COPY, SELO, client=cliente),
+                       c.feed_plan(make_offer(), SELO))):
+        img = Image.open(io.BytesIO(png))
+        x0, y0, x1, y1 = (round(v) for v in plan["afiliado_box"])
+        cores = set(img.crop((x0, y0, x1 + 1, y1 + 1)).convert("RGB").getcolors(1 << 20) or [])
+        cores = {cor for _, cor in cores}
+        assert c.PILL_BORDER in cores
+        assert c.SURFACE in cores
+
+
+def test_o_grafico_do_flagrante_nao_se_diz_link_de_afiliado():
+    """A ÚNICA peça que não leva a marca, e é por honestidade: o flagrante é o
+    histórico de preço de um produto, vai ao chat de operações para o dono
+    decidir e NÃO carrega link nenhum. Carimbar "link de afiliado" nela seria
+    afirmar um link que a peça não tem."""
+    from datetime import date, timedelta
+    hoje = date(2026, 8, 30)
+    historico = [(hoje - timedelta(days=i), 2600) for i in range(30, 0, -1)]
+    plan = c.grafico_plan(make_offer(price_ref_cents=2600, price_current_cents=1890),
+                          historico, NO_CLAIM)
+    assert "afiliado" not in plan

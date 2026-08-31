@@ -61,19 +61,30 @@ sempre idênticos. Não rotacionar, não trocar cores, não adicionar sombra.
 | Leve | mascote simpático, "achado", "corre" com moderação | CAPS LOCK em tudo |
 | Honesto | selo só com dado; sem "menor preço da história" | inventar preço "de" |
 
-Sempre presente: aviso de link de afiliado na bio/descrição do canal.
+Sempre presente, e desde a fase 5U **em toda peça e em todo texto**, não só na
+bio: o chip `LINK DE AFILIADO` na faixa do cabeçalho da arte e a frase
+`Link de afiliado — ganho comissão, o preço é o mesmo para você` como PRIMEIRA
+linha do texto do Telegram e das legendas do feed, do carrossel e do Reel.
+Quem decide as duas é `creative.AFILIADO` / `creative.AFILIADO_NA_ARTE` — um
+lugar só, como `pricing.sem_cupom`. A única peça sem o chip é o gráfico do
+flagrante: ela não carrega link nenhum.
 
 ## 5. Layouts implementados em `creative.py`
 
 - **Story (2a + selo do 1a)** — 1080×1920, padding 72: cabeçalho (mascote ⌀68 +
-  nome), card branco 936×790 r28 com foto por contain e badge `-N%` navy,
+  nome + chip mono `LINK DE AFILIADO`), card branco 936×790 r28 com foto por contain e badge `-N%` navy,
   título 2 linhas, pill dourada de preço (original riscado + atual), meta mono
   (`45 mil vendidos no último mês · Shopee`, `+250 mil vendidos · Mercado
   Livre` — o texto diz a janela que o número mede), selo azul quando verificado, CTA em pill
   `→ LINK NA SHOPEE` e handle mono no rodapé. O sticker de link vai sobre o CTA.
-- **Feed (3a)** — 1080×1350, padding 64: cabeçalho com nome + handle, card
-  952×600 r26, título, pill de preço, meta, selo, rodapé "Link na bio · Shopee"
-  com seta dourada.
+- **Feed (3a)** — 1080×1350, padding 64: cabeçalho com nome + handle + chip
+  `LINK DE AFILIADO`, card 952×600 r26, título, pill de preço, meta, selo,
+  rodapé "Link na bio · Shopee" com seta dourada. No slide do carrossel o chip
+  divide a faixa com o contador (`2/6`), à direita — eles não se encostam, e um
+  teste trava isso.
+- **Capa e fecho do carrossel** — sem cabeçalho: o chip entra no BLOCO
+  centralizado, depois do subtítulo (capa) e depois da pill `LINK NA BIO`
+  (fecho).
 - Formatos do design ainda não automatizados: variantes claras (2b/3b), grade
   de 3 (1b) e lista de 6 (1c) — bons para "resumo do dia"; ficam como backlog.
 

@@ -193,8 +193,24 @@ def test_a_duracao_do_mp4_e_lida_do_arquivo_sem_ffprobe():
 
 # -- e a voz de verdade, quando a máquina tem uma ------------------------------
 
+def test_o_interruptor_da_voz_esta_desligado_e_o_codigo_diz_por_que():
+    """Reprovada pelo dono em 2026-08-31, no dia em que ligou — e por DUAS
+    razões, das quais a segunda é a que pesa: timbre artificial (que um motor
+    melhor resolve) e, principalmente, "somente o post de anúncio do produto
+    com uma voz não é chamativo" (que motor nenhum resolve).
+
+    O módulo fica inteiro: roteiro, número por extenso e dimensionamento do
+    clipe pela fala valem para qualquer motor. O que sai é o interruptor — e
+    com ele desligado o Reel usa o mesmo caminho de uma máquina sem voz."""
+    assert narracao.VOZ_LIGADA is False
+    assert narracao.narra(_offer(11399), NO_CLAIM) is None
+
+
 @SEM_VOZ
-def test_a_voz_sintetiza_o_roteiro_num_wav_legivel():
+def test_a_voz_sintetiza_o_roteiro_num_wav_legivel(monkeypatch):
+    """O motor continua funcionando por baixo do interruptor — é o que permite
+    religar sem redescobrir nada."""
+    monkeypatch.setattr(narracao, "VOZ_LIGADA", True)
     wav = narracao.narra(_offer(11399), NO_CLAIM)
     assert wav is not None
     duracao = video.duracao_wav(wav)

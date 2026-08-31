@@ -187,11 +187,43 @@ def sintetiza(texto: str) -> bytes | None:
         return destino.read_bytes()
 
 
+# O INTERRUPTOR — e ele está DESLIGADO desde 2026-08-31, no dia em que ligou.
+#
+# O dono ouviu a peça e reprovou, por duas razões, e a segunda é a que pesa:
+#
+#   "não gostei do vídeo com a voz, ficou muito artificial e somente o post
+#    de anúncio do produto com uma voz não é chamativo"
+#
+# A primeira é do TIMBRE: a `Microsoft Maria Desktop` é SAPI5 de geração
+# antiga, e locução robótica numa marca que vende confiança custa mais do que
+# o silêncio custava. Isso um motor melhor resolve (Piper, neural e offline, é
+# o candidato) — mas resolver o timbre não resolve a segunda razão.
+#
+# A segunda é do FORMATO, e ela está certa: pôr voz em cima de um anúncio de
+# produto não transforma anúncio em conteúdo. A peça continua sendo uma foto,
+# um preço e um card parado; a voz só narra o que já está escrito. Um Reel que
+# prende precisa MOSTRAR algo que quem assiste não consegue ver sozinho, e o
+# que temos para isso é a série de preço — que hoje não existe (`price_refs`
+# está em 0).
+#
+# O módulo fica INTEIRO, com os testes: o roteiro, o número por extenso e o
+# dimensionamento do clipe pela fala valem para qualquer motor de voz, e o dia
+# em que a peça tiver o que dizer eles estarão aqui. O que sai de cena é o
+# interruptor.
+VOZ_LIGADA = False
+
+
 def narra(offer: Offer, verdict: Verdict) -> bytes | None:
     """O WAV da peça, do roteiro à síntese — ou `None` quando não há voz.
 
     É esta a função que os canais chamam: `roteiro` e `sintetiza` continuam
     públicas porque o teste as usa separadas, mas quem publica não precisa
     saber que são duas.
+
+    Com `VOZ_LIGADA = False` ela devolve `None` sem sintetizar nada, e o Reel
+    sai mudo — o mesmo caminho de uma máquina sem voz instalada, que já era
+    testado.
     """
+    if not VOZ_LIGADA:
+        return None
     return sintetiza(roteiro(offer, verdict))

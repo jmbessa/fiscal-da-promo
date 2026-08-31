@@ -2011,7 +2011,19 @@ def render_carrossel(fotos: list[tuple[Post, Image.Image]], titulo: str, subtitu
 
 REEL_SIZE = STORY_SIZE          # 9:16 sem redimensionar nada
 REEL_FPS = 24
-REEL_DURACAO_S = 8.0            # a aba Reels aceita de 5 a 90 s
+# A duração do clipe é um PISO, não um número fixo: quando há narração, quem
+# manda é a fala (ver `duracao_do_clipe`). A aba Reels aceita de 5 a 90 s.
+#
+# 8 s é o piso porque o watch time MEDIDO de Reel é 8,5 s (Metricool, 24,3 M de
+# posts) e o sinal de ranqueamento que Mosseri nomeou é completion: uma peça
+# que cabe dentro da atenção média é assistida inteira e ainda entra em loop.
+# O teto de 15 s existe para a fala nunca esticar o clipe até a faixa em que a
+# conclusão despenca — se um roteiro passar disso, o defeito é do ROTEIRO.
+REEL_DURACAO_S = 8.0
+REEL_DURACAO_MAX_S = 15.0
+# O silêncio DEPOIS da última palavra. Sem ele o clipe termina junto com a voz,
+# e o corte em cima da sílaba final lê como arquivo truncado.
+REEL_RESPIRO_DEPOIS_S = 1.0
 # Zoom da foto do produto, do primeiro ao último frame. 8% em 8 s é lento o
 # bastante para não parecer efeito e vivo o bastante para o clipe não parecer
 # uma imagem parada — que é o que a aba despreza.
@@ -2217,17 +2229,47 @@ def reel_frames(offer: Offer, verdict: Verdict, client: httpx.Client | None = No
         yield canvas
 
 
+def duracao_do_clipe(narracao_wav: bytes | None) -> float:
+    """Quanto o clipe dura: o que a FALA pedir, entre o piso e o teto.
+
+    Sem narração devolve o piso, que é exatamente o que o Reel fazia antes de
+    existir voz. Com narração, a conta é o respiro da frente (que o encode
+    aplica com `adelay`) + a fala + o respiro do fim — e o resultado é preso
+    entre `REEL_DURACAO_S` e `REEL_DURACAO_MAX_S`.
+
+    Esta é a direção que importa: a fala dimensiona a peça, e não o contrário.
+    Espremer a locução num clipe de tamanho fixo é como se corta uma sílaba.
+    """
+    if not narracao_wav:
+        return REEL_DURACAO_S
+    fala = video.duracao_wav(narracao_wav)
+    if fala <= 0:
+        return REEL_DURACAO_S
+    pedido = video.RESPIRO_ANTES_DA_VOZ_S + fala + REEL_RESPIRO_DEPOIS_S
+    return min(REEL_DURACAO_MAX_S, max(REEL_DURACAO_S, pedido))
+
+
 def render_reel(offer: Offer, copy: CopyParts, verdict: Verdict,
                 client: httpx.Client | None = None, handle: str | None = None,
                 brand_name: str = DEFAULT_BRAND_NAME, fps: int = REEL_FPS,
-                duracao_s: float = REEL_DURACAO_S) -> bytes:
-    """Os bytes do `.mp4` do Reel: 1080×1920, H.264, com faixa de som silenciosa.
+                duracao_s: float | None = None,
+                narracao_wav: bytes | None = None) -> bytes:
+    """Os bytes do `.mp4` do Reel: 1080×1920, H.264.
+
+    Com `narracao_wav` a faixa de áudio é a VOZ e o clipe dura o que a fala
+    pedir; sem ela, a faixa silenciosa de sempre e o piso de duração. O WAV
+    chega pronto de fora (`afiliado.narracao`) e não é sintetizado aqui — é o
+    que impede o ciclo de import, e é o que deixa o teste montar a peça com um
+    áudio dublê, sem voz instalada na máquina.
 
     Levanta `video.SemFFmpeg` quando não há ffmpeg nesta máquina — o extra
     `reel` é OPCIONAL, e quem chama transforma isso em canal desarmado com
     aviso, nunca em run derrubado (o molde é o `playwright` da fase 5P).
     """
     del copy  # como no story e no feed: o texto do post é montado à parte
+    if duracao_s is None:
+        duracao_s = duracao_do_clipe(narracao_wav)
     frames = reel_frames(offer, verdict, client=client, handle=handle,
                          brand_name=brand_name, fps=fps, duracao_s=duracao_s)
-    return video.encode_h264((frame.tobytes() for frame in frames), REEL_SIZE, fps)
+    return video.encode_h264((frame.tobytes() for frame in frames), REEL_SIZE, fps,
+                             narracao=narracao_wav)

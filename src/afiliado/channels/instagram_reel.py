@@ -39,7 +39,7 @@ PATH): sem ffmpeg o canal não sobe, o run avisa uma vez e o resto do pipeline
 segue inteiro — o molde é o `playwright` da fase 5P.
 """
 
-from afiliado import creative, pricing, video
+from afiliado import creative, narracao, pricing, video
 from afiliado.channels.base import PublishResult
 from afiliado.channels.instagram_common import (STATUS_TERMINAIS, InstagramBase,
                                                 graph_error)
@@ -90,10 +90,17 @@ class InstagramReelChannel(InstagramBase):
 
         # 2. A peça. Recebe o veredito do post (modo + selo) — não recalcula
         #    nada, é o que faz arte, texto do Telegram e legenda concordarem.
+        #
+        #    A narração vem antes porque é ela que dimensiona o clipe. Sem voz
+        #    na máquina ela é `None` e o Reel sai mudo, como saía — a Meta não
+        #    deixa anexar áudio da biblioteca dela por API, então voz própria
+        #    embutida é a ÚNICA faixa possível aqui (ver afiliado.narracao).
         try:
             mp4 = creative.render_reel(post.offer, post.copy, post.verdict,
                                        client=self.client, handle=self.brand_handle,
-                                       brand_name=self.brand_name)
+                                       brand_name=self.brand_name,
+                                       narracao_wav=narracao.narra(post.offer,
+                                                                   post.verdict))
         except video.SemFFmpeg as exc:
             return PublishResult(False, error=f"sem como gerar o Reel: {exc}")
         except SourceError as exc:

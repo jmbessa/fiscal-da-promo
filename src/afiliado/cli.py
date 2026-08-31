@@ -10,8 +10,8 @@ from pathlib import Path
 
 import httpx
 
-from afiliado import (categorias, config, creative, flagrante, llm, pipeline, preco_real,
-                      pricing, selection, shopee_checkout, video)
+from afiliado import (categorias, config, creative, flagrante, llm, narracao, pipeline,
+                      preco_real, pricing, selection, shopee_checkout, video)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import (GRAPH_HOSTS, cota_de_publicacao,
                                                 graph_error, le_seguidores)
@@ -1188,16 +1188,23 @@ def _preview_do_reel(cfg: dict, avisos: list[str]):
             with _cliente_http() as client:
                 mp4 = creative.render_reel(post.offer, post.copy, post.verdict,
                                            client=client, handle=handle,
-                                           brand_name=nome_da_marca)
+                                           brand_name=nome_da_marca,
+                                           narracao_wav=narracao.narra(post.offer,
+                                                                       post.verdict))
         except Exception as exc:      # noqa: BLE001 - preview NUNCA derruba o dry-run
             print(f"⚠️ preview do Reel: {exc}")
             return
         caminho = _grava_preview(PREVIEW_DO_REEL, mp4)
         feitos.append(caminho)
         largura, altura = creative.REEL_SIZE
+        # A duração é MEDIDA no arquivo, não copiada da constante: desde que a
+        # narração dimensiona o clipe, `REEL_DURACAO_S` é só o piso — imprimir
+        # a constante diria "8 s" num arquivo de 9,5 s.
+        segundos = video.duracao_mp4(mp4)
+        som = "com narração" if narracao.voz_disponivel() else "MUDO (sem voz nesta máquina)"
         print(f"🎬 preview do Reel: {caminho} "
               f"({len(mp4) / 1024 / 1024:.2f} MB · {largura}x{altura} · "
-              f"{creative.REEL_DURACAO_S:.0f} s · {creative.REEL_FPS} fps · H.264)")
+              f"{segundos:.1f} s · {creative.REEL_FPS} fps · H.264 · {som})")
 
     return preview
 

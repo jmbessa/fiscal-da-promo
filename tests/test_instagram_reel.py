@@ -420,16 +420,29 @@ def _envs_do_instagram(monkeypatch):
     monkeypatch.delenv("ART_HOST_BOT_TOKEN", raising=False)
 
 
-def test_o_canal_nasce_desligado_no_config_real():
-    """T2: "nasce desligado — quem liga é o dono depois de ver a peça". Se
-    algum dia isto virar `true` sem o dono mandar, o teste conta."""
+def test_o_canal_esta_ligado_e_o_config_diz_desde_quando():
+    """O canal nasceu DESLIGADO ("quem liga é o dono, depois de ver a peça") e
+    foi LIGADO em 2026-08-31, com a peça vista e a hospedagem do vídeo — o
+    único passo que nunca tinha sido exercitado — testada ao vivo.
+
+    O que este teste guarda não é mais o interruptor: é o REGISTRO. Um canal
+    que publica na conta do dono não pode ligar e desligar sem o config dizer
+    quando e por quê, senão daqui a três meses ninguém sabe se o `true` foi
+    decisão ou descuido — e é a mesma trava que o agendador tem sobre o texto
+    do script.
+
+    E o teto por audiência precisa existir: sem ele, `max_per_day: 2` mandaria
+    dois Reels/dia para 6 seguidores."""
     import yaml
 
     with open("config.yaml", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    entrada = cfg["channels"]["instagram_reel"]
-    assert entrada["enabled"] is False
-    assert entrada["max_per_day"] >= 1        # o teto existe desde já
+        bruto = f.read()
+    entrada = yaml.safe_load(bruto)["channels"]["instagram_reel"]
+    assert entrada["enabled"] is True
+    assert entrada["max_per_day"] >= 1
+    assert entrada["audiencia"]["piso"] >= 1
+    assert entrada["audiencia"]["divisor"] > 0
+    assert "LIGADO EM 2026-08-31" in bruto
 
 
 def test_build_channels_monta_o_reel_quando_ligado(monkeypatch):

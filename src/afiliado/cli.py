@@ -1213,8 +1213,13 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
     O preço sai por `pricing.preco_publicado`, que carrega o "sem cupom" dos
     itens da Shopee quando o rótulo está ligado (fase 5K; desligado desde a
     5N): cada slide é a arte de feed, e ela desenha o rótulo na pill — a
-    legenda não pode discordar do álbum que acompanha, nos dois estados."""
-    linhas = [titulo, subtitulo, ""]
+    legenda não pode discordar do álbum que acompanha, nos dois estados.
+
+    Fase 5U: a sinalização de afiliado (`creative.AFILIADO`) abre a legenda,
+    pelo mesmo motivo do feed — o "mais" do Instagram esconde tudo depois de
+    ~125 caracteres, e a identificação tem de ser visível na primeira
+    visualização."""
+    linhas = [creative.AFILIADO, titulo, subtitulo, ""]
     for i, post in enumerate(posts, start=1):
         offer = post.offer
         nome = sanitiza_titulo(offer.title)

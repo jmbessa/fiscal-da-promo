@@ -151,6 +151,10 @@ class InstagramReelChannel(InstagramBase):
         que o Google lê fecha o texto. Como no feed, nada aqui pede curtida,
         comentário ou compartilhamento — a Meta rebaixa quem pede, e o que
         constrói reconhecimento é a frase-assinatura repetida em toda peça.
+
+        Fase 5U: das duas linhas que o Reel mostra, a primeira é a sinalização
+        de afiliado e a segunda continua sendo o gancho — por isso ela entra
+        SEM linha em branco depois, que gastaria metade do que o formato lê.
         """
         offer = post.offer
         titulo = sanitiza_titulo(offer.title)
@@ -158,6 +162,7 @@ class InstagramReelChannel(InstagramBase):
         bloco_preco = "\n".join(p for p in (linha_preco, prova_social,
                                             post.verdict.seal) if p)
         return (
+            f"{creative.AFILIADO}\n"
             f"{post.copy.headline}\n\n"
             f"{titulo}\n"
             f"{bloco_preco}\n\n"

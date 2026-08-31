@@ -101,6 +101,39 @@ DEFAULT_HANDLE = "@ofiscaldapromo"
 # gerada: é ela que constrói o reconhecimento.
 ASSINATURA = "Quem conferiu? O Fiscal."
 
+# Fase 5U — A SINALIZAÇÃO DE AFILIADO. **Este é o único lugar que decide o
+# texto**; arte, texto do Telegram e as três legendas do Instagram importam
+# daqui, como fazem com `pricing.sem_cupom`. Trocar a frase é mexer nestas duas
+# linhas — foi o pedido do dono.
+#
+# POR QUE ELA EXISTE, e por que não é assunto de multa: o item A7 da análise
+# adversarial (reescrito em 2026-08-30) mede o pior caso, e ele é CONTRATUAL.
+# Os Termos do Programa de Afiliados da Shopee alcançam, na cláusula 2.3,
+# conteúdo que a Shopee considere inadequado, e a 7.2 permite a ela "rescindir
+# unilateralmente este Contrato a seu exclusivo critério" com 7 dias de aviso.
+# Perder o programa não custa dinheiro: custa a comissão, a integração, o pool
+# de links e o histórico. O guia CONAR de 01/06/2026 é o outro lado — ele
+# inclui afiliados com todas as letras ("remuneração por performance não afasta
+# a natureza publicitária") e exige identificação **visível na primeira
+# visualização**, não em nota de rodapé.
+#
+# POR QUE ESTA FRASE, e não o "🔗 link de afiliado · #publi" que o registro
+# antigo sugeria: `#publi` é jargão de influenciador, e esta conta não é isso —
+# ela se chama Fiscal. Explicar a própria remuneração ("ganho comissão") e
+# desarmar a única objeção que o seguidor tem ("o preço é o mesmo para você") é
+# coerente com o nome; a hashtag o contradiz. E ela é DECLARATIVA: nenhuma
+# palavra de desconto, para que a legenda de um post de modo B continue
+# passando na régua do `copywriter`.
+AFILIADO = "Link de afiliado — ganho comissão, o preço é o mesmo para você"
+
+# A forma reduzida, para a ARTE. A frase inteira em 62 caracteres não cabe numa
+# peça calibrada em pixel sem empurrar o corpo contra o rodapé — e o guarda de
+# overflow já cortou coisa demais neste projeto. O que a lei pede é a
+# IDENTIFICAÇÃO ("link de afiliado"); o resto é serviço, e ele viaja na legenda,
+# que acompanha toda peça publicada. Desenhada em caixa alta (ver
+# `_afiliado_chip_dims`), na voz mono do sistema.
+AFILIADO_NA_ARTE = "Link de afiliado"
+
 
 # --- Fontes -------------------------------------------------------------------
 

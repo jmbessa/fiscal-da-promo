@@ -201,6 +201,12 @@ class InstagramFeedChannel(InstagramBase):
         linha_preco, prova_social = pricing.price_line(offer, post.verdict)
         bloco_preco = "\n".join(p for p in (linha_preco, prova_social, post.verdict.seal) if p)
         return (
+            # Fase 5U: a sinalização de afiliado abre a legenda. O Instagram
+            # esconde tudo depois de ~125 caracteres atrás do "mais", e o guia
+            # CONAR de 01/06/2026 pede identificação visível na PRIMEIRA
+            # visualização — qualquer outra posição dependeria de o leitor
+            # expandir a legenda. Quem decide o texto é `creative.AFILIADO`.
+            f"{creative.AFILIADO}\n"
             f"{copy.headline}\n{copy.description}\n\n"
             f"{titulo}\n"
             f"{bloco_preco}\n\n"

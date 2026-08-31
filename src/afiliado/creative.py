@@ -2016,42 +2016,48 @@ REEL_DURACAO_S = 8.0            # a aba Reels aceita de 5 a 90 s
 # bastante para não parecer efeito e vivo o bastante para o clipe não parecer
 # uma imagem parada — que é o que a aba despreza.
 REEL_ZOOM = 1.08
-# Subida do título enquanto ele aparece (px). Fade puro lê como "faltou
-# carregar"; fade + um empurrãozinho para cima lê como entrada.
-REEL_TITULO_SUBIDA = 12
-REEL_PILL_ESCALA = 0.9          # a pill de preço cresce de 0,9 até 1,0
 
-# (início, duração) de cada entrada, em SEGUNDOS. A ordem é a da leitura — o
-# título diz o QUE é, o preço diz QUANTO, a meta e o selo dizem por que
-# acreditar. Tudo assenta em ~2,3 s: o resto do clipe é a peça inteira parada
-# com o zoom correndo, que é o que faz o loop não ter costura.
-REEL_ENTRADAS = {
-    "titulo": (0.10, 0.70),
-    "preco": (0.70, 0.70),
-    "meta": (1.30, 0.50),
-    "selo": (1.70, 0.60),
-}
+# A ÊNFASE, que em 2026-08-31 substituiu a ENTRADA.
+#
+# Até aqui o Reel MONTAVA a peça na frente de quem assiste: no frame zero havia
+# só o fundo, o cabeçalho e a foto, e o PREÇO — o único motivo pelo qual alguém
+# pararia — só terminava de aparecer em 1,4 s. Gastávamos a fração mais cara do
+# vídeo carregando.
+#
+# O que mudou lá fora: em abril/2026 o Instagram trocou `view rate` por
+# **`skip rate`** — quantos saem nos 3 PRIMEIROS SEGUNDOS — e em janeiro/2026
+# Mosseri nomeou watch time + completion como o sinal de ranqueamento principal
+# dos Reels. Um frame zero sem preço joga o gancho fora por construção.
+# (docs/superpowers/reviews/2026-08-31-reels-e-carrossel.md, §1 e §4.)
+#
+# Agora a peça está INTEIRA desde o frame zero — ela É a arte de story, parada,
+# desde o primeiro instante — e o movimento virou ênfase: o zoom da foto, que
+# já existia e corre o clipe todo, mais um pulso na pill de preço que **nunca a
+# esconde**, só traz o olho de volta a ela.
+#
+# O pulso é DECISÃO SOB INCERTEZA e está marcado como tal: não há evidência de
+# que ele ajude (tudo que se publica sobre "hook" é blog sem amostra). O que
+# tem evidência é a peça estar inteira desde o começo. `REEL_PULSO_ESCALA = 1.0`
+# desliga o pulso sem tocar em mais nada, e a peça continua correta.
+REEL_PULSO_INICIO = 0.50       # s — depois de o olho já ter pousado na peça
+REEL_PULSO_DURACAO = 0.60      # s
+REEL_PULSO_ESCALA = 1.05       # o pico do pulso; 1.0 desliga
 
-# Folga em volta da faixa redesenhada de cada elemento: o antialias de uma
-# letra sangra um pixel para fora da caixa medida.
-REEL_FOLGA = 6
 
+def _pulso(t: float) -> float:
+    """A escala da pill de preço no instante `t`.
 
-def _ease_out(t: float) -> float:
-    """Cúbica de saída: entra rápido e assenta. Movimento linear lê como
-    máquina; movimento que desacelera lê como peso."""
-    t = min(1.0, max(0.0, t))
-    return 1 - (1 - t) ** 3
-
-
-def _entrada(t: float, chave: str) -> float:
-    """Quanto do elemento `chave` já entrou no instante `t` (0 a 1)."""
-    inicio, duracao = REEL_ENTRADAS[chave]
-    if t < inicio:
-        return 0.0
-    if duracao <= 0:
+    Vale 1,0 fora da janela do pulso, sobe até `REEL_PULSO_ESCALA` no meio dela
+    e volta. Meia onda de seno, e não uma rampa: ela começa e termina em 1,0
+    **com derivada zero**, então não há solavanco na entrada nem na saída — o
+    pulso lê como respiração, não como salto.
+    """
+    if REEL_PULSO_ESCALA <= 1.0 or REEL_PULSO_DURACAO <= 0:
         return 1.0
-    return _ease_out((t - inicio) / duracao)
+    p = (t - REEL_PULSO_INICIO) / REEL_PULSO_DURACAO
+    if not 0.0 < p < 1.0:
+        return 1.0
+    return 1.0 + (REEL_PULSO_ESCALA - 1.0) * math.sin(math.pi * p)
 
 
 def _produto_com_zoom(ajustado: Image.Image, escala: float) -> Image.Image:
@@ -2101,18 +2107,6 @@ def _corpo_do_reel(width: int, plan: dict) -> _Corpo:
     return _Corpo(1050, preco_xy, meta_xy, selo_xy)
 
 
-def _faixa(canvas: Image.Image, topo: float, base: float) -> tuple[Image.Image, int]:
-    """A faixa horizontal do frame entre `topo` e `base`, com folga."""
-    y0 = max(0, int(topo) - REEL_FOLGA)
-    y1 = min(canvas.height, int(base) + REEL_FOLGA)
-    return canvas.crop((0, y0, canvas.width, y1)), y0
-
-
-def _mistura(canvas: Image.Image, faixa: Image.Image, pintada: Image.Image,
-             y0: int, alfa: float) -> None:
-    canvas.paste(Image.blend(faixa, pintada, alfa), (0, y0))
-
-
 def _pill_em_escala(pintada: Image.Image, price: dict, x: float, y: float,
                     escala: float, radius: int = 16) -> None:
     """A pill de preço desenhada e depois AMPLIADA a partir do centro.
@@ -2135,59 +2129,26 @@ def _pill_em_escala(pintada: Image.Image, price: dict, x: float, y: float,
                   silhueta.resize((largura, altura), Image.BICUBIC))
 
 
-def _desenha_corpo_animado(canvas: Image.Image, draw: ImageDraw.ImageDraw, t: float,
-                           width: int, offer: Offer, plan: dict, corpo: _Corpo) -> None:
-    """Título, preço, meta e selo no instante `t`.
+def _desenha_corpo(draw: ImageDraw.ImageDraw, width: int, offer: Offer,
+                   plan: dict, corpo: _Corpo, com_pill: bool = True) -> None:
+    """Título, preço, prova social e selo — a peça inteira, pelas MESMAS funções
+    do story. Não existe versão "de vídeo" de nenhum elemento: o frame parado do
+    Reel é a arte de story, e é isso que o teste de igualdade prova.
 
-    Elemento que já chegou (`p >= 1`) é desenhado DIRETO, pelas funções do
-    story: é isso que faz o frame parado ser a arte de story, e não uma
-    aproximação dela.
+    `com_pill=False` desenha tudo menos a pill, para o pulso ter um fundo limpo
+    onde redesenhá-la em escala.
     """
     title, price, meta, selo = plan["title"], plan["price"], plan["meta"], plan["selo"]
-
-    p = _entrada(t, "titulo")
-    if p >= 1:
-        _draw_title(draw, width, corpo.titulo_y, title)
-    elif p > 0:
-        subida = REEL_TITULO_SUBIDA * (1 - p)
-        faixa, y0 = _faixa(canvas, corpo.titulo_y - REEL_TITULO_SUBIDA,
-                           corpo.titulo_y + title["height"])
-        pintada = faixa.copy()
-        _draw_title(ImageDraw.Draw(pintada), width, corpo.titulo_y + subida - y0, title)
-        _mistura(canvas, faixa, pintada, y0, p)
-
-    px, py = corpo.preco
-    p = _entrada(t, "preco")
-    if p >= 1:
+    _draw_title(draw, width, corpo.titulo_y, title)
+    if com_pill:
+        px, py = corpo.preco
         _draw_price_pill(draw, px, py, price)
-    elif p > 0:
-        escala = REEL_PILL_ESCALA + (1 - REEL_PILL_ESCALA) * p
-        faixa, y0 = _faixa(canvas, py, py + price["height"])
-        pintada = faixa.copy()
-        _pill_em_escala(pintada, price, px, py - y0, escala)
-        _mistura(canvas, faixa, pintada, y0, p)
-
     if meta is not None and corpo.meta is not None:
         mx, my = corpo.meta
-        p = _entrada(t, "meta")
-        if p >= 1:
-            _draw_meta(draw, mx, my, offer, meta["font"], MUTED)
-        elif p > 0:
-            faixa, y0 = _faixa(canvas, my, my + meta["height"])
-            pintada = faixa.copy()
-            _draw_meta(ImageDraw.Draw(pintada), mx, my - y0, offer, meta["font"], MUTED)
-            _mistura(canvas, faixa, pintada, y0, p)
-
+        _draw_meta(draw, mx, my, offer, meta["font"], MUTED)
     if selo is not None and corpo.selo is not None:
         sx, sy = corpo.selo
-        p = _entrada(t, "selo")
-        if p >= 1:
-            _draw_selo(draw, sx, sy, selo)
-        elif p > 0:
-            faixa, y0 = _faixa(canvas, sy, sy + selo["height"])
-            pintada = faixa.copy()
-            _draw_selo(ImageDraw.Draw(pintada), sx, sy - y0, selo)
-            _mistura(canvas, faixa, pintada, y0, p)
+        _draw_selo(draw, sx, sy, selo)
 
 
 def reel_plan(offer: Offer, verdict: Verdict, handle: str | None = None,
@@ -2226,29 +2187,33 @@ def reel_frames(offer: Offer, verdict: Verdict, client: httpx.Client | None = No
     _, _, card_w, card_h = STORY_CARD_BOX
     ajustado = _fit_card(product, card_w - 2 * 24, card_h - 2 * 24)
 
-    # Depois de `assentado` a peça não muda mais: é a arte de story parada, com
-    # o zoom correndo. Pintar o corpo UMA vez para esses ~3/4 dos frames tira
-    # seis desenhos de texto de cada um deles — e o card, que é o que ainda se
-    # mexe, não encosta no corpo (ele termina em y=1014; o título começa em
-    # 1050), então a ordem "corpo antes do card" não muda um pixel.
-    assentado = max(inicio + duracao for inicio, duracao in REEL_ENTRADAS.values())
-    pronto = base.copy()
-    _desenha_corpo_animado(pronto, ImageDraw.Draw(pronto), assentado, width, offer,
-                           plan, corpo)
+    # As duas telas prontas, pintadas UMA vez. O corpo é o passo caro (seis
+    # desenhos de texto), e ele é idêntico em todos os frames: o que se mexe é
+    # a foto (zoom) e a pill (pulso), e nem uma nem outra encosta no resto — o
+    # card termina em y=1014 e o título começa em 1050.
+    #
+    # `sem_pill` existe para o pulso ter fundo limpo onde redesenhar a pill em
+    # escala; `pronto` é a peça completa, que serve todos os frames fora da
+    # janela do pulso.
+    sem_pill = base.copy()
+    _desenha_corpo(ImageDraw.Draw(sem_pill), width, offer, plan, corpo, com_pill=False)
+    pronto = sem_pill.copy()
+    px, py = corpo.preco
+    _draw_price_pill(ImageDraw.Draw(pronto), px, py, plan["price"])
 
     total = max(1, round(fps * duracao_s))
     for i in range(total):
         # O último frame fecha o zoom em REEL_ZOOM; o primeiro abre em 1,00.
         fracao = i / (total - 1) if total > 1 else 1.0
-        t = i / fps
-        entrando = t < assentado
-        canvas = (base if entrando else pronto).copy()
+        escala = _pulso(i / fps)
+        pulsando = escala != 1.0
+        canvas = (sem_pill if pulsando else pronto).copy()
         draw = ImageDraw.Draw(canvas)
         _draw_story_card(canvas, draw,
                          _produto_com_zoom(ajustado, 1 + (REEL_ZOOM - 1) * fracao),
                          plan["badge_pct"])
-        if entrando:
-            _desenha_corpo_animado(canvas, draw, t, width, offer, plan, corpo)
+        if pulsando:
+            _pill_em_escala(canvas, plan["price"], px, py, escala)
         yield canvas
 
 

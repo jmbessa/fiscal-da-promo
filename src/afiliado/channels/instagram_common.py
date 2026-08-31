@@ -104,6 +104,41 @@ def cota_de_publicacao(data) -> tuple[int | None, int | None, int]:
             segundos // 3600 if segundos else 24)
 
 
+def le_seguidores(ig_user_id: str, access_token: str, api: str = "facebook_login",
+                  client: httpx.Client | None = None) -> int | None:
+    """`followers_count` do `user_info` da conta, ou `None` quando não deu.
+
+    Fase 5U: é o número que sustenta o teto por audiência (ver
+    `pipeline.teto_por_audiencia`). Ele NUNCA levanta e NUNCA chuta: token
+    vencido, campo ausente, HTTP 400, resposta que não é JSON e rede caída
+    devolvem todos `None` — e quem chama trata isso como "não sei", que vale o
+    `max_per_day` do config. Um erro de leitura não pode calar a conta.
+
+    Mora aqui, e não no canal, porque não é de canal nenhum: o número é da
+    CONTA, e os três canais do Instagram (feed, story, Reel) o dividem, como
+    dividem a cota de publicação da Meta.
+    """
+    graph = GRAPH_HOSTS.get(api, GRAPH_HOSTS["facebook_login"])
+    fechar = client is None
+    cliente = client or httpx.Client(timeout=20)
+    try:
+        r = cliente.get(f"{graph}/{ig_user_id.strip()}",
+                        params={"fields": "followers_count",
+                                "access_token": access_token.strip()})
+        if r.status_code != 200:
+            return None
+        data = r.json()
+    except Exception:
+        # httpx.HTTPError (rede), ValueError (não-JSON) e httpx.InvalidURL
+        # (caractere de controle numa env var mal colada) — a mesma disciplina
+        # de `_graph_call`.
+        return None
+    finally:
+        if fechar:
+            cliente.close()
+    return _inteiro(data.get("followers_count")) if isinstance(data, dict) else None
+
+
 def to_jpeg(png_bytes: bytes, quality: int = 90) -> bytes:
     """A API de publicação do Instagram aceita apenas JPEG; converte a arte PNG."""
     img = Image.open(io.BytesIO(png_bytes)).convert("RGB")

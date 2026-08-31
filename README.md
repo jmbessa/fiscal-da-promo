@@ -296,6 +296,14 @@ SQLite **no dia local** de `schedule.timezone`): `telegram` em 60/dia (a meta
 do canal), `instagram_story` em 60/dia e `instagram_feed` em 2/dia
 (`instagram_story_link` e `story_dispatch`, os dois fallbacks, estão
 desligados — ver a fase 5U em `config.yaml`).
+Desde a fase 5U esse teto passa antes por um **teto por audiência**
+(`channels.<canal>.audiencia`, com `piso` e `divisor`):
+`min(max_per_day, max(piso, seguidores ÷ divisor))`. Com 2 seguidores, o story
+publica 3/dia em vez de 60. O `followers_count` vem do `user_info` da Graph API
+e é lido **uma vez por dia** (guardado no `state.db`); sem ele a régua **falha
+aberta** — vale o `max_per_day` do config, e o resumo de operações diz que ela
+não foi aplicada.
+
 Desde a fase 5A o teto é **distribuído pela janela** (`schedule.window_start`
 – `window_end`): um canal só publica enquanto o que já postou hoje está
 abaixo de `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`

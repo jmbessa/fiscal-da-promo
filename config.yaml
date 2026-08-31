@@ -501,9 +501,35 @@ channels:
   story_dispatch:
     enabled: false           # SEMI-automático: arte de story + link prontos no chat de operações; você posta
     max_per_day: 6           # artes de story por dia, ~uma a cada 2h40
+  # Fase 5U (U3) — O TETO QUE A AUDIÊNCIA AUTORIZA, e por que ele existe.
+  #
+  #     teto efetivo = min(max_per_day, max(piso, seguidores ÷ divisor))
+  #
+  # Medido na conta real em 2026-08-29 pela Graph API: **2 seguidores**, 5
+  # posts, alcance de **1 conta** em 7 dias, 0 interações. Publicar 60 stories
+  # por dia para duas pessoas não gera alcance — gasta a cota da Meta (100/24 h,
+  # COMPARTILHADA por feed, story e Reel), enche o dedupe e queima o estoque de
+  # candidatas. Com os números abaixo, o dia de hoje é: story 3 (60
+  # configurado), feed 2, Reel 1.
+  #
+  # `piso` e `divisor` são CHUTE, e é por isso que estão aqui e não no código:
+  # número chutado dentro do código é número que ninguém revisa. Revise-os
+  # quando a conta tiver audiência de verdade — o teto sobe sozinho conforme
+  # `seguidores ÷ divisor` passa do piso, e volta a ser o `max_per_day` acima
+  # quando o alcança (60 stories/dia pedem 6.000 seguidores).
+  #
+  # `followers_count` vem do `user_info` da Graph API e é lido UMA VEZ POR DIA
+  # local, guardado no `state.db` (não é uma chamada por run: a cadência é de
+  # 15 min). Sem o número — API fora, token vencido, cache vazio — a régua
+  # FALHA ABERTA: vale o `max_per_day` daqui, e o resumo de operações diz que
+  # ela não foi aplicada. Um erro de leitura não pode calar a conta.
+  #
+  # Tirar a seção `audiencia:` de um canal desliga o teto DAQUELE canal em
+  # silêncio; um teste cobra a presença dela nos três (não os valores).
   instagram_feed:
     enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
     max_per_day: 2           # 1 de manhã, a 2ª só a partir da metade da janela
+    audiencia: {piso: 2, divisor: 500}
   # Fase 5D: o CARROSSEL (`afiliado feed`, tipo termometro). Publica pelo mesmo
   # canal e pela mesma cota da Meta que o instagram_feed acima (100/24 h), mas
   # tem teto próprio porque é um post por vez e não deve competir com o feed de
@@ -535,6 +561,7 @@ channels:
   instagram_story:
     enabled: true
     max_per_day: 60
+    audiencia: {piso: 3, divisor: 100}
   # Fase 5T: o REEL — a única superfície de AQUISIÇÃO que a conta não tem.
   # Medido na conta real em 2026-08-29 pela Graph API: 2 seguidores, 5 posts,
   # ZERO do tipo REEL, alcance de 1 conta em 7 dias. O feed serve quem já
@@ -554,6 +581,7 @@ channels:
   instagram_reel:
     enabled: false
     max_per_day: 2           # 1 de manhã, o 2º só a partir da metade da janela
+    audiencia: {piso: 1, divisor: 1000}
   # Fase 5F: story COM figurinha de link, pelo instagrapi (API PRIVADA). Existe
   # porque a Graph API NEGA figurinhas e o Meta Business Suite só põe link em
   # story do Facebook — ver docs/superpowers/reviews/2026-08-27-sticker-de-link.md.
@@ -586,6 +614,10 @@ channels:
   # cálculo, há só o risco.
   instagram_story_link:
     enabled: false          # o dono liga depois de rodar `afiliado ig-login`
+    # A mesma régua do `instagram_story`: é a MESMA superfície e a mesma
+    # audiência. Fica aqui desde já para que religar o canal não devolva 60
+    # stories/dia para 2 seguidores por esquecimento.
+    audiencia: {piso: 3, divisor: 100}
     # 60/dia = um a cada ~15 min na janela de 08:00-23:15. Cabe na cota da
     # Meta (100/24h, compartilhada com o feed), mas este canal é API PRIVADA:
     # volume alto é justamente o que atrai verificação de segurança, e o ativo

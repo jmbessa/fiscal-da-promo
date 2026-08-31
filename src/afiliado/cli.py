@@ -14,7 +14,7 @@ from afiliado import (categorias, config, creative, flagrante, llm, pipeline, pr
                       pricing, selection, shopee_checkout, video)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import (GRAPH_HOSTS, cota_de_publicacao,
-                                                graph_error)
+                                                graph_error, le_seguidores)
 from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
 from afiliado.channels.instagram_reel import InstagramReelChannel
 from afiliado.channels.instagram_story import InstagramStoryChannel
@@ -460,6 +460,97 @@ def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[
         _aviso(avisos, ART_HOST_AVISO_TMPL.format(canal=cls.name))
 
 
+# --- Fase 5U (U3): o teto que a AUDIÊNCIA autoriza ----------------------------
+
+# A marca do dia local que guarda o número de seguidores. `user_info` a cada
+# run seriam ~96 chamadas por dia (cadência de 15 min) para um número que muda
+# devagar. Mesma mecânica do desarme do `instagram_story_link` (day_flags):
+# some sozinha na virada do dia local e sobrevive ao fim do processo.
+CHAVE_SEGUIDORES = "instagram_followers"
+
+# A linha do resumo de operações. O teto efetivo E o motivo — sem o motivo o
+# dono lê "3" e não sabe se é config, ritmo ou defeito.
+LINHA_TETO_AUDIENCIA = ("ℹ️ {canal}: teto por audiência: {efetivo} "
+                        "({configurado} configurado) — {seguidores} seguidor(es) "
+                        "÷ {divisor}, piso {piso}")
+# Falha ABERTA, e diz. O silêncio aqui seria o pior resultado: a conta
+# publicando o teto cheio sem ninguém saber que a régua não foi aplicada.
+AVISO_SEM_SEGUIDORES = ("ℹ️ teto por audiência não aplicado: não consegui ler "
+                        "followers_count da Graph API — vale o max_per_day do "
+                        "config (falha aberta, por desenho)")
+
+
+def seguidores_do_dia(ig_user: str, ig_token: str, api: str,
+                      db: StateDB | None) -> int | None:
+    """O `followers_count` da conta, lido UMA vez por dia local e guardado no
+    `state.db`.
+
+    Leitura que não deu certo NÃO é cacheada: cachear o "não sei" prenderia a
+    conta ao `max_per_day` cheio pelo resto do dia por causa de um timeout. O
+    run seguinte tenta de novo.
+    """
+    if db is not None:
+        marca = db.day_flag(CHAVE_SEGUIDORES)
+        if marca.isdigit():
+            return int(marca)
+    numero = le_seguidores(ig_user, ig_token, api)
+    if numero is not None and db is not None:
+        db.set_day_flag(CHAVE_SEGUIDORES, str(numero))
+    return numero
+
+
+def audiencia_do_canal(raw) -> tuple[int, int] | None:
+    """`(piso, divisor)` de `channels.<canal>.audiencia`, ou None quando o
+    canal não tem a régua. Os dois números são obrigatórios juntos: um
+    `divisor` sem `piso` daria um teto de 0 para uma conta nova, que é
+    exatamente o zero silencioso que a fase 5A caçou."""
+    if not isinstance(raw, dict):
+        return None
+    audiencia = raw.get("audiencia")
+    if not isinstance(audiencia, dict):
+        return None
+    piso, divisor = audiencia.get("piso"), audiencia.get("divisor")
+    if piso is None or divisor is None:
+        return None
+    try:
+        return int(piso), int(divisor)
+    except (TypeError, ValueError):
+        return None
+
+
+def _aplica_teto_por_audiencia(cfg: dict, ch_cfg: dict, channels: list,
+                               avisos: list[str], db: StateDB | None) -> None:
+    """Aperta o `max_per_day` dos canais que declaram `audiencia:` no config.
+
+    Um lugar só, depois de todos os canais montados, por dois motivos: a
+    leitura de `followers_count` é UMA por dia para a CONTA inteira (não uma
+    por canal), e o número que ela aperta é sempre o mesmo atributo
+    (`ch.max_per_day`), que o `pacing_budget` do pipeline já lê.
+
+    Nada acontece quando nenhum canal montado tem a régua — e aí nem a Graph
+    API é consultada.
+    """
+    alvos = [(ch, audiencia_do_canal(ch_cfg.get(ch.name))) for ch in channels]
+    alvos = [(ch, regra) for ch, regra in alvos
+             if regra is not None and getattr(ch, "max_per_day", None) is not None]
+    if not alvos:
+        return
+    seguidores = seguidores_do_dia(_env("IG_USER_ID"), _env("IG_ACCESS_TOKEN"),
+                                   _instagram_api(cfg), db)
+    if seguidores is None:
+        _aviso(avisos, AVISO_SEM_SEGUIDORES)
+        return
+    for ch, (piso, divisor) in alvos:
+        configurado = int(ch.max_per_day)
+        efetivo = pipeline.teto_por_audiencia(configurado, seguidores, piso, divisor)
+        if efetivo == configurado:
+            continue
+        ch.max_per_day = efetivo
+        _aviso(avisos, LINHA_TETO_AUDIENCIA.format(
+            canal=ch.name, efetivo=efetivo, configurado=configurado,
+            seguidores=seguidores, divisor=divisor, piso=piso))
+
+
 def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
                     api_privada: bool = False,
                     db: StateDB | None = None) -> tuple[list, list[str]]:
@@ -541,6 +632,10 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
     # propósito — é o canal de maior risco e o único que não roda em toda parte.
     _monta_story_link(ch_cfg, cfg, channels, avisos, brand_handle=brand_handle,
                       brand_name=brand_name, api_privada=api_privada, db=db)
+
+    # Fase 5U: por último, com todos montados — o teto por audiência é da
+    # CONTA, e a leitura que o sustenta é uma por dia, não uma por canal.
+    _aplica_teto_por_audiencia(cfg, ch_cfg, channels, avisos, db)
 
     return channels, avisos
 

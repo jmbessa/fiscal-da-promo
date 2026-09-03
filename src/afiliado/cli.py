@@ -1471,7 +1471,17 @@ def _feed_tema(cfg: dict, args, db: StateDB) -> int:
         return 1
     tema = temas.escolhe(acervo, db)
     if tema is None:
-        print(f"ℹ️ carrossel temático: nenhum tema em {temas.CAMINHO}")
+        # Ou o acervo está vazio, ou TODOS estão descansando. O segundo caso é
+        # o normal com acervo pequeno, e é silêncio de propósito: repetir um
+        # post de método a cada dois dias foi o que o dono chamou de saturado.
+        if not acervo:
+            print(f"ℹ️ carrossel temático: nenhum tema em {temas.CAMINHO}")
+        else:
+            print(f"ℹ️ carrossel temático não sai: os {len(acervo)} tema(s) do "
+                  f"acervo saíram nos últimos {temas.DIAS_DE_DESCANSO} dias. "
+                  f"O acervo cobre {temas.cobertura(acervo)} de "
+                  f"{temas.DIAS_DE_DESCANSO} dias — escreva mais um em "
+                  f"{temas.CAMINHO}.")
         return 0
 
     handle, nome_marca = _marca(cfg)
@@ -1492,18 +1502,22 @@ def _feed_tema(cfg: dict, args, db: StateDB) -> int:
     avisos.extend(pipeline.drena_avisos(canal))
     for aviso in avisos:
         print(aviso)
+    # Fase 5X: as marcas são gravadas quando a peça PODE estar na conta, e não
+    # só quando a publicação deu certo. `publicado` é o canal dizendo "chamei o
+    # `media_publish` e não sei o que aconteceu" — e nesse estado repetir é o
+    # risco maior. Em 2026-09-02 a conta ganhou CINCO carrosséis idênticos por
+    # gravar só no caminho feliz.
+    if resultado.ok or resultado.publicado:
+        temas.marca_publicado(db, tema)
+        # E ele conta para o teto do canal — é a mesma vaga do termômetro.
+        db.record_peca("tema", tema.slug, CANAL_CARROSSEL, tema.titulo,
+                       resultado.message_id)
     if not resultado.ok:
         print(f"❌ carrossel temático não publicado: {resultado.error}")
         _notifica_ops(cfg, "\n".join(
             [f"❌ Carrossel temático '{tema.slug}' não publicado: {resultado.error}",
              *avisos]))
         return 1
-    # As duas marcas só são gravadas DEPOIS de publicar: marcar antes tiraria o
-    # tema da frente da fila por uma peça que não foi ao ar.
-    temas.marca_publicado(db, tema)
-    # E ele conta para o teto do canal — é a mesma vaga do termômetro.
-    db.record_peca("tema", tema.slug, CANAL_CARROSSEL, tema.titulo,
-                   resultado.message_id)
     print(f"✅ carrossel temático '{tema.slug}' publicado ({resultado.message_id})")
     _notifica_ops(cfg, "\n".join(
         [f"✅ Carrossel temático '{tema.slug}' publicado: {tema.titulo}", *avisos]))
@@ -1634,17 +1648,18 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
     avisos.extend(pipeline.drena_avisos(canal))
     for aviso in avisos:
         print(aviso)
+    # Fase 5X: grava quando a peça PODE estar na conta — ver `_feed_tema`. UMA
+    # linha no canal que conta para o teto (um carrossel é um post) e uma por
+    # oferta no canal de item, para o dedupe não repetir os mesmos produtos.
+    if resultado.ok or resultado.publicado:
+        db.record_post(posts[0], CANAL_CARROSSEL, resultado.message_id)
+        for post in posts:
+            db.record_post(post, CANAL_CARROSSEL_ITEM, resultado.message_id)
     if not resultado.ok:
         print(f"❌ carrossel: publicação falhou — {resultado.error}")
         _notifica_ops(cfg, "\n".join(
             [f"❌ Carrossel do feed falhou: {resultado.error}", *avisos]))
         return 1
-
-    # UMA linha no canal que conta para o teto (um carrossel é um post) e uma
-    # por oferta no canal de item, para o dedupe não repetir os mesmos produtos.
-    db.record_post(posts[0], CANAL_CARROSSEL, resultado.message_id)
-    for post in posts:
-        db.record_post(post, CANAL_CARROSSEL_ITEM, resultado.message_id)
     print(f"✅ carrossel publicado ({resultado.message_id}): {titulo}")
     _notifica_ops(cfg, "\n".join(
         [f"🎠 Carrossel publicado — {titulo}",

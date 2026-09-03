@@ -122,7 +122,21 @@ class InstagramFeedChannel(InstagramBase):
         })
         post_id = publish_resp.get("id") if isinstance(publish_resp, dict) else None
         if not post_id:
-            return PublishResult(False, error=graph_error(publish_resp))
+        # Fase 5X: **`publicado=True`, e isto não é otimismo.** O container
+        # existe e o `media_publish` foi CHAMADO: daqui em diante não há como
+        # saber se a peça está na conta — a Meta processa a criação e pode
+        # devolver erro depois (foi o que aconteceu em 2026-09-02 com
+        # "Application request limit reached", o teto de CHAMADAS do app).
+        #
+        # Sem esta marca o pipeline não grava em `posted`, `count_posts_today`
+        # fica em 0, o teto do dia e o dedupe não valem, e o run seguinte
+        # republica a mesma peça — que foi como a conta ganhou 5 carrosséis
+        # idênticos e 3 posts de feed num run só, com `max_per_day: 2`.
+        #
+        # Errar dizendo "publicou" custa UMA peça no dia. Errar dizendo "não
+        # publicou" custou um laço de republicação sem teto.
+            return PublishResult(False, error=graph_error(publish_resp),
+                                 publicado=True)
 
         return PublishResult(True, str(post_id))
 
@@ -195,7 +209,12 @@ class InstagramFeedChannel(InstagramBase):
         if not post_id:
             erro = graph_error(publish_resp)
             detalhe = self._sobre_o_container(leitura)
-            return PublishResult(False, error=f"{erro} ({detalhe})" if detalhe else erro)
+            # Fase 5X: `publicado=True` — o `media_publish` foi CHAMADO e a Meta
+            # pode ter criado a peça antes de devolver erro. Ver o comentário
+            # longo em `instagram_feed.publish`: sem esta marca o teto do dia
+            # fica em 0 e o run seguinte republica.
+            return PublishResult(False, publicado=True,
+                                 error=f"{erro} ({detalhe})" if detalhe else erro)
         return PublishResult(True, str(post_id))
 
     # Nome antigo, mantido porque é assim que o canal o chama desde a 2A. A

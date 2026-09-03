@@ -33,7 +33,7 @@ de observação (`afiliado.painel`) fechar os 14 dias.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
@@ -42,8 +42,8 @@ from afiliado.errors import SourceError
 from afiliado.state import StateDB
 
 __all__ = ["Tema", "Slide", "CAMINHO", "MIN_SLIDES", "MAX_SLIDES",
-           "TITULO_MAX_LINHAS", "CORPO_MAX_LINHAS", "carrega", "escolhe",
-           "marca_publicado", "chave_do_cursor"]
+           "TITULO_MAX_LINHAS", "CORPO_MAX_LINHAS", "DIAS_DE_DESCANSO",
+           "carrega", "escolhe", "cobertura", "marca_publicado", "chave_do_cursor"]
 
 CAMINHO = "data/temas.yaml"
 
@@ -128,8 +128,24 @@ def carrega(caminho: str | Path = CAMINHO) -> list[Tema]:
     return temas
 
 
-def escolhe(temas: list[Tema], db: StateDB) -> Tema | None:
-    """O tema que está há mais tempo sem sair — nunca publicado vem primeiro.
+# Quantos dias um tema DESCANSA depois de sair.
+#
+# O dono, em 2026-09-02: "o post de verificação de desconto já saturou". Com o
+# acervo em 2 temas e uma vaga por dia, cada um voltaria a cada 2 dias — e um
+# post de método relido a cada 48 h não é conteúdo perene, é insistência.
+#
+# Duas semanas é o intervalo em que a mesma pessoa provavelmente não lembra de
+# ter visto. A consequência é deliberada: com 2 temas o carrossel sai 2 dias em
+# 14 e fica calado nos outros 12. **Silêncio é melhor do que repetição** — e o
+# número de dias calados é exatamente a pressão para o acervo crescer, que é a
+# única solução de verdade. O `doctor` diz quantos dias o acervo cobre.
+DIAS_DE_DESCANSO = 14
+
+
+def escolhe(temas: list[Tema], db: StateDB,
+            hoje: date | None = None) -> Tema | None:
+    """O tema que está há mais tempo sem sair — nunca publicado vem primeiro —,
+    ou `None` quando todos ainda estão descansando.
 
     Não há sorteio: com um acervo pequeno o sorteio repete, e repetir um tema
     antes de o acervo inteiro ter ido ao ar é desperdiçar peça escrita à mão.
@@ -137,10 +153,20 @@ def escolhe(temas: list[Tema], db: StateDB) -> Tema | None:
     """
     if not temas:
         return None
+    hoje = hoje or db.local_today()
+    limite = (hoje - timedelta(days=DIAS_DE_DESCANSO)).isoformat()
     def quando(tema: Tema) -> tuple[str, str]:
         # "" (nunca publicado) ordena antes de qualquer data ISO.
         return (db.get_cursor(chave_do_cursor(tema.slug), ""), tema.slug)
-    return min(temas, key=quando)
+    descansados = [t for t in temas if quando(t)[0] <= limite]
+    return min(descansados, key=quando) if descansados else None
+
+
+def cobertura(temas: list[Tema]) -> int:
+    """Quantos dias de 14 o acervo consegue cobrir. É a medida honesta de "o
+    acervo é grande o bastante": com `DIAS_DE_DESCANSO` temas, o carrossel sai
+    todo dia; com menos, ele fica calado na diferença."""
+    return min(len(temas), DIAS_DE_DESCANSO)
 
 
 def marca_publicado(db: StateDB, tema: Tema, dia: date | None = None) -> None:

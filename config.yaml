@@ -109,6 +109,18 @@ selection:
   # 100 mais vendidos. tests/test_config.py trava os dois números e o efeito.
   price_max_brl: 150
   dedupe_days: 30
+  # Fase 5X — dedupe por TÍTULO, em dias. O `dedupe_days` acima é por
+  # `(fonte, item_id)` e está certo para o que faz; o que ele não pega é o
+  # MESMO produto anunciado por vendedores diferentes, que tem id diferente.
+  # Medido no `posted` em 2026-09-02: "Boneca Bebê Reborn Unicórnio Menina
+  # Original Realista..." saiu 3 vezes, com 3 ids — e quem lê o canal não vê
+  # três ofertas, vê o mesmo post de novo.
+  #
+  # 7 dias, e não os 30 do id: a chave é ampla de propósito (ela ignora
+  # tamanho, cor e vendedor), então uma janela longa apagaria categorias
+  # inteiras do estoque. Uma semana é o que separa "de novo isso?" de
+  # "aquele produto voltou". 0 desliga o portão.
+  dedupe_titulo_dias: 7
   # Fase 4/5B — régua honesta de preço. O desconto do vendedor (o "de" inflado)
   # deixou de decidir SE publicamos e passa a decidir só O QUE o post alega:
   # o corte de preço aqui é apenas não anunciar item mais caro que o típico.

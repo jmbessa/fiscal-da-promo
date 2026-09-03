@@ -273,3 +273,74 @@ def test_o_yaml_e_uma_lista_de_mapas_com_as_chaves_certas():
         assert set(item["capa"]) == {"titulo", "subtitulo"}
         for slide in item["slides"]:
             assert set(slide) == {"titulo", "corpo"}
+
+
+def test_o_tema_e_MARCADO_mesmo_quando_a_publicacao_devolve_erro(monkeypatch, tmp_path, db):
+    """Fase 5X — o defeito que deu 5 carrosséis idênticos na conta.
+
+    Quando o `media_publish` falha depois de ter sido chamado, o canal devolve
+    `ok=False` com `publicado=True`: a peça PODE estar no ar. Se a marca só
+    fosse gravada no caminho feliz, o run seguinte escolheria o mesmo tema e
+    publicaria de novo — e de novo, a cada 2 h.
+    """
+    from afiliado.channels.base import PublishResult
+
+    tema = _tema("x")
+    falhou = PublishResult(False, error="Application request limit reached",
+                           publicado=True)
+
+    # O caminho que o comando percorre depois de montar a peça, isolado.
+    if falhou.ok or falhou.publicado:
+        temas.marca_publicado(db, tema)
+        db.record_peca("tema", tema.slug, "instagram_carrossel", tema.titulo, "")
+
+    assert db.get_cursor(temas.chave_do_cursor(tema.slug), "") != ""
+    assert db.count_posts_today("instagram_carrossel") == 1
+    # E o tema sai da frente da fila: o próximo run escolhe OUTRO.
+    assert temas.escolhe([tema, _tema("y")], db).slug == "y"
+
+
+def test_o_comando_do_tema_grava_quando_publicado_mesmo_com_erro():
+    """A trava no CÓDIGO do comando, não numa simulação: a condição que decide
+    gravar tem de olhar `publicado`, e não só `ok`."""
+    import inspect
+
+    fonte = inspect.getsource(cli._feed_tema)
+    assert "resultado.ok or resultado.publicado" in fonte
+    # E a gravação vem ANTES do `return 1` do caminho de PUBLICAÇÃO falha —
+    # que é onde o laço de republicação nascia. (Há outro `return 1` antes, o
+    # do canal não montado, e ele não é este.)
+    assert (fonte.index("resultado.ok or resultado.publicado")
+            < fonte.index("carrossel temático não publicado"))
+
+
+def test_um_tema_que_acabou_de_sair_DESCANSA(db):
+    """O dono, em 2026-09-02: "o post de verificação de desconto já saturou".
+    Com 2 temas e uma vaga por dia, cada um voltaria a cada 48 h."""
+    import datetime as dt
+
+    acervo = [_tema("a"), _tema("b")]
+    hoje = dt.date(2026, 9, 2)
+    temas.marca_publicado(db, acervo[0], hoje)
+    temas.marca_publicado(db, acervo[1], hoje - dt.timedelta(days=1))
+    assert temas.escolhe(acervo, db, hoje) is None
+
+
+def test_passado_o_descanso_o_tema_volta(db):
+    import datetime as dt
+
+    acervo = [_tema("a")]
+    hoje = dt.date(2026, 9, 2)
+    temas.marca_publicado(db, acervo[0], hoje - dt.timedelta(days=temas.DIAS_DE_DESCANSO))
+    assert temas.escolhe(acervo, db, hoje).slug == "a"
+    temas.marca_publicado(db, acervo[0],
+                          hoje - dt.timedelta(days=temas.DIAS_DE_DESCANSO - 1))
+    assert temas.escolhe(acervo, db, hoje) is None
+
+
+def test_silencio_e_melhor_que_repeticao_e_a_cobertura_diz_o_tamanho_do_buraco():
+    """Com o acervo abaixo de `DIAS_DE_DESCANSO`, o carrossel fica calado na
+    diferença — e isso é a peça funcionando, não falhando. O número é a pressão
+    para escrever mais um tema."""
+    assert temas.cobertura(temas.carrega()) == len(temas.carrega())
+    assert temas.cobertura([_tema(str(i)) for i in range(50)]) == temas.DIAS_DE_DESCANSO

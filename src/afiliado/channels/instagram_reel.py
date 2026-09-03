@@ -146,7 +146,11 @@ class InstagramReelChannel(InstagramBase):
             detalhe = self._sobre_o_container(leitura)
             if detalhe:
                 erro = f"{erro} ({detalhe})"
-            return PublishResult(False, error=erro)
+            # Fase 5X: `publicado=True` — o `media_publish` foi CHAMADO e a Meta
+            # pode ter criado a peça antes de devolver erro. Ver o comentário
+            # longo em `instagram_feed.publish`: sem esta marca o teto do dia
+            # fica em 0 e o run seguinte republica.
+            return PublishResult(False, error=erro, publicado=True)
 
         return PublishResult(True, str(media_id))
 

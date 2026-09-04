@@ -564,6 +564,31 @@ channels:
   telegram:
     enabled: true
     max_per_day: 60          # meta: 60 ofertas/dia, espalhadas das 08:00 às 23:15 (~1 a cada 15 min)
+  # Fase 5Y — O X, como superfície de AQUISIÇÃO. Texto puro, SEM URL nenhuma:
+  # o destino é o link da BIO, e o motivo são duas penalidades somadas.
+  #
+  # DINHEIRO: em 06/02/2026 o X trocou os planos por pay-per-use e acabou com o
+  # tier grátis para desenvolvedor novo; em 20/04/2026 o post COM link foi de
+  # US$ 0,01 para US$ 0,20, contra US$ 0,015 sem link — 13× mais caro.
+  # ALCANCE: o X reduz a distribuição de post com link para segurar quem lê na
+  # plataforma, e em conta SEM Premium o engajamento mediano de post com link
+  # fica perto de zero.
+  # Somadas: com link a gente paga 13× para alcançar menos.
+  #
+  # E sem link de afiliado aqui, não importa se o X está ou não na lista de
+  # canais declarados no painel da Shopee — publicar link de afiliado em canal
+  # não declarado custa a monetização inteira, não uma multa.
+  #
+  # NASCE DESLIGADO. Ele cobra POR POST e depende de um app de desenvolvedor
+  # que o dono precisa criar, com cartão. Ligar antes disso seria acumular
+  # falha a cada 15 min. Ver docs/runbooks/x-setup.md.
+  #
+  # O CUSTO de `max_per_day` posts/dia, a US$ 0,015 cada:
+  #   10/dia  ->  ~US$ 4,50/mês        30/dia  ->  ~US$ 13,50/mês
+  #   60/dia  ->  ~US$ 27/mês          (com link, os mesmos 60 dariam ~US$ 360)
+  x:
+    enabled: false
+    max_per_day: 10
   # Fase 5E: DESLIGADO. Este canal só entrega a arte no chat de operações para
   # o dono postar à mão — 6 gestos por dia. Ele existia porque o projeto
   # acreditava que a API não publicava story; ela publica (medido ao vivo em

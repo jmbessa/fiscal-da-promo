@@ -22,6 +22,8 @@ from afiliado.channels.instagram_reel import InstagramReelChannel
 from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.instagram_story_link import InstagramStoryLinkChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
+from afiliado.channels import x as canal_x
+from afiliado.channels.x import XChannel
 from afiliado.channels.telegram import TelegramChannel, send_photo_bytes, send_text
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts, Post, format_brl
@@ -660,6 +662,24 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
         _monta_instagram(cls, ch_cfg, cfg, channels, avisos,
                          brand_handle=brand_handle, brand_name=brand_name)
 
+    # Fase 5Y: o X. Ele NÃO leva link — o destino é o link da BIO —, então não
+    # precisa de nada além do par de chaves OAuth 1.0a. Ver `channels/x.py`:
+    # post com URL custa 13× mais e perde alcance, e é por isso que este canal
+    # é o único que publica só texto.
+    enabled, max_per_day = _channel_settings(ch_cfg.get(XChannel.name))
+    if enabled:
+        chaves = [_env(k) for k in ("X_API_KEY", "X_API_SECRET",
+                                    "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET")]
+        if all(chaves):
+            ch = XChannel(*chaves)
+            if max_per_day is not None:
+                ch.max_per_day = int(max_per_day)
+            channels.append(ch)
+        else:
+            _aviso(avisos, "⚠️ canal x ignorado: falta X_API_KEY/X_API_SECRET/"
+                           "X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET (ver "
+                           "docs/runbooks/x-setup.md)")
+
     # Fase 5F: o story COM figurinha de link, pela API privada. Último de
     # propósito — é o canal de maior risco e o único que não roda em toda parte.
     _monta_story_link(ch_cfg, cfg, channels, avisos, brand_handle=brand_handle,
@@ -926,6 +946,7 @@ def doctor(cfg: dict) -> int:
     _doctor_preco_checkout(cfg, _watchlist(cfg))
     _doctor_painel(cfg)
     ok = _doctor_temas(cfg) and ok
+    ok = _doctor_x(cfg) and ok
 
     # Por último de propósito: é o item que responde "quem me chama?", e ele
     # fala do MUNDO (o agendador), não das credenciais.
@@ -969,6 +990,34 @@ def _doctor_preco_real(cfg: dict) -> bool:
           f"(channel={opcoes['browser_channel'] or 'chromium empacotado'}, "
           f"teto={opcoes['timeout_s']:.0f}s, desarma em {opcoes['max_falhas']} "
           "falhas seguidas)")
+    return True
+
+
+def _doctor_x(cfg: dict) -> bool:
+    """Fase 5Y: o canal do X — credencial presente, e o CUSTO do mês.
+
+    Este é o único canal do projeto que cobra POR POST, então o item não diz só
+    "ligado": diz quanto `max_per_day` custa por mês. Um teto que dobra sem
+    ninguém fazer a conta é uma fatura que dobra.
+
+    Nunca ecoa chave nenhuma — presença, como todo o resto do doctor.
+    """
+    enabled, max_per_day = _channel_settings((cfg.get("channels") or {}).get(XChannel.name))
+    teto = int(max_per_day or 0)
+    mes = teto * 30 * canal_x.CUSTO_SEM_LINK_USD
+    com_link = teto * 30 * canal_x.CUSTO_COM_LINK_USD
+    if not enabled:
+        print(f"ℹ️ x: desligado — ligaria a US$ {mes:.2f}/mês com {teto} post(s)/dia "
+              f"(ver docs/runbooks/x-setup.md)")
+        return True
+    faltam = [k for k in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN",
+                          "X_ACCESS_TOKEN_SECRET") if not _env(k)]
+    if faltam:
+        print(f"❌ x: ligado e sem credencial — falta {', '.join(faltam)} "
+              f"(ver docs/runbooks/x-setup.md)")
+        return False
+    print(f"✅ x: {teto} post(s)/dia · ~US$ {mes:.2f}/mês · texto puro, sem URL "
+          f"(com link seriam US$ {com_link:.2f})")
     return True
 
 

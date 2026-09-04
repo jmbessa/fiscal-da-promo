@@ -344,3 +344,25 @@ def test_silencio_e_melhor_que_repeticao_e_a_cobertura_diz_o_tamanho_do_buraco()
     para escrever mais um tema."""
     assert temas.cobertura(temas.carrega()) == len(temas.carrega())
     assert temas.cobertura([_tema(str(i)) for i in range(50)]) == temas.DIAS_DE_DESCANSO
+
+
+def test_o_acervo_do_repositorio_cobre_o_descanso_inteiro():
+    """Com `DIAS_DE_DESCANSO` temas o carrossel sai TODO DIA; com menos, ele
+    fica calado na diferença. Este teste é o que impede o acervo de encolher
+    sem ninguém perceber — apagar um tema volta a abrir buraco no feed."""
+    acervo = temas.carrega()
+    assert len(acervo) >= temas.DIAS_DE_DESCANSO, (
+        f"o acervo cobre {temas.cobertura(acervo)} de {temas.DIAS_DE_DESCANSO} "
+        f"dias — o carrossel ficaria calado nos outros")
+
+
+def test_os_temas_nao_repetem_a_mesma_tese():
+    """Quatorze peças que dizem a mesma coisa saturam igual a uma repetida. As
+    capas têm de ser distintas entre si — é a checagem mais grosseira possível,
+    e mesmo assim ela pega o copiar-colar."""
+    acervo = temas.carrega()
+    titulos = [t.titulo for t in acervo]
+    assert len(set(titulos)) == len(titulos)
+    # E nenhuma capa é prefixo de outra (o jeito preguiçoso de "variar").
+    for a in titulos:
+        assert sum(1 for b in titulos if b.startswith(a[:12])) == 1, a

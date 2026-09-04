@@ -925,6 +925,7 @@ def doctor(cfg: dict) -> int:
 
     _doctor_preco_checkout(cfg, _watchlist(cfg))
     _doctor_painel(cfg)
+    ok = _doctor_temas(cfg) and ok
 
     # Por último de propósito: é o item que responde "quem me chama?", e ele
     # fala do MUNDO (o agendador), não das credenciais.
@@ -968,6 +969,33 @@ def _doctor_preco_real(cfg: dict) -> bool:
           f"(channel={opcoes['browser_channel'] or 'chromium empacotado'}, "
           f"teto={opcoes['timeout_s']:.0f}s, desarma em {opcoes['max_falhas']} "
           "falhas seguidas)")
+    return True
+
+
+def _doctor_temas(cfg: dict) -> bool:
+    """Fase 5W/5X: o acervo do carrossel editorial cobre o descanso?
+
+    Um tema descansa `DIAS_DE_DESCANSO` dias depois de sair, então o acervo
+    precisa de pelo menos esse tanto de temas para o carrossel sair todo dia.
+    Abaixo disso ele fica CALADO na diferença — que é o certo (silêncio é
+    melhor que repetição), mas o dono tem de saber o tamanho do buraco em vez
+    de descobrir pelo feed vazio.
+    """
+    try:
+        acervo = temas.carrega((cfg.get("temas") or {}).get("path", temas.CAMINHO))
+    except SourceError as exc:
+        # Erro de REDAÇÃO no arquivo de conteúdo é vermelho: nenhum carrossel
+        # temático sai enquanto ele existir.
+        print(f"❌ temas: {exc}")
+        return False
+    cobre = temas.cobertura(acervo)
+    if cobre >= temas.DIAS_DE_DESCANSO:
+        print(f"✅ temas: {len(acervo)} no acervo · cobre os "
+              f"{temas.DIAS_DE_DESCANSO} dias de descanso")
+        return True
+    print(f"⚠️ temas: {len(acervo)} no acervo · cobre {cobre} de "
+          f"{temas.DIAS_DE_DESCANSO} dias — o carrossel fica calado nos outros "
+          f"{temas.DIAS_DE_DESCANSO - cobre}; escreva mais em {temas.CAMINHO}")
     return True
 
 

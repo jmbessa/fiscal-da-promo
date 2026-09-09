@@ -27,7 +27,7 @@ from afiliado.errors import SourceError
 from afiliado.models import Offer, Post, Verdict
 
 __all__ = ["GRAPH", "GRAPH_HOSTS", "MAX_ITENS_CARROSSEL", "bloco_indexavel",
-           "sanitiza_titulo", "InstagramFeedChannel"]
+           "rodape_de_hashtags", "sanitiza_titulo", "InstagramFeedChannel"]
 
 # Teto da Meta para um álbum. O teto do DESENHO é outro e menor
 # (`creative.CARROSSEL_MAX_SLIDES`, 8); este aqui é o da API, e existe para o
@@ -43,6 +43,17 @@ def sanitiza_titulo(title: str) -> str:
     if idx == -1:
         return title
     return title[:idx].rstrip(" \t\n\r.,;:-–—!?/\\|")
+
+
+def rodape_de_hashtags(secao, categories) -> str:
+    """As hashtags precedidas da linha em branco que as separa do bloco
+    indexável — ou "" quando não há nenhuma.
+
+    Existe para que as três legendas (feed, carrossel e Reel) não repitam a
+    decisão "acrescento um bloco vazio?": sem a seção `hashtags:` no config, a
+    legenda fica byte a byte igual à de antes da fase 5U."""
+    linha = categorias.linha_de_hashtags(secao, categories)
+    return "\n\n" + linha if linha else ""
 
 
 def bloco_indexavel(titulo: str, offer: Offer, verdict: Verdict) -> str:
@@ -111,7 +122,21 @@ class InstagramFeedChannel(InstagramBase):
         })
         post_id = publish_resp.get("id") if isinstance(publish_resp, dict) else None
         if not post_id:
-            return PublishResult(False, error=graph_error(publish_resp))
+        # Fase 5X: **`publicado=True`, e isto não é otimismo.** O container
+        # existe e o `media_publish` foi CHAMADO: daqui em diante não há como
+        # saber se a peça está na conta — a Meta processa a criação e pode
+        # devolver erro depois (foi o que aconteceu em 2026-09-02 com
+        # "Application request limit reached", o teto de CHAMADAS do app).
+        #
+        # Sem esta marca o pipeline não grava em `posted`, `count_posts_today`
+        # fica em 0, o teto do dia e o dedupe não valem, e o run seguinte
+        # republica a mesma peça — que foi como a conta ganhou 5 carrosséis
+        # idênticos e 3 posts de feed num run só, com `max_per_day: 2`.
+        #
+        # Errar dizendo "publicou" custa UMA peça no dia. Errar dizendo "não
+        # publicou" custou um laço de republicação sem teto.
+            return PublishResult(False, error=graph_error(publish_resp),
+                                 publicado=True)
 
         return PublishResult(True, str(post_id))
 
@@ -184,7 +209,12 @@ class InstagramFeedChannel(InstagramBase):
         if not post_id:
             erro = graph_error(publish_resp)
             detalhe = self._sobre_o_container(leitura)
-            return PublishResult(False, error=f"{erro} ({detalhe})" if detalhe else erro)
+            # Fase 5X: `publicado=True` — o `media_publish` foi CHAMADO e a Meta
+            # pode ter criado a peça antes de devolver erro. Ver o comentário
+            # longo em `instagram_feed.publish`: sem esta marca o teto do dia
+            # fica em 0 e o run seguinte republica.
+            return PublishResult(False, publicado=True,
+                                 error=f"{erro} ({detalhe})" if detalhe else erro)
         return PublishResult(True, str(post_id))
 
     # Nome antigo, mantido porque é assim que o canal o chama desde a 2A. A
@@ -201,6 +231,12 @@ class InstagramFeedChannel(InstagramBase):
         linha_preco, prova_social = pricing.price_line(offer, post.verdict)
         bloco_preco = "\n".join(p for p in (linha_preco, prova_social, post.verdict.seal) if p)
         return (
+            # Fase 5U: a sinalização de afiliado abre a legenda. O Instagram
+            # esconde tudo depois de ~125 caracteres atrás do "mais", e o guia
+            # CONAR de 01/06/2026 pede identificação visível na PRIMEIRA
+            # visualização — qualquer outra posição dependeria de o leitor
+            # expandir a legenda. Quem decide o texto é `creative.AFILIADO`.
+            f"{creative.linha_afiliado()}"
             f"{copy.headline}\n{copy.description}\n\n"
             f"{titulo}\n"
             f"{bloco_preco}\n\n"
@@ -209,4 +245,8 @@ class InstagramFeedChannel(InstagramBase):
             # Fase 5D: a legenda fecha com o bloco indexável — o Google lê esta
             # página desde 10/07/2025.
             f"{bloco_indexavel(titulo, offer, post.verdict)}"
+            # Fase 5U: e DEPOIS dele as hashtags. O bloco indexável é conteúdo
+            # (nome do produto, categoria por nome, janela); a hashtag é
+            # endereçamento — quem lê a legenda quer o primeiro primeiro.
+            + rodape_de_hashtags(self.hashtags, [offer.category])
         )

@@ -257,18 +257,19 @@ def _lote_de_feed(n: int = 500) -> list[dict]:
     """Um lote INTEIRO do feed, na proporção medida ao vivo em 2026-08-28
     (`getItemFeedData`, 3 janelas de 500 do "Shopee Oficial BR"):
 
-    - 32% das linhas caem nas cinco raízes que a conta varre; o resto é
+    - 32% das linhas caem nas raízes que a conta varre (duas, desde o foco em
+      cozinha de 2026-09-08); o resto é
       autopeças (102187, a maior categoria do feed), pets, papelaria...;
     - os preços seguem `ESCADA_DE_PRECOS`, descorrelacionada das curtidas;
     - `like` vai de 0 a dezenas de milhares (mediana 70);
     - e NENHUMA traz `commission` ou `sales` — é isso que esta rede protege.
     """
-    nossas = ["100630", "100636", "100001", "100637", "100632"]
-    outras = ["102187", "100643", "100638", "100629", "100010"]
+    nossas = ["100636", "100010"]          # o allowlist do foco em cozinha
+    outras = ["102187", "100643", "100638", "100629", "100630"]
     linhas = []
     for i in range(n):
         nossa = i % 100 < 32
-        cat = nossas[i % 5] if nossa else outras[i % 5]
+        cat = nossas[i % len(nossas)] if nossa else outras[i % len(outras)]
         # O passo 7 é primo com 20 (a escada), com 5 (a categoria) e com 100
         # (a fatia "nossa"): preço, categoria e curtidas ficam independentes.
         preco = ESCADA_DE_PRECOS[(i * 7) % len(ESCADA_DE_PRECOS)]
@@ -370,7 +371,7 @@ def test_oferta_sem_referencia_e_publicavel_e_o_texto_nao_alega_desconto(tmp_pat
 
     cfg = load_config(CONFIG_REAL)
     db = StateDB(tmp_path / "s.db")
-    offer = make_offer(category="100630", price_original_cents=19999,
+    offer = make_offer(category="100636", price_original_cents=19999,
                        price_current_cents=9990, rating=4.8, sales=12000)
     assert offer.price_ref_cents == 0
     assert offer.discount_pct == 50          # o "de" do vendedor diz 50%...

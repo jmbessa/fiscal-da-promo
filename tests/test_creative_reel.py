@@ -15,16 +15,23 @@ import io
 
 import httpx
 import pytest
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw
 
 from afiliado import video
 from afiliado.creative import (
+    DEFAULT_BRAND_NAME,
     REEL_DURACAO_S,
-    REEL_ENTRADAS,
     REEL_FPS,
+    REEL_PULSO_DURACAO,
+    REEL_PULSO_ESCALA,
+    REEL_PULSO_INICIO,
     REEL_SIZE,
     REEL_ZOOM,
     STORY_SIZE,
+    _corpo_do_reel,
+    _pulso,
+    _story_canvas,
+    _story_plan,
     reel_frames,
     reel_plan,
     render_reel,
@@ -130,8 +137,8 @@ def test_o_numero_de_frames_e_o_da_duracao_vezes_o_fps():
 
 
 def test_a_foto_do_produto_da_um_zoom_lento_ao_longo_do_clipe():
-    """1,00 → 1,08. É a única coisa que se mexe do começo ao fim: o resto entra
-    nos primeiros ~2,5 s e assenta."""
+    """1,00 → 1,08. É o movimento que corre o clipe inteiro — o pulso da pill
+    é o outro, e ele dura 0,6 s."""
     assert REEL_ZOOM == 1.08
     ultimo = round(REEL_FPS * REEL_DURACAO_S) - 1
     frames = _frames([0, 1, ultimo])
@@ -140,23 +147,70 @@ def test_a_foto_do_produto_da_um_zoom_lento_ao_longo_do_clipe():
     assert _mudou(frames[0], frames[ultimo], card)
 
 
-def test_o_titulo_entra_depois_do_primeiro_frame():
-    """Fade + subida de ~12 px. No frame 0 ele ainda não está no lugar."""
-    inicio, duracao = REEL_ENTRADAS["titulo"]
-    depois = round(REEL_FPS * (inicio + duracao)) + 1
-    frames = _frames([0, depois])
-    titulo = (0, 1030, 1080, 1240)
-    assert _mudou(frames[0], frames[depois], titulo)
+def test_o_frame_zero_JA_E_a_peca_inteira():
+    """**A trava desta peça.** O frame zero tem de ser a arte de story completa
+    — título, preço, prova social e selo todos no lugar —, e não a peça se
+    montando.
+
+    Até 2026-08-31 não era: o corpo entrava em cascata e o PREÇO, que é o único
+    motivo pelo qual alguém pararia, só terminava de aparecer em 1,4 s. Isso
+    joga fora exatamente a janela que a Meta passou a medir — ela trocou
+    `view rate` por `skip rate` (os 3 primeiros segundos) em abril/2026, e
+    watch time + completion é o sinal de ranqueamento que Mosseri nomeou em
+    janeiro/2026.
+
+    O frame zero é também a CAPA na grade do perfil quando nenhuma é escolhida,
+    então uma peça vazia ali custa duas vezes.
+    """
+    frame = _frames([0])[0]
+    arte = Image.open(io.BytesIO(render_story(
+        make_offer_ref(29999), COPY, SELO_6M, client=_client(),
+        handle="@ofiscaldapromo"))).convert("RGB")
+    # O corpo inteiro, do título ao selo — idêntico à arte de story no INSTANTE
+    # ZERO. (A foto não entra: ela abre em zoom 1,00 e a arte parada também,
+    # mas o card tem o seu próprio teste.)
+    assert not _mudou(frame, arte, (0, 1030, 1080, 1600))
 
 
-def test_a_pill_de_preco_entra_depois_do_titulo():
-    inicio, _ = REEL_ENTRADAS["preco"]
-    assert inicio >= sum(REEL_ENTRADAS["titulo"]) - 0.2     # entra depois, não junto
-    antes = round(REEL_FPS * inicio)
-    depois = round(REEL_FPS * (inicio + REEL_ENTRADAS["preco"][1])) + 1
-    frames = _frames([antes, depois])
-    corpo = (0, 1240, 1080, 1560)
-    assert _mudou(frames[antes], frames[depois], corpo)
+def test_o_pulso_da_pill_comeca_e_termina_em_um():
+    """Meia onda de seno: 1,0 nas bordas, com derivada zero, e o pico no meio.
+    Rampa linear daria solavanco ao entrar e ao sair."""
+    assert _pulso(REEL_PULSO_INICIO) == 1.0
+    assert _pulso(REEL_PULSO_INICIO + REEL_PULSO_DURACAO) == 1.0
+    assert _pulso(0.0) == 1.0 and _pulso(REEL_DURACAO_S) == 1.0
+    meio = REEL_PULSO_INICIO + REEL_PULSO_DURACAO / 2
+    assert _pulso(meio) == pytest.approx(REEL_PULSO_ESCALA)
+    # Nunca encolhe: o pulso chama atenção, não esconde.
+    assert all(_pulso(i / 100) >= 1.0 for i in range(0, int(REEL_DURACAO_S * 100)))
+
+
+def test_a_pill_pulsa_e_o_resto_da_peca_nao_se_mexe():
+    """O pulso é ÊNFASE, não entrada: ele mexe na pill e em mais nada. Título,
+    prova social e selo ficam parados — se eles se mexessem, teríamos trocado
+    uma animação de carregamento por outra.
+
+    As faixas saem da GEOMETRIA da peça, não de números escritos à mão: a
+    calibragem do layout muda, e um teste com `y` fixo passaria a medir a faixa
+    errada em silêncio (foi o que aconteceu na primeira versão deste teste — a
+    faixa do "título" cobria metade da pill)."""
+    offer, verdict = make_offer_ref(29999), SELO_6M
+    base = _story_canvas()
+    plan = _story_plan(ImageDraw.Draw(base), offer, verdict, "@ofiscaldapromo",
+                       brand_name=DEFAULT_BRAND_NAME)
+    corpo = _corpo_do_reel(REEL_SIZE[0], plan)
+    topo_pill = corpo.preco[1]
+    base_pill = topo_pill + plan["price"]["height"]
+    # O pulso cresce a partir do CENTRO, então ele sangra para os dois lados.
+    folga = plan["price"]["height"] * (REEL_PULSO_ESCALA - 1)
+
+    meio = round(REEL_FPS * (REEL_PULSO_INICIO + REEL_PULSO_DURACAO / 2))
+    frames = _frames([0, meio])
+    assert _mudou(frames[0], frames[meio],
+                  (0, int(topo_pill - folga), REEL_SIZE[0], int(base_pill + folga)))
+    assert not _mudou(frames[0], frames[meio],
+                      (0, int(corpo.titulo_y), REEL_SIZE[0], int(topo_pill - folga) - 1))
+    assert not _mudou(frames[0], frames[meio],
+                      (0, int(base_pill + folga) + 1, REEL_SIZE[0], 1600))
 
 
 def test_o_rodape_e_o_cabecalho_nao_se_mexem():

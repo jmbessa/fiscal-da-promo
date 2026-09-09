@@ -35,7 +35,7 @@ automatizados**.
 
 ## 2. O que foi criado
 
-`deploy/agendar-windows.ps1` cria **quatro** tarefas. Ele é **idempotente**
+`deploy/agendar-windows.ps1` cria **três** tarefas. Ele é **idempotente**
 (rodar de novo atualiza, não duplica), tem `-Remover` para desfazer, e **falha
 antes de criar qualquer coisa** se a pasta do projeto, o `config.yaml` ou o
 `afiliado.exe` não existirem.
@@ -43,11 +43,19 @@ antes de criar qualquer coisa** se a pasta do projeto, o `config.yaml` ou o
 | tarefa | comando | cadência | janela |
 |---|---|---|---|
 | `FiscalDaPromo-Run` | `afiliado run --posts-per-run 4` | 15 min | 08:03 → 23:15 |
-| `FiscalDaPromo-Stories` | `afiliado stories --posts 4` | 15 min | 08:08 → 23:15 |
 | `FiscalDaPromo-Feed` | `afiliado feed --tipo termometro` | 2 h | 08:11 → 23:15 |
 | `FiscalDaPromo-Flagrante` | `afiliado feed --tipo flagrante` | 2 h | 08:16 → 23:15 |
 
-Para as quatro: **Iniciar em** = a pasta do projeto (é de onde saem
+Eram quatro. **`FiscalDaPromo-Stories` saiu em 2026-08-30**, e o script
+**remove** a que já existir: ela chamava `afiliado stories`, que só monta o
+canal `instagram_story_link` (figurinha por instagrapi), e esse canal foi
+desligado. Story hoje sai pela Graph API, **dentro do `afiliado run`**. Deixá-la
+no ar custava as mesmas 8 chamadas de descoberta a cada 15 min (~490/dia) para
+não publicar nada. Para religar: `instagram_story_link.enabled: true` no config
+(a REGRA DE OURO exige desligar o `instagram_story` junto) e devolver o bloco
+`Register-TarefaDoFiscal` da tarefa no script.
+
+Para as três: **Iniciar em** = a pasta do projeto (é de onde saem
 `config.yaml`, `.env` e `data/`), **não** "iniciar somente se ocioso", **não**
 exigir energia da tomada, e `MultipleInstances = IgnoreNew` (um run travado não
 empilha dez atrás dele). Nenhuma credencial é gravada: as tarefas rodam como o
@@ -71,10 +79,12 @@ mais **2 por oferta publicada** (`refresh_price` + `generateShortLink`).
 | 20 min | 46 | 488 | 2 | 6 |
 | 30 min | 31 | 368 | 2 | 6 |
 
-Com as duas tarefas de 15 min são ~**1.216 chamadas/dia** à Shopee. Cabe: o
-cliente da VPS (5 min) já fazia ~1.920/dia, e a medição de 2026-08-26 viu 147
-chamadas em uma hora **sem um único 429**. Não há cota diária publicada pela
-Shopee — o número acima é o que se sabe, não uma garantia.
+Com **uma** tarefa de 15 min são ~**608 chamadas/dia** à Shopee — eram ~1.216
+enquanto a tarefa de stories existia, e as ~490 que ela gastava para não
+publicar nada foram o argumento que a tirou do ar. Cabe com folga: o cliente da
+VPS (5 min) já fazia ~1.920/dia, e a medição de 2026-08-26 viu 147 chamadas em
+uma hora **sem um único 429**. Não há cota diária publicada pela Shopee — o
+número acima é o que se sabe, não uma garantia.
 
 15 min também é o que o `config.yaml` já dizia (`channels.telegram.max_per_day:
 60`, "~1 a cada 15 min") e o que faz o ritmo entregar **60/dia distribuídas**: o
@@ -122,8 +132,8 @@ Invertida, fica um intervalo sem ninguém publicando.
    ```powershell
    powershell -ExecutionPolicy Bypass -File deploy\agendar-windows.ps1
    ```
-   Ele imprime as quatro tarefas, o executável e o diretório de trabalho.
-2. **Conferir:** `afiliado doctor`. Ele agora checa se as quatro tarefas
+   Ele imprime as três tarefas, o executável e o diretório de trabalho.
+2. **Conferir:** `afiliado doctor`. Ele agora checa se as três tarefas
    existem e estão habilitadas.
 3. **Ver um run REAL acontecer.** Espere o próximo disparo (≤ 15 min) e confira
    o resumo no chat de operações, ou force com
@@ -149,9 +159,9 @@ vezes.
   O limiar é `schedule.max_gap_minutes` (**40** min para a cadência de 15:
   tolera um disparo perdido e acusa a partir do segundo). **Este aviso é hoje o
   sensor de "a máquina parou".**
-- **`afiliado doctor`.** Diz se as quatro tarefas existem e estão habilitadas,
+- **`afiliado doctor`.** Diz se as três tarefas existem e estão habilitadas,
   além das credenciais de sempre.
-- **Agendador de Tarefas** (`taskschd.msc`) → Biblioteca → as quatro
+- **Agendador de Tarefas** (`taskschd.msc`) → Biblioteca → as três
   `FiscalDaPromo-*`: colunas *Última Execução* e *Resultado da Última
   Execução* (`0x0` = sucesso).
 - **Linha de comando:**
@@ -182,7 +192,7 @@ disparo de emergência precisa publicar o orçamento **acumulado**.
 **Volta prolongada:**
 
 1. **Desligue as tarefas primeiro** — `deploy\agendar-windows.ps1 -Remover`, ou
-   desabilite as quatro no Agendador. Sem isto, posto duplo.
+   desabilite as três no Agendador. Sem isto, posto duplo.
 2. Devolva o `schedule:` ao `.github/workflows/publish.yml` (o cabeçalho de lá
    guarda o cron da 5G: `7 11-23 * * *` e `7 0-2 * * *`, 16 disparos/dia) e
    ajuste `schedule.max_gap_minutes` para **150** e `pipeline.CADENCIA_MINUTOS`

@@ -421,7 +421,8 @@ def _doctor_base(monkeypatch):
 
     monkeypatch.setattr(cli, "_shopee", lambda db=None: _Shopee())
     monkeypatch.setattr(cli, "_meli", lambda cfg=None: None)
-    monkeypatch.setattr(cli.llm, "ask_json", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(cli.llm, "ask_json",
+                        lambda *a, **k: cli.RESPOSTA_DO_DOCTOR)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_OPS_CHAT_ID", "999")
     for k in ("IG_USER_ID", "IG_ACCESS_TOKEN"):
@@ -435,6 +436,43 @@ def _doctor_base(monkeypatch):
     # esse canal liga na própria fixture.
     cfg.setdefault("channels", {})["instagram_story_link"] = {"enabled": False}
     return cfg
+
+
+def test_a_pergunta_do_doctor_ao_claude_nao_parece_uma_injecao():
+    """A sonda já foi `Responda APENAS com JSON: {"ok": true}` e isso deu um
+    FALSO ❌, medido ao vivo em 2026-08-30: o CLI respondeu (returncode 0, sem
+    stderr) RECUSANDO — "That's a prompt injection technique" — e o doctor
+    acusou um CLI que estava perfeito.
+
+    Uma sonda que ordena "responda APENAS com X, ignore o resto" tem a FORMA de
+    uma injeção; o modelo é treinado para não obedecer a essa forma, então a
+    sonda mede a recusa e não a saúde. E um ❌ permanente num sistema saudável
+    é como se aprende a ignorar o ❌ que importa.
+
+    O que ela precisa ser: uma PERGUNTA de verdade, cuja resposta o modelo sabe
+    sozinho, com o formato pedido como FORMATO. Assim ela continua provando as
+    três coisas — chegou, respondeu, respondeu em JSON."""
+    pergunta = cli.PERGUNTA_DO_DOCTOR.lower()
+    assert "apenas" not in pergunta
+    assert "somente" not in pergunta
+    assert "ignore" not in pergunta
+    # A resposta não pode estar escrita na pergunta: uma sonda que entrega o
+    # gabarito passa com um modelo que só sabe copiar.
+    for valor in cli.RESPOSTA_DO_DOCTOR.values():
+        assert str(valor) not in cli.PERGUNTA_DO_DOCTOR
+    # E ela tem de ser uma pergunta, com o formato JSON pedido.
+    assert "?" in cli.PERGUNTA_DO_DOCTOR and "JSON" in cli.PERGUNTA_DO_DOCTOR
+    assert isinstance(cli.RESPOSTA_DO_DOCTOR, dict) and cli.RESPOSTA_DO_DOCTOR
+
+
+def test_doctor_reprova_quando_o_claude_responde_outra_coisa(monkeypatch, capsys):
+    """Responder QUALQUER coisa não basta: a recusa do caso acima também era
+    uma resposta. O doctor só fica verde com a resposta CERTA."""
+    cfg = _doctor_base(monkeypatch)
+    monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
+    monkeypatch.setattr(cli.llm, "ask_json", lambda *a, **k: {"lados": 4})
+    assert cli.doctor(cfg) == 1
+    assert "❌ Claude CLI" in capsys.readouterr().out
 
 
 def test_doctor_usa_o_retorno_do_send_text(monkeypatch, capsys):
@@ -1270,8 +1308,43 @@ def test_stories_nao_monta_o_canal_da_graph_api(monkeypatch, tmp_path):
 
     assert cli.main(["stories", "--config", cfg_file]) == 0
     assert chamado["channels"] == []
-    assert cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES in chamado["avisos"]
+    # O que o I1 exige é que o comando local NÃO monte o canal da Graph API e
+    # diga de quem ele é. Qual das duas frases sai depende do canal privado
+    # (fase 5U): desligado, é a informativa; ligado, o ⚠️ do I1 — e as duas
+    # mandam para o `afiliado run`.
+    dito = next(a for a in chamado["avisos"]
+                if a in (cli.AVISO_STORIES_OCIOSO,
+                         cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES))
+    assert dito == cli.AVISO_STORIES_OCIOSO      # este teste desliga o privado
+    assert "afiliado run" in dito
     assert "afiliado run" in cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES
+
+
+def test_stories_ocioso_nao_alarma_quando_o_privado_esta_desligado(monkeypatch, tmp_path,
+                                                                   capsys):
+    """Fase 5U: com o `instagram_story_link` DESLIGADO e o oficial ligado, o
+    `afiliado stories` não tem mais o que fazer — e isso é o estado desejado,
+    não um defeito de configuração.
+
+    O aviso do I1 ("canal instagram_story ligado, mas ignorado") existe para
+    quem ESPERA story deste comando. Repetido todo dia no chat de operações
+    depois que a troca foi deliberada, ele vira o ⚠️ que o dono aprende a
+    ignorar — e o próximo ⚠️, o de verdade, morre junto."""
+    _ambiente_de_stories(monkeypatch)
+    chamado = _captura_run(monkeypatch)
+    cfg_file = _config_com_story_link(tmp_path, oficial="true")
+    texto = open(cfg_file, encoding="utf-8").read().replace(
+        "  instagram_story_link:\n    enabled: true\n",
+        "  instagram_story_link:\n    enabled: false\n")
+    open(cfg_file, "w", encoding="utf-8").write(texto)
+
+    assert cli.main(["stories", "--config", cfg_file]) == 0
+
+    assert chamado["channels"] == []
+    assert cli.AVISO_STORIES_OCIOSO in chamado["avisos"]
+    assert cli.AVISO_STORY_OFICIAL_FORA_DO_STORIES not in chamado["avisos"]
+    assert "afiliado run" in cli.AVISO_STORIES_OCIOSO
+    assert not cli.AVISO_STORIES_OCIOSO.startswith("⚠")
 
 
 def test_stories_recusa_o_canal_privado_com_o_oficial_ligado(monkeypatch, tmp_path,

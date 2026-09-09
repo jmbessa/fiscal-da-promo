@@ -1,10 +1,57 @@
 import math
+import re
+import unicodedata
 from dataclasses import dataclass
 
 from afiliado import llm, pricing
 from afiliado.models import Offer
 from afiliado.state import StateDB
 from afiliado.watchlist import Watchlist
+
+# Fase 5X — o DEDUPE POR TÍTULO.
+#
+# O dedupe existente é por `(source, item_id)`, e ele está certo para o que
+# faz. O que ele não pega: o MESMO produto anunciado por vendedores diferentes
+# tem `item_id` diferente. Medido no `posted` de produção em 2026-09-02,
+# "Boneca Bebê Reborn Unicórnio Menina Original Realista..." saiu **3 vezes**,
+# com 3 ids distintos — e quem lê o canal não vê três ofertas, vê o mesmo post
+# de novo.
+#
+# O `recent_titles` já ia ao ranker, mas como DICA num prompt ("priorize
+# variedade vs. posts recentes"). Dica não é portão: o modelo obedece na
+# maioria das vezes, e "na maioria das vezes" é como se publica repetido.
+#
+# A chave é o conjunto das primeiras palavras SIGNIFICATIVAS do título. Não a
+# ordem: "Boneca Bebê Reborn Unicórnio" e "Bebê Reborn Boneca Unicórnio" são o
+# mesmo produto e têm de colidir.
+PALAVRAS_DE_TITULO = 4
+# Palavras que não distinguem produto nenhum — se elas entrassem na chave,
+# "Kit Original 2 Unidades" colidiria com qualquer coisa.
+RUIDO_NO_TITULO = frozenset("""
+com sem para por que de da do das dos em no na nos nas ao aos a o e ou os as um
+uma uns umas kit unidades unidade pecas peca original oficial promocao novo nova
+tamanho cor cores modelo lancamento envio rapido frete gratis pronta entrega
+""".split())
+
+
+def chave_de_titulo(titulo: str, palavras: int = PALAVRAS_DE_TITULO) -> str:
+    """A assinatura de um título, para o dedupe.
+
+    Minúsculas, sem acento, sem pontuação e sem número — "300g" e "1kg" são
+    variações do mesmo produto, não produtos diferentes —, sem as palavras de
+    ruído, e com as `palavras` primeiras significativas ORDENADAS: a colisão
+    tem de acontecer independentemente da ordem em que o vendedor as escreveu.
+
+    Título curto demais para formar chave devolve "" — e "" nunca colide com
+    nada, porque um título de duas palavras não é evidência de repetição.
+    """
+    sem_acento = "".join(c for c in unicodedata.normalize("NFD", titulo or "")
+                         if unicodedata.category(c) != "Mn")
+    tokens = [t for t in re.split(r"[^a-z]+", sem_acento.lower())
+              if len(t) > 2 and t not in RUIDO_NO_TITULO]
+    if len(tokens) < palavras:
+        return ""
+    return " ".join(sorted(tokens[:palavras]))
 
 MAX_CANDIDATES_FOR_PROMPT = 30
 # Fase 5C (M3/A8): o slate apresentado ao ranker é a união de três recortes —
@@ -34,12 +81,13 @@ class FilterStats:
     sem_ref: int = 0        # require_price_ref e referência desconhecida
     faixa_preco: int = 0    # fora de price_min_brl..price_max_brl
     dedupe: int = 0         # publicado há menos de dedupe_days
+    dedupe_titulo: int = 0  # produto igual, vendedor outro (fase 5X)
     ev: int = 0             # abaixo de min_ev_brl
 
     @property
     def total(self) -> int:
         return (self.sem_dados + self.categoria + self.acima_ref + self.sem_ref
-                + self.faixa_preco + self.dedupe + self.ev)
+                + self.faixa_preco + self.dedupe + self.dedupe_titulo + self.ev)
 
     def resumo(self) -> str:
         texto = (f"dedupe: {self.dedupe} · faixa de preço: {self.faixa_preco} · "
@@ -47,6 +95,10 @@ class FilterStats:
                  f"categoria: {self.categoria} · EV: {self.ev}")
         if self.sem_ref:
             texto += f" · sem referência: {self.sem_ref}"
+        # Como o `sem_ref`: só aparece quando cortou. Um resumo que lista todo
+        # portão zerado é um resumo que ninguém lê até o fim.
+        if self.dedupe_titulo:
+            texto += f" · título repetido: {self.dedupe_titulo}"
         return texto
 
 
@@ -86,6 +138,14 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
     # Um SELECT para o dedupe do run inteiro, não um por oferta (o estoque de
     # candidatas da fase 5C tem milhares).
     ja_postados = db.recently_posted(sel["dedupe_days"])
+    # Fase 5X: e as assinaturas dos títulos publicados na janela curta. Também
+    # um SELECT só. `0` (ou ausente) desliga o portão.
+    dias_titulo = int(sel.get("dedupe_titulo_dias") or 0)
+    chaves_recentes = {chave_de_titulo(t) for t in db.recent_titles(dias_titulo, limit=400)
+                       if chave_de_titulo(t)} if dias_titulo > 0 else set()
+    # Dentro do MESMO run também: a fila pode trazer dois anúncios do mesmo
+    # produto, e os dois passariam por não estarem ainda em `posted`.
+    vistas_no_run: set[str] = set()
 
     def corta(portao: str) -> None:
         cortes[portao] = cortes.get(portao, 0) + 1
@@ -125,6 +185,12 @@ def filter_offers_with_stats(offers: list[Offer], db: StateDB,
         if (o.source, o.item_id) in ja_postados:
             corta("dedupe")
             continue
+        chave = chave_de_titulo(o.title) if dias_titulo > 0 else ""
+        if chave and (chave in chaves_recentes or chave in vistas_no_run):
+            corta("dedupe_titulo")
+            continue
+        if chave:
+            vistas_no_run.add(chave)
         result.append(o)
     piso = float(sel.get("min_ev_brl") or 0)
     if piso > 0:

@@ -69,7 +69,23 @@ def _ofertas(n: int = 3) -> list:
     allowlist de categoria e acima do piso de EV. Todas em modo B (o preço de
     hoje não está abaixo do p25) — nenhuma "passa" na capa."""
     return [make_offer(item_id=f"i{k}", title=f"Produto de Teste {k}",
-                       category="100630", price_current_cents=2490 + k,
+                       category="100636", price_current_cents=2490 + k,
+                       price_ref_cents=2600, price_p25_cents=2400,
+                       price_window_days=90, sales=3000 + k, rating=4.8,
+                       commission_pct=12.0,
+                       image_url=f"https://cf.shopee.com.br/file/i{k}.jpg")
+            for k in range(1, n + 1)]
+
+
+def _ofertas_que_passam(n: int = 3) -> list:
+    """As mesmas ofertas, com o preço de hoje ABAIXO do p25 — modo A.
+
+    Desde a 5W o termômetro não sai quando nenhuma passa (a capa "NENHUMA DAS N
+    PASSOU" contradiz a bio), então os testes que exercitam a MECÂNICA de
+    publicar precisam de um álbum que teria o que mostrar. Quem testa o
+    contrário usa `_ofertas`."""
+    return [make_offer(item_id=f"i{k}", title=f"Produto de Teste {k}",
+                       category="100636", price_current_cents=2300 + k,
                        price_ref_cents=2600, price_p25_cents=2400,
                        price_window_days=90, sales=3000 + k, rating=4.8,
                        commission_pct=12.0,
@@ -111,7 +127,7 @@ def _fontes(monkeypatch, offers, nome: str = "shopee"):
 
 def test_feed_dry_run_nao_escreve_no_banco_nem_chama_a_graph_api(
         tmp_path, monkeypatch, rede, previews, capsys):
-    _fontes(monkeypatch, _ofertas(3))
+    _fontes(monkeypatch, _ofertas_que_passam(3))
     cfg_file = _cfg(tmp_path)
     assert cli.main(["feed", "--dry-run", "--config", cfg_file]) == 0
 
@@ -136,7 +152,7 @@ def test_feed_dry_run_nao_escreve_no_banco_nem_chama_a_graph_api(
 
 def test_feed_dry_run_imprime_a_legenda_com_nome_completo_e_janela(
         tmp_path, monkeypatch, rede, previews, capsys):
-    _fontes(monkeypatch, _ofertas(2))
+    _fontes(monkeypatch, _ofertas_que_passam(2))
     assert cli.main(["feed", "--dry-run", "--config", _cfg(tmp_path)]) == 0
     saida = capsys.readouterr().out
     assert "Produto de Teste 1" in saida
@@ -490,7 +506,7 @@ def _liga_instagram(monkeypatch):
 
 def test_feed_termometro_publica_um_carrossel_e_conta_como_um_post(
         tmp_path, monkeypatch, capsys):
-    _fontes(monkeypatch, _ofertas(3))
+    _fontes(monkeypatch, _ofertas_que_passam(3))
     _liga_instagram(monkeypatch)
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
     publicados = []
@@ -543,7 +559,7 @@ def test_feed_termometro_respeita_o_teto_diario(tmp_path, monkeypatch, capsys):
 
 
 def test_feed_termometro_falha_de_publicacao_sai_com_erro(tmp_path, monkeypatch, capsys):
-    _fontes(monkeypatch, _ofertas(2))
+    _fontes(monkeypatch, _ofertas_que_passam(2))
     _liga_instagram(monkeypatch)
     monkeypatch.setattr(cli, "send_text", lambda *a, **k: True)
 
@@ -581,7 +597,7 @@ def test_feed_capa_conta_quantas_passaram(tmp_path, monkeypatch, rede, previews,
     """A capa vende o conceito, e o número dela é o que a RÉGUA diz — não um
     número escolhido pelo marketing."""
     aprovada = make_offer(item_id="ok", title="Aprovada de Verdade",
-                          category="100630", price_current_cents=2000,
+                          category="100636", price_current_cents=2000,
                           price_ref_cents=2600, price_p25_cents=2400,
                           price_window_days=90, sales=9000, rating=4.9,
                           commission_pct=12.0)
@@ -591,10 +607,32 @@ def test_feed_capa_conta_quantas_passaram(tmp_path, monkeypatch, rede, previews,
     assert "4 OFERTAS. 1 É REAL." in capsys.readouterr().out
 
 
-def test_feed_capa_quando_nenhuma_passa(tmp_path, monkeypatch, rede, previews, capsys):
+def test_o_termometro_NAO_sai_quando_nenhuma_oferta_passa(
+        tmp_path, monkeypatch, rede, previews, capsys):
+    """Fase 5W. A capa nesse estado seria "NENHUMA DAS 3 PASSOU": um álbum que
+    lista três produtos, com nome e preço, e termina sem oferta nenhuma.
+
+    O dono já tinha dito que a ideia "não está sendo boa"; a pesquisa de
+    2026-08-29 chegou ao mesmo por outro caminho (a peça contradiz a bio, e
+    nomear reprovada é a exposição que tirou o flagrante do feed); e enquanto
+    `price_refs` estiver em 0 esse é o ÚNICO estado possível, porque 100% das
+    ofertas caem em modo B.
+
+    A vaga do dia não fica vazia: quem a ocupa é `--tipo tema`."""
     _fontes(monkeypatch, _ofertas(3))
     assert cli.main(["feed", "--dry-run", "--config", _cfg(tmp_path)]) == 0
-    assert "NENHUMA DAS 3 PASSOU." in capsys.readouterr().out
+    saida = capsys.readouterr().out
+    assert "NENHUMA DAS 3 PASSOU." not in saida
+    assert "não sai" in saida and "--tipo tema" in saida
+
+
+def test_a_capa_conta_quantas_passaram_quando_alguma_passa(
+        tmp_path, monkeypatch, rede, previews, capsys):
+    """O número da capa vem da RÉGUA, não do marketing — e ele continua sendo
+    contado. O que a 5W tirou foi só o caso em que ele é zero."""
+    _fontes(monkeypatch, _ofertas_que_passam(3))
+    assert cli.main(["feed", "--dry-run", "--config", _cfg(tmp_path)]) == 0
+    assert "AS 3 DO DIA COM SELO DO FISCAL" in capsys.readouterr().out
 
 
 # --- Rodada de fechamento (F2): a fatia descoberta não é jogada fora ----------
@@ -664,7 +702,7 @@ def _canal_e_ops(monkeypatch, canal):
 
 def test_o_aviso_do_canal_do_carrossel_chega_ao_chat_de_operacoes(
         tmp_path, monkeypatch, capsys):
-    _fontes(monkeypatch, _ofertas(3))
+    _fontes(monkeypatch, _ofertas_que_passam(3))
     _liga_instagram(monkeypatch)
     canal = _CanalQueAvisa()
     ops = _canal_e_ops(monkeypatch, canal)
@@ -680,7 +718,7 @@ def test_a_legenda_e_a_capa_so_falam_das_ofertas_que_entraram(
     ("N OFERTAS") e a legenda (um item por linha) são montadas DEPOIS disso.
     Uma legenda que lista um produto que o álbum não tem é a peça mentindo
     sobre si mesma, e a legenda é pública."""
-    _fontes(monkeypatch, _ofertas(3))
+    _fontes(monkeypatch, _ofertas_que_passam(3))
     _liga_instagram(monkeypatch)
     canal = _CanalQueAvisa()
     ops = _canal_e_ops(monkeypatch, canal)
@@ -694,7 +732,8 @@ def test_a_legenda_e_a_capa_so_falam_das_ofertas_que_entraram(
     assert cli.main(["feed", "--config", _cfg_com_canal(tmp_path)]) == 0
     imagens, legenda = canal.publicados[0]
     assert len(imagens) == 4                    # capa + 2 ofertas + fecho
-    assert "NENHUMA DAS 2 PASSOU." in legenda
+    # A capa fala de DOIS porque dois entraram — o terceiro caiu no download.
+    assert "AS 2 DO DIA COM SELO DO FISCAL" in legenda
     assert "Produto de Teste 2" not in legenda
     assert "Produto de Teste 1" in legenda and "Produto de Teste 3" in legenda
     # E o dono fica sabendo do que ficou de fora.
@@ -734,7 +773,7 @@ def test_carrossel_que_nem_chega_a_existir_avisa_o_ops(tmp_path, monkeypatch, ca
     """Com as fotos todas quebradas o post não sai — e o passo do Actions é
     `continue-on-error`, então o job segue VERDE. Se isto só fosse ao log, o
     feed podia parar por uma semana sem que ninguém notasse."""
-    _fontes(monkeypatch, _ofertas(3))
+    _fontes(monkeypatch, _ofertas_que_passam(3))
     _liga_instagram(monkeypatch)
     ops = _canal_e_ops(monkeypatch, _CanalQueAvisa())
     monkeypatch.setattr(
@@ -750,7 +789,7 @@ def test_o_aviso_do_canal_sai_mesmo_quando_a_publicacao_falha(
         tmp_path, monkeypatch, capsys):
     """O aviso nasce DURANTE a publicação: se ele só saísse no caminho feliz,
     o run que mais precisa de diagnóstico seria justamente o mudo."""
-    _fontes(monkeypatch, _ofertas(3))
+    _fontes(monkeypatch, _ofertas_que_passam(3))
     _liga_instagram(monkeypatch)
     ops = _canal_e_ops(monkeypatch, _CanalQueAvisa(ok=False))
 

@@ -213,6 +213,32 @@ def pacing_budget(max_per_day: int, now_local: datetime,
     return min(int(max_per_day), int(max_per_day * fracao) + 1)
 
 
+def teto_por_audiencia(max_per_day: int, seguidores: int | None,
+                       piso: int, divisor: int) -> int:
+    """O teto que a AUDIÊNCIA autoriza (fase 5U):
+
+        min(max_per_day, max(piso, seguidores // divisor))
+
+    Publicar 60 stories por dia para 2 seguidores não gera alcance — gasta a
+    cota da Meta (100/24 h, compartilhada por feed, story e Reel), enche o
+    dedupe e queima o estoque de candidatas. Medido na conta real em
+    2026-08-29: 2 seguidores, alcance de 1 conta em 7 dias.
+
+    A divisão é INTEIRA e para baixo: 199 seguidores ÷ 100 é 1, não 2 — o teto
+    nunca promete alcance que a conta não tem. `piso` e `divisor` vêm do
+    `config.yaml`, por canal, porque são chute; número chutado dentro do código
+    é número que ninguém revisa.
+
+    **Falha ABERTA.** `seguidores is None` (API fora, cache vazio, forma
+    estranha) ou `divisor <= 0` devolvem o `max_per_day` do config. Um erro de
+    leitura não pode calar a conta — o modo de falha ruim aqui é o silêncio,
+    não o excesso."""
+    teto = int(max_per_day)
+    if seguidores is None or int(divisor) <= 0:
+        return teto
+    return min(teto, max(int(piso), int(seguidores) // int(divisor)))
+
+
 def fracao_do_dia(now_local: datetime, window_start: str, window_end: str) -> float:
     """Quanto do dia de OPERAÇÃO já passou, em [0, 1].
 

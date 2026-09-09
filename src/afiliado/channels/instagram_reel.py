@@ -39,11 +39,12 @@ PATH): sem ffmpeg o canal não sobe, o run avisa uma vez e o resto do pipeline
 segue inteiro — o molde é o `playwright` da fase 5P.
 """
 
-from afiliado import creative, pricing, video
+from afiliado import creative, narracao, pricing, video
 from afiliado.channels.base import PublishResult
 from afiliado.channels.instagram_common import (STATUS_TERMINAIS, InstagramBase,
                                                 graph_error)
-from afiliado.channels.instagram_feed import bloco_indexavel, sanitiza_titulo
+from afiliado.channels.instagram_feed import (bloco_indexavel, rodape_de_hashtags,
+                                              sanitiza_titulo)
 from afiliado.errors import SourceError
 from afiliado.models import Post
 
@@ -89,10 +90,17 @@ class InstagramReelChannel(InstagramBase):
 
         # 2. A peça. Recebe o veredito do post (modo + selo) — não recalcula
         #    nada, é o que faz arte, texto do Telegram e legenda concordarem.
+        #
+        #    A narração vem antes porque é ela que dimensiona o clipe. Sem voz
+        #    na máquina ela é `None` e o Reel sai mudo, como saía — a Meta não
+        #    deixa anexar áudio da biblioteca dela por API, então voz própria
+        #    embutida é a ÚNICA faixa possível aqui (ver afiliado.narracao).
         try:
             mp4 = creative.render_reel(post.offer, post.copy, post.verdict,
                                        client=self.client, handle=self.brand_handle,
-                                       brand_name=self.brand_name)
+                                       brand_name=self.brand_name,
+                                       narracao_wav=narracao.narra(post.offer,
+                                                                   post.verdict))
         except video.SemFFmpeg as exc:
             return PublishResult(False, error=f"sem como gerar o Reel: {exc}")
         except SourceError as exc:
@@ -138,7 +146,11 @@ class InstagramReelChannel(InstagramBase):
             detalhe = self._sobre_o_container(leitura)
             if detalhe:
                 erro = f"{erro} ({detalhe})"
-            return PublishResult(False, error=erro)
+            # Fase 5X: `publicado=True` — o `media_publish` foi CHAMADO e a Meta
+            # pode ter criado a peça antes de devolver erro. Ver o comentário
+            # longo em `instagram_feed.publish`: sem esta marca o teto do dia
+            # fica em 0 e o run seguinte republica.
+            return PublishResult(False, error=erro, publicado=True)
 
         return PublishResult(True, str(media_id))
 
@@ -151,6 +163,10 @@ class InstagramReelChannel(InstagramBase):
         que o Google lê fecha o texto. Como no feed, nada aqui pede curtida,
         comentário ou compartilhamento — a Meta rebaixa quem pede, e o que
         constrói reconhecimento é a frase-assinatura repetida em toda peça.
+
+        Fase 5U: das duas linhas que o Reel mostra, a primeira é a sinalização
+        de afiliado e a segunda continua sendo o gancho — por isso ela entra
+        SEM linha em branco depois, que gastaria metade do que o formato lê.
         """
         offer = post.offer
         titulo = sanitiza_titulo(offer.title)
@@ -158,9 +174,11 @@ class InstagramReelChannel(InstagramBase):
         bloco_preco = "\n".join(p for p in (linha_preco, prova_social,
                                             post.verdict.seal) if p)
         return (
+            f"{creative.linha_afiliado()}"
             f"{post.copy.headline}\n\n"
             f"{titulo}\n"
             f"{bloco_preco}\n\n"
             "🔗 Link na bio e no canal do Telegram\n\n"
             f"{bloco_indexavel(titulo, offer, post.verdict)}"
+            + rodape_de_hashtags(self.hashtags, [offer.category])
         )

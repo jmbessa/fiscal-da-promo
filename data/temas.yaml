@@ -1,0 +1,366 @@
+# Os temas do carrossel editorial (fase 5W).
+#
+# ESTE ARQUIVO É CONTEÚDO, não configuração. Ele é escrito por gente, revisado
+# como texto, e o pipeline só o lê e desenha. Mexer aqui muda o que a conta
+# diz — mexa com o mesmo cuidado com que se escreve um post.
+#
+# POR QUE ELE EXISTE. Todo o resto que a conta publica é foto do vendedor com a
+# nossa moldura em volta. A moldura é gráfico próprio e provavelmente passa na
+# regra de originalidade que o Instagram estendeu em 30/04/2026 — mas é a parte
+# FRACA do argumento, e hoje ela é 100% do feed. Um carrossel temático é
+# integralmente nosso: texto nosso, tese nossa, zero repostagem. Ele não é só
+# mais um formato; é o que protege a elegibilidade de recomendação do resto.
+# (docs/superpowers/reviews/2026-08-31-reels-e-carrossel.md, §8 e §9.)
+#
+# A REGRA QUE TODO TEMA OBEDECE, e o teste a impõe: acuse a PRÁTICA, nunca o
+# produto ou a loja. Nenhum tema aqui nomeia vendedor, marca ou anúncio — é a
+# mesma invariante de `2026-08-29-feed-sem-contradicao.md`, e é ela que
+# permite falar do "de" inflado sem virar acusação individual.
+#
+# FORMATO. Cada tema tem uma `capa` (título + subtítulo), de 3 a 6 `slides`
+# (título + corpo) e um `slug` que é a chave da rotação — mudar o slug faz o
+# tema parecer novo e voltar à frente da fila. O fecho é o mesmo de todo
+# carrossel e não se escreve aqui.
+#
+# TAMANHO. O título de slide cabe em 3 linhas e o corpo em 7; o que passar
+# disso é CORTADO no desenho, e o teste reprova antes de chegar lá. Escreva
+# curto — quem lê está no celular, com o polegar em cima do próximo post.
+
+- slug: como-eu-confiro
+  capa:
+    titulo: "COMO EU CONFIRO UM DESCONTO"
+    subtitulo: "O método, em 5 passos — e por que quase nada passa"
+  slides:
+    - titulo: "O “de” não é prova"
+      corpo: >-
+        A loja escreve o “de” que ela quiser. Esse número não passa por
+        ninguém antes de aparecer na sua tela. Ele é a alegação, não a prova.
+    - titulo: "Eu anoto o preço todo dia"
+      corpo: >-
+        Todo dia eu guardo quanto o produto está custando. Sem uma série de
+        preço não existe comparação — existe promessa.
+    - titulo: "Comparo com o preço de sempre"
+      corpo: >-
+        O que interessa não é o “de”: é a mediana do que o produto custou nos
+        últimos 90 dias. É quanto ele custa quando ninguém está anunciando
+        nada.
+    - titulo: "A régua é o quartil de baixo"
+      corpo: >-
+        Só chamo de achado quando o preço de hoje está entre os 25% mais
+        baratos que eu já vi. Acima disso é preço normal com etiqueta bonita.
+    - titulo: "Se não passa, eu não afirmo"
+      corpo: >-
+        Quando eu não tenho série suficiente, eu publico o preço e calo a
+        boca sobre desconto. Prefiro não dizer nada a dizer o que não medi.
+
+- slug: o-de-que-nao-existe
+  capa:
+    titulo: "O “DE” QUE NÃO EXISTE"
+    subtitulo: "Como a âncora inflada funciona — e como se defender dela"
+  slides:
+    - titulo: "Primeiro sobe, depois “baixa”"
+      corpo: >-
+        O preço sobe por um ou dois dias, e é desse pico inflado que o
+        desconto é calculado. O produto volta ao que sempre custou, com uma
+        etiqueta de -40% em cima.
+    - titulo: "Por que funciona"
+      corpo: >-
+        A gente não julga preço no vácuo: julga contra o primeiro número que
+        vê. Se o primeiro número é alto, o segundo parece barato — mesmo
+        sendo o de sempre.
+    - titulo: "O sinal que entrega"
+      corpo: >-
+        Pico curto. Um preço que subiu, ficou um dia lá em cima e desceu não
+        é um preço: é um degrau construído para a foto.
+    - titulo: "Como se defender em 10 segundos"
+      corpo: >-
+        Abra o histórico de preço do produto antes de comprar. Se o “de” só
+        existiu nesta semana, o desconto também só existe nesta semana.
+    - titulo: "O que a lei diz"
+      corpo: >-
+        O Código de Defesa do Consumidor trata publicidade enganosa no
+        artigo 37, e o Procon-SP recomenda que o desconto seja calculado
+        sobre o preço praticado antes — não sobre um pico.
+
+- slug: a-semana-que-encarece
+  capa:
+    titulo: "A SEMANA QUE ENCARECE"
+    subtitulo: "O que acontece com os preços antes das grandes datas"
+  slides:
+    - titulo: "O calendário é público"
+      corpo: >-
+        Todo mundo sabe a data da grande liquidação com meses de antecedência —
+        inclusive quem define o preço. Não é surpresa para ninguém do outro lado
+        do balcão.
+    - titulo: "O “de” precisa de história"
+      corpo: >-
+        Para anunciar 50% na data, é preciso que exista um preço mais alto antes
+        dela. As semanas anteriores são quando esse preço aparece.
+    - titulo: "O que eu faço em outubro"
+      corpo: >-
+        Começo a anotar preço antes da temporada. A minha régua de novembro é
+        construída em setembro — depois já é tarde, porque a série que eu teria
+        para comparar já está inflada.
+    - titulo: "O que você pode fazer"
+      corpo: >-
+        Tire um print do preço do que você quer comprar, hoje. Vale mais que
+        qualquer selo de desconto que apareça daqui a dois meses.
+
+- slug: cupom-que-so-devolve
+  capa:
+    titulo: "O CUPOM QUE SÓ DEVOLVE"
+    subtitulo: "Nem todo desconto no carrinho é desconto de verdade"
+  slides:
+    - titulo: "Sobe na etiqueta, cai no cupom"
+      corpo: >-
+        O preço exibido sobe, e um cupom devolve exatamente a diferença. Você
+        digita um código, sente que economizou, e paga o mesmo de sempre.
+    - titulo: "Por que é eficaz"
+      corpo: >-
+        Digitar o código é um pequeno esforço, e esforço faz a gente valorizar o
+        resultado. O desconto conquistado parece maior que o desconto dado.
+    - titulo: "Como separar os dois"
+      corpo: >-
+        Compare o preço FINAL, com o código aplicado, contra o que o produto
+        custava há um mês. O que leva o preço abaixo do normal é real; o que só
+        devolve ao normal é encenação.
+    - titulo: "Onde eu olho"
+      corpo: >-
+        Eu publico o preço que você vai pagar no fim, não o da vitrine. Se a
+        diferença entre os dois não existir, ela não vira manchete aqui.
+
+- slug: o-frete-esta-no-preco
+  capa:
+    titulo: "O FRETE ESTÁ NO PREÇO"
+    subtitulo: "Grátis quase nunca significa que ninguém pagou"
+  slides:
+    - titulo: "Alguém paga o caminhão"
+      corpo: >-
+        Entrega custa dinheiro, e esse custo não desaparece porque a tela diz
+        grátis. Ele foi para dentro do valor do produto, ou para o mínimo que
+        você precisa gastar para consegui-lo.
+    - titulo: "O truque do valor mínimo"
+      corpo: >-
+        Faltam vinte reais para a entrega sair de graça, e ela custava quinze.
+        Você adiciona algo que não ia comprar para economizar cinco — e gasta
+        vinte.
+    - titulo: "A conta que resolve"
+      corpo: >-
+        Some produto mais entrega e compare esse número. Só ele. É o único valor
+        que sai da sua conta bancária.
+    - titulo: "Por que isso importa aqui"
+      corpo: >-
+        Eu comparo preço de produto com preço de produto. Quando a entrega muda
+        a conta, ela muda para os dois lados — e é por isso que a régua precisa
+        ser sempre a mesma.
+
+- slug: o-preco-por-unidade
+  capa:
+    titulo: "O PREÇO POR UNIDADE"
+    subtitulo: "A conta de dez segundos que muda o que vale a pena"
+  slides:
+    - titulo: "Embalagem maior nem sempre rende"
+      corpo: >-
+        A ideia de que o pacote grande sai mais barato é forte o bastante para a
+        gente parar de conferir. E parar de conferir é o que faz valer a pena
+        inverter.
+    - titulo: "Divida e compare"
+      corpo: >-
+        Preço dividido pela quantidade. Reais por cem gramas, por litro, por
+        unidade. Feita a conta, dois produtos viram dois números comparáveis.
+    - titulo: "Onde a diferença aparece"
+      corpo: >-
+        Em produto que se repõe todo mês — limpeza, higiene, suplemento — a
+        diferença por unidade se multiplica pelo ano inteiro.
+    - titulo: "O limite disso"
+      corpo: >-
+        Só vale para o que você realmente vai usar. O rendimento de um produto
+        que vence na prateleira é zero, por menor que seja o preço por grama.
+
+- slug: como-eu-leio-avaliacao
+  capa:
+    titulo: "COMO EU LEIO UMA AVALIAÇÃO"
+    subtitulo: "A nota sozinha diz muito pouco"
+  slides:
+    - titulo: "Nota alta, poucas notas"
+      corpo: >-
+        Cinco estrelas com sete avaliações não é melhor que quatro e meia com
+        três mil. A primeira é sorte; a segunda é evidência.
+    - titulo: "Leia as de três estrelas"
+      corpo: >-
+        As de cinco costumam ser entusiasmo, e as de uma costumam ser frustração
+        com a entrega. As do meio são de quem usou o produto e tem ressalvas
+        específicas.
+    - titulo: "A data importa"
+      corpo: >-
+        Anúncio antigo acumula avaliação de versões antigas do produto. O
+        fabricante troca de fornecedor, e a nota de dois anos atrás descreve
+        algo que não está mais na caixa.
+    - titulo: "Foto de cliente vale mais"
+      corpo: >-
+        A foto do vendedor é estúdio. A de quem comprou mostra o tamanho real, a
+        cor real e o acabamento real.
+
+- slug: a-pressa-fabricada
+  capa:
+    titulo: "A PRESSA FABRICADA"
+    subtitulo: "Relógio regressivo, últimas unidades, e o que há por trás"
+  slides:
+    - titulo: "O relógio que reinicia"
+      corpo: >-
+        Muitos contadores voltam ao início quando a página é recarregada, ou
+        quando o dia vira. O que eles medem não é estoque — é a sua vontade de
+        decidir rápido.
+    - titulo: "Por que a pressa funciona"
+      corpo: >-
+        Sob pressão de tempo a gente decide com menos informação. É o objetivo
+        do recurso, e ele funciona mesmo quando você sabe que ele existe.
+    - titulo: "O teste do dia seguinte"
+      corpo: >-
+        Feche a aba. Volte amanhã. Se a oferta some, você economizou; se ela
+        continua lá, era preço normal com relógio em cima.
+    - titulo: "O que eu nunca escrevo"
+      corpo: >-
+        Você não vai ler aqui que restam poucas unidades, porque eu não tenho
+        como saber isso. O que eu tenho é o preço, e ele é o que eu mostro.
+
+- slug: mesmo-produto-outro-preco
+  capa:
+    titulo: "MESMO PRODUTO, OUTRO PREÇO"
+    subtitulo: "Por que o mesmo item aparece cinco vezes, com cinco valores"
+  slides:
+    - titulo: "Um produto, muitos anúncios"
+      corpo: >-
+        Num shopping online, cada vendedor cria o próprio anúncio do mesmo
+        produto. Não é um item com cinco preços: são cinco anúncios do que é, na
+        caixa, a mesma coisa.
+    - titulo: "O primeiro não é o mais barato"
+      corpo: >-
+        A ordem em que eles aparecem leva em conta reputação, entrega e
+        publicidade. O preço é um dos fatores, não o único.
+    - titulo: "Vale abrir o segundo"
+      corpo: >-
+        Procure o nome exato do produto e olhe além do primeiro resultado. A
+        diferença entre anúncios do mesmo item costuma ser maior que a de
+        qualquer liquidação.
+    - titulo: "O que eu faço com isso"
+      corpo: >-
+        Eu não publico o mesmo produto duas vezes na semana só porque o anúncio
+        é de outro vendedor. Do seu lado da tela, isso é repetição.
+
+- slug: parcela-que-esconde
+  capa:
+    titulo: "A PARCELA QUE ESCONDE"
+    subtitulo: "Doze vezes de pouco continua sendo o total"
+  slides:
+    - titulo: "O número que aparece maior"
+      corpo: >-
+        Quando a parcela é o destaque e o total está em cinza embaixo, o preço
+        que você guarda na cabeça é o da parcela. A conta que o seu mês faz é
+        com o total.
+    - titulo: "Sem juros nem sempre é sem custo"
+      corpo: >-
+        Compare o parcelado com o valor à vista. Quando existe desconto para
+        pagamento imediato, a diferença entre os dois é o custo real de
+        parcelar.
+    - titulo: "O compromisso é longo"
+      corpo: >-
+        Doze parcelas ocupam doze meses do seu limite. O produto pode durar
+        menos que isso.
+    - titulo: "O preço que eu publico"
+      corpo: >-
+        É sempre o valor cheio do produto. Nunca a parcela — ela é uma forma de
+        pagar, não um preço.
+
+- slug: onde-o-meu-metodo-falha
+  capa:
+    titulo: "ONDE O MEU MÉTODO FALHA"
+    subtitulo: "O que a minha régua não consegue ver"
+  slides:
+    - titulo: "Produto novo não tem passado"
+      corpo: >-
+        Lançamento não tem histórico para comparar. Sobre ele eu não afirmo
+        desconto nenhum — publico o preço e a nota de quem comprou, e digo que é
+        só isso que eu tenho.
+    - titulo: "Eu vejo o anúncio, não a caixa"
+      corpo: >-
+        Preço eu meço. Qualidade, tamanho real e o que chega na sua casa, não.
+        Para isso servem as avaliações com foto.
+    - titulo: "Desconto pessoal me escapa"
+      corpo: >-
+        O que depende de quem está logado não aparece para mim. Você pode pagar
+        menos do que eu mostrei — nunca mais.
+    - titulo: "Por que eu conto isso"
+      corpo: >-
+        Um método que só fala dos acertos não é um método, é publicidade. Se eu
+        não disser onde ele falha, você não tem como saber quando confiar.
+
+- slug: o-que-a-lei-garante
+  capa:
+    titulo: "O QUE A LEI JÁ TE GARANTE"
+    subtitulo: "Três direitos que muita gente não usa por não conhecer"
+  slides:
+    - titulo: "O preço anunciado obriga"
+      corpo: >-
+        Pelo Código de Defesa do Consumidor, a oferta veiculada vincula quem a
+        fez. Preço errado na vitrine é problema de quem anunciou, e você pode
+        exigir que ele seja cumprido.
+    - titulo: "Sete dias para desistir"
+      corpo: >-
+        Em compra fora da loja física — internet, telefone — existe o direito de
+        arrependimento em sete dias, contados do recebimento, sem precisar
+        justificar motivo.
+    - titulo: "Enganosa é infração"
+      corpo: >-
+        Informação falsa ou capaz de induzir a erro sobre preço é tratada como
+        publicidade enganosa pelo Código. O “de” que nunca existiu cabe nessa
+        descrição.
+    - titulo: "Guarde a prova"
+      corpo: >-
+        Print da tela, com data. É o que transforma “eu vi por outro valor” em
+        algo que o atendimento não tem como discutir.
+
+- slug: o-historico-e-publico
+  capa:
+    titulo: "VOCÊ TAMBÉM PODE CONFERIR"
+    subtitulo: "Como olhar o histórico de preço sem depender de mim"
+  slides:
+    - titulo: "Existem rastreadores de preço"
+      corpo: >-
+        Sites e extensões guardam a série de preço de anúncios populares há
+        anos. São gratuitos, e mostram o gráfico que a vitrine não mostra.
+    - titulo: "O que procurar no gráfico"
+      corpo: >-
+        A linha reta é o preço de sempre. O degrau curto para cima, pouco antes
+        de uma queda anunciada, é a âncora sendo construída.
+    - titulo: "Não confie em um só"
+      corpo: >-
+        Cada rastreador cobre um conjunto diferente de anúncios e pode ter
+        buracos. Duas fontes concordando valem muito mais que uma sozinha.
+    - titulo: "Por que eu te ensino isso"
+      corpo: >-
+        Porque um perfil que pede confiança cega não merece a sua. Eu prefiro
+        que você confira o que eu digo.
+
+- slug: o-carrinho-nao-te-observa
+  capa:
+    titulo: "O CARRINHO TE OBSERVA?"
+    subtitulo: "O que é boato, o que é real, e o que fazer com isso"
+  slides:
+    - titulo: "A crença comum"
+      corpo: >-
+        Muita gente acredita que deixar o item no carrinho faz a loja mandar um
+        desconto. Às vezes acontece, e é aí que a crença se sustenta.
+    - titulo: "O que de fato existe"
+      corpo: >-
+        Existem campanhas automáticas de recuperação de carrinho, por e-mail ou
+        notificação. Não são pessoais nem garantidas: são régua de marketing
+        disparada para muita gente.
+    - titulo: "O preço muda sozinho"
+      corpo: >-
+        E ele muda também para quem nunca abriu o carrinho. Variação de preço é
+        rotina no comércio online, não sinal de que alguém te viu.
+    - titulo: "O que realmente funciona"
+      corpo: >-
+        Anotar o preço e esperar. Não porque a loja está te observando, mas
+        porque em uma ou duas semanas você descobre qual era o preço de verdade.

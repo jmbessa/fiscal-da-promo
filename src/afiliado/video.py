@@ -30,14 +30,17 @@ sem faixa nenhuma. Custa 2 kb/s não descobrir isso do jeito caro.
 
 from __future__ import annotations
 
+import io
 import shutil
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
 from typing import Iterable
 
 __all__ = ["SemFFmpeg", "SEM_FFMPEG", "AVISO_SEM_FFMPEG", "LIMITE_TELEGRAM_BYTES",
-           "ffmpeg_exe", "tem_ffmpeg", "comando_h264", "encode_h264"]
+           "RESPIRO_ANTES_DA_VOZ_S", "ffmpeg_exe", "tem_ffmpeg", "comando_h264",
+           "duracao_wav", "duracao_mp4", "encode_h264"]
 
 
 SEM_FFMPEG = ("ffmpeg não encontrado — `pip install -e .[reel]` (ou um ffmpeg no "
@@ -58,6 +61,19 @@ LIMITE_TELEGRAM_BYTES = 20 * 1024 * 1024
 # encode, e um preset lento só faria o run esperar mais pelo mesmo arquivo.
 CRF = "23"
 PRESET = "veryfast"
+
+# O silêncio na frente da narração. A voz começando no frame zero perde a
+# primeira sílaba em quase todo player, e a peça já está inteira na tela nesse
+# instante: quem chega tem o preço para ler antes de a voz falar.
+RESPIRO_ANTES_DA_VOZ_S = 0.3
+
+# Normalização de volume da voz (EBU R128, uma passada). Sem ela o WAV que o
+# SAPI devolve sai com pico MEDIDO em -8,4 dB e volume médio em -28,6 dB — uma
+# peça audível só no talo, ao lado de Reels que a plataforma entrega perto de
+# -14 LUFS. O alvo é esse; `TP=-1.5` guarda margem de pico para o AAC, que
+# pode passar do original ao recodificar.
+VOZ_LUFS = "-14"
+VOZ_PICO_DB = "-1.5"
 
 
 class SemFFmpeg(RuntimeError):
@@ -105,7 +121,47 @@ def tem_ffmpeg() -> bool:
     return True
 
 
-def comando_h264(exe: str, largura: int, altura: int, fps: int, destino) -> list[str]:
+def duracao_wav(wav: bytes) -> float:
+    """A duração de um WAV, lida do cabeçalho. `0.0` quando ilegível.
+
+    Mora aqui, e não no `afiliado.narracao`, porque quem precisa dela é quem
+    dimensiona o CLIPE (`creative.render_reel`) — e `creative` não importa
+    `narracao`: é `narracao` que importa `creative`, e o contrário fecharia o
+    ciclo.
+    """
+    try:
+        with wave.open(io.BytesIO(wav), "rb") as f:
+            taxa = f.getframerate()
+            return f.getnframes() / taxa if taxa else 0.0
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+
+
+def duracao_mp4(mp4: bytes) -> float:
+    """A duração do `.mp4`, lida da caixa `mvhd`. `0.0` quando ilegível.
+
+    Sem ffprobe de propósito: o `imageio-ffmpeg` entrega o **ffmpeg** e mais
+    nada, então depender do ffprobe seria trocar um extra opcional que existe
+    por um binário que pode não existir. A `mvhd` tem `timescale` e `duration`
+    em posição fixa, e o `+faststart` já a põe na frente do arquivo.
+    """
+    i = mp4.find(b"mvhd")
+    if i < 0 or len(mp4) < i + 32:
+        return 0.0
+    versao = mp4[i + 4]
+    # Depois de "mvhd" vêm versão(1) + flags(3); então as datas, cujo tamanho é
+    # que muda entre as versões.
+    base = i + 8 + (16 if versao == 1 else 8)
+    largo = 8 if versao == 1 else 4
+    if len(mp4) < base + 4 + largo:
+        return 0.0
+    escala = int.from_bytes(mp4[base:base + 4], "big")
+    duracao = int.from_bytes(mp4[base + 4:base + 4 + largo], "big")
+    return duracao / escala if escala else 0.0
+
+
+def comando_h264(exe: str, largura: int, altura: int, fps: int, destino,
+                 audio=None) -> list[str]:
     """O comando que transforma frames RGB24 crus (pela entrada padrão) no
     `.mp4` que a aba Reels aceita.
 
@@ -114,26 +170,47 @@ def comando_h264(exe: str, largura: int, altura: int, fps: int, destino) -> list
     abre no celular de quem viu não vale nada. `-profile:v high -level 4.0` é a
     combinação que a Meta documenta para 1080p.
 
-    A segunda entrada é uma faixa de áudio SILENCIOSA (`anullsrc`), cortada no
-    tamanho do vídeo por `-shortest` — ver o cabeçalho do módulo: é seguro
-    barato contra um requisito que a Meta lista e não explica.
+    **A faixa de áudio tem dois modos.** Com `audio` (o WAV da narração) ela é
+    a voz; sem ele, a faixa SILENCIOSA de sempre (`anullsrc`) — ver o cabeçalho
+    do módulo: é seguro barato contra um requisito que a Meta lista e não
+    explica. O Reel mudo continua sendo um Reel correto.
+
+    Os três filtros da narração não são enfeite:
+
+    - `loudnorm` põe a voz no volume em que a plataforma entrega o resto. O WAV
+      cru do SAPI sai com pico medido em -8,4 dB; sem normalizar, a peça é a
+      única do feed que exige subir o volume do aparelho.
+    - `adelay` dá a ela um respiro na frente. A locução começando no frame zero
+      corta a primeira sílaba em quase todo player, e a peça já está inteira na
+      tela nesse instante — a voz não precisa competir com ela.
+    - `apad` a estende com silêncio até o fim do vídeo. Sem ele, `-shortest`
+      encerraria o arquivo quando a VOZ acabasse, e o clipe seria truncado no
+      meio da arte — o áudio mandaria no vídeo, que é o contrário do que se
+      quer. Por isso ele vem DEPOIS do `loudnorm`: normalizar um áudio já
+      cheio de silêncio de enchimento mediria a coisa errada.
     """
+    entrada_de_audio = (["-i", str(audio)] if audio else
+                        ["-f", "lavfi", "-i",
+                         "anullsrc=channel_layout=stereo:sample_rate=48000"])
+    filtro = ["-af", f"loudnorm=I={VOZ_LUFS}:TP={VOZ_PICO_DB}:LRA=11,"
+                     f"adelay={round(RESPIRO_ANTES_DA_VOZ_S * 1000)}:all=1,apad"] if audio else []
     return [
         exe, "-hide_banner", "-loglevel", "error", "-y",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{largura}x{altura}",
         "-r", str(fps), "-i", "-",
-        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        *entrada_de_audio,
+        *filtro,
         "-shortest",
         "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
         "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.0",
-        "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",
         str(destino),
     ]
 
 
 def encode_h264(frames: Iterable[bytes], size: tuple[int, int], fps: int,
-                exe: str | None = None) -> bytes:
+                exe: str | None = None, narracao: bytes | None = None) -> bytes:
     """Os bytes do `.mp4`. `frames` são RGB24 crus, um por frame.
 
     Os frames vão para a entrada padrão do ffmpeg à medida que o gerador os
@@ -150,7 +227,13 @@ def encode_h264(frames: Iterable[bytes], size: tuple[int, int], fps: int,
     largura, altura = size
     with tempfile.TemporaryDirectory(prefix="afiliado-reel-") as tmp:
         destino = Path(tmp) / "reel.mp4"
-        proc = subprocess.Popen(comando_h264(exe, largura, altura, fps, destino),
+        # A narração vai a DISCO e não pela entrada padrão: essa já é dos
+        # frames, e o ffmpeg precisa de `seek` no WAV para ler o cabeçalho.
+        audio = None
+        if narracao:
+            audio = Path(tmp) / "narracao.wav"
+            audio.write_bytes(narracao)
+        proc = subprocess.Popen(comando_h264(exe, largura, altura, fps, destino, audio),
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.PIPE)
         erro = b""

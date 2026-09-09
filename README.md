@@ -110,7 +110,9 @@ Fluxo completo (pool curado de ofertas → preço ao vivo → link) em
 - `afiliado run` — executa e publica de verdade.
 - `afiliado stories [--posts N] [--dry-run]` — o mesmo pipeline com **só o
   canal de API privada** (`instagram_story_link`, instagrapi, story com
-  figurinha de link), para o dono rodar da própria máquina (fase 5F). É o
+  figurinha de link), para o dono rodar da própria máquina (fase 5F).
+  **Desde a fase 5U esse canal está desligado** e o comando fica ocioso: quem
+  publica story é o `instagram_story` (Graph API), pelo `afiliado run`. É o
   único comando que o monta; `afiliado run` o ignora mesmo ligado, porque ele
   não pode rodar no GitHub Actions. O contrário também vale: os canais que o
   Actions publica — inclusive o `instagram_story` da Graph API — **não** sobem
@@ -236,31 +238,35 @@ prompt promete 30 candidatas e precisa entregar 30.
 
 ## Agendamento
 
-- **A máquina do dono (produção desde 2026-08-28, fase 5I)** — quatro tarefas
+- **A máquina do dono (produção desde 2026-08-28, fase 5I)** — três tarefas
   no **Agendador de Tarefas do Windows**, criadas por
   `deploy/agendar-windows.ps1` (idempotente, com `-Remover`):
-  `FiscalDaPromo-Run` (`afiliado run --posts-per-run 4`) e
-  `FiscalDaPromo-Stories` (`afiliado stories --posts 4`) **a cada 15 min** das
-  08:03/08:08 às 23:15, mais `FiscalDaPromo-Feed` e `FiscalDaPromo-Flagrante`
-  **a cada 2 h**. Runbook completo — a ordem da virada, como conferir que
+  `FiscalDaPromo-Run` (`afiliado run --posts-per-run 4`) **a cada 15 min** das
+  08:03 às 23:15, mais `FiscalDaPromo-Feed` e `FiscalDaPromo-Flagrante`
+  **a cada 2 h**. Eram quatro: `FiscalDaPromo-Stories` saiu em **2026-08-30**
+  junto com o canal `instagram_story_link` que ela servia, e o script remove a
+  que já existir — story hoje sai pela Graph API dentro do `afiliado run`.
+  Runbook completo — a ordem da virada, como conferir que
   rodou, como voltar — em `docs/runbooks/producao-windows.md`.
   **Por que saiu do Actions**, com os três fatos medidos: (1) o agendador do
   GitHub entregou **1 run em toda a história do repositório** contra ~16
   disparos esperados em ~25 h, e o único saiu **51 min atrasado**; (2) o story
-  com figurinha **não pode** rodar num IP de datacenter (`challenge_required`)
-  e a Graph API não publica figurinha nenhuma; (3) a máquina foi medida em
+  com figurinha **não podia** rodar num IP de datacenter
+  (`challenge_required`) — e o argumento sobrevive ao desligamento dele, porque
+  é a mesma conta que segura o token da Graph API; (3) a máquina foi medida em
   2026-08-28 com **48,7 h de uptime** e suspensão em corrente alternada = 0.
   **Por que 15 min:** medido, um `afiliado run` gasta **8 chamadas** de
   descoberta (sempre, mesmo sem publicar nada) + 2 por oferta publicada — 608
-  por tarefa por dia, ~1.216 com as duas, contra os ~1.920/dia que a VPS já
-  fazia. E é a cadência que faz o maior salto do `pacing_budget` cair para 1,
+  por dia, contra os ~1.920/dia que a VPS já fazia (eram ~1.216 enquanto a
+  tarefa de stories existia, e as ~490 que ela gastava para não publicar nada
+  foram o argumento que a tirou do ar). E é a cadência que faz o maior salto do `pacing_budget` cair para 1,
   com `--posts-per-run 4` cobrindo três disparos perdidos.
 - **O buraco na cadência é o sensor (fase 5G, recalibrado na 5I)** — o resumo
   do chat de operações **acusa buracos** — em horas e em disparos perdidos —
   acima de `schedule.max_gap_minutes` (**40**, para a cadência de 15 min:
   tolera um disparo perdido e acusa a partir do segundo). É ele que denuncia
   uma máquina parada. O `afiliado doctor` completa: no Windows ele confere se
-  as quatro tarefas existem e estão habilitadas.
+  as três tarefas existem e estão habilitadas.
 - **GitHub Actions (fallback manual)** — `.github/workflows/publish.yml`
   perdeu o `schedule:` e ficou só com `workflow_dispatch`: dois hosts
   publicando ao mesmo tempo postariam a mesma oferta duas vezes (cada um tem o
@@ -291,8 +297,17 @@ run pode chegar a publicar; quem distribui os 60/dia pela janela é o
 
 Cada canal tem um teto diário (`max_per_day` em `config.yaml`, contado no
 SQLite **no dia local** de `schedule.timezone`): `telegram` em 60/dia (a meta
-do canal), `instagram_story_link` em 60/dia e `instagram_feed` em 2/dia
-(`instagram_story` e `story_dispatch`, os dois fallbacks, estão desligados).
+do canal), `instagram_story` em 60/dia e `instagram_feed` em 2/dia
+(`instagram_story_link` e `story_dispatch`, os dois fallbacks, estão
+desligados — ver a fase 5U em `config.yaml`).
+Desde a fase 5U esse teto passa antes por um **teto por audiência**
+(`channels.<canal>.audiencia`, com `piso` e `divisor`):
+`min(max_per_day, max(piso, seguidores ÷ divisor))`. Com 2 seguidores, o story
+publica 3/dia em vez de 60. O `followers_count` vem do `user_info` da Graph API
+e é lido **uma vez por dia** (guardado no `state.db`); sem ele a régua **falha
+aberta** — vale o `max_per_day` do config, e o resumo de operações diz que ela
+não foi aplicada.
+
 Desde a fase 5A o teto é **distribuído pela janela** (`schedule.window_start`
 – `window_end`): um canal só publica enquanto o que já postou hoje está
 abaixo de `min(max_per_day, floor(max_per_day × fração da janela decorrida) + 1)`

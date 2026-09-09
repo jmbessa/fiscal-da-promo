@@ -41,6 +41,23 @@ def sem_agendador_de_verdade(monkeypatch):
     monkeypatch.setattr(cli, "estado_da_tarefa", lambda nome: "Ready")
 
 
+@pytest.fixture(autouse=True)
+def sem_leitura_de_seguidores(monkeypatch):
+    """Nenhum teste pergunta o `followers_count` à Graph API (fase 5U).
+
+    `cli._build_channels` passou a ler o número de seguidores para apertar o
+    `max_per_day` dos canais com `audiencia:` no config — e os testes de
+    montagem de canal têm IG_USER_ID/IG_ACCESS_TOKEN no ambiente. Sem este
+    dublê, a suíte tocaria a rede.
+
+    O dublê devolve `None`, que é o caminho de FALHA ABERTA: os canais ficam
+    com o `max_per_day` do config, que é o que os testes anteriores a esta
+    fase esperam. Quem testa o teto injeta o próprio número (ver
+    `tests/test_teto_por_audiencia.py`).
+    """
+    monkeypatch.setattr(cli, "le_seguidores", lambda *args, **kwargs: None)
+
+
 @pytest.fixture(params=[True, False], ids=["rotulo_ligado", "rotulo_desligado"])
 def rotulo(request, monkeypatch):
     """Roda o teste nos DOIS estados de `pricing.MOSTRAR_SEM_CUPOM` (fase 5N)

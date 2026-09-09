@@ -25,7 +25,7 @@ from typing import NamedTuple
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from afiliado import pricing, video
+from afiliado import pricing, temas, video
 from afiliado.brand import draw_mascot
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts, Offer, Post, Verdict, format_brl
@@ -100,6 +100,63 @@ DEFAULT_HANDLE = "@ofiscaldapromo"
 # `docs/superpowers/reviews/2026-08-28-pesquisa-feed.md`). Constante, nunca
 # gerada: é ela que constrói o reconhecimento.
 ASSINATURA = "Quem conferiu? O Fiscal."
+
+# Fase 5U — A SINALIZAÇÃO DE AFILIADO. **Este é o único lugar que decide o
+# texto**; arte, texto do Telegram e as três legendas do Instagram importam
+# daqui, como fazem com `pricing.sem_cupom`. Trocar a frase é mexer nestas duas
+# linhas — foi o pedido do dono.
+#
+# POR QUE ELA EXISTE, e por que não é assunto de multa: o item A7 da análise
+# adversarial (reescrito em 2026-08-30) mede o pior caso, e ele é CONTRATUAL.
+# Os Termos do Programa de Afiliados da Shopee alcançam, na cláusula 2.3,
+# conteúdo que a Shopee considere inadequado, e a 7.2 permite a ela "rescindir
+# unilateralmente este Contrato a seu exclusivo critério" com 7 dias de aviso.
+# Perder o programa não custa dinheiro: custa a comissão, a integração, o pool
+# de links e o histórico. O guia CONAR de 01/06/2026 é o outro lado — ele
+# inclui afiliados com todas as letras ("remuneração por performance não afasta
+# a natureza publicitária") e exige identificação **visível na primeira
+# visualização**, não em nota de rodapé.
+#
+# DESLIGADA — decisão do dono em 2026-09-08. **Vazia = a linha não sai**, no
+# mesmo molde de `AFILIADO_NA_ARTE` logo abaixo e de `pricing.MOSTRAR_SEM_CUPOM`:
+# preencher esta constante religa as QUATRO superfícies de uma vez (Telegram,
+# feed, Reel e carrossel), na primeira linha, sem tocar em mais nada.
+#
+# Histórico: a frase que estava no ar era "O link direciona para a página do
+# produto na loja" (decisão de 2026-08-30, que por sua vez já havia substituído
+# "Link de afiliado — ganho comissão, o preço é o mesmo para você").
+#
+# **O risco do A7 continua NÃO MITIGADO — e agora sem linha nenhuma na legenda.**
+# Registre-se com precisão o que mudou: a frase retirada NÃO era sinalização de
+# afiliado. Ela descrevia o destino do link; não identificava o post como
+# publicidade nem revelava a comissão — que é o que o CDC art. 36, o guia CONAR
+# de 01/06/2026 e os Termos da Shopee pedem. Ou seja: tirá-la não derrubou
+# conformidade, porque não havia conformidade para derrubar. A exposição
+# contratual (Shopee, Termos 2.3 e 7.2: rescisão unilateral com 7 dias de
+# aviso) segue de pé, aceita conscientemente pelo dono. Ver A7 em
+# `docs/superpowers/reviews/2026-08-26-analise-adversarial.md`.
+AFILIADO = ""
+
+# A forma para a ARTE. **Vazia = chip desligado** (ver `_draw_afiliado_chip`),
+# e é o estado atual: na peça, o botão de rodapé já diz "LINK NA SHOPEE" / "LINK
+# NO MERCADO LIVRE", então um chip repetindo que o link leva à loja seria a
+# mesma informação duas vezes, ocupando a faixa de identidade da conta.
+# Preencher esta constante liga o chip de volta, com a geometria que a fase 5U
+# calibrou e que os testes continuam guardando.
+AFILIADO_NA_ARTE = ""
+
+
+def linha_afiliado() -> str:
+    """A linha de abertura das legendas — vazia quando `AFILIADO` está desligada.
+
+    Existe para que "um lugar só decide" continue verdadeiro TAMBÉM no estado
+    desligado. Sem ela, cada superfície teria de lembrar sozinha de não escrever
+    a quebra de linha, e a legenda abriria com uma linha em branco — que gasta
+    o corte do "mais" do Instagram (~125 caracteres) sem dizer nada.
+
+    Lê a constante no momento da chamada, de propósito: é o que faz religar a
+    frase valer para as quatro superfícies sem tocar em nenhuma delas."""
+    return f"{AFILIADO}\n" if AFILIADO else ""
 
 
 # --- Fontes -------------------------------------------------------------------
@@ -249,10 +306,86 @@ def _draw_card(
                     badge_font_size, badge_pad_y, badge_pad_x)
 
 
+# --- Sinalização de afiliado na arte (fase 5U) --------------------------------
+
+# O chip é a voz MONO do sistema (meta, selo, handle, contador do carrossel) e
+# não a voz humana (título, preço, CTA): ele qualifica a peça, não vende nada.
+# Mesmo corpo do contador do carrossel, e a mesma pill de SURFACE com contorno.
+AFILIADO_CHIP_SIZE = 26
+AFILIADO_CHIP_PAD_X = 18
+AFILIADO_CHIP_PAD_Y = 12
+AFILIADO_CHIP_GAP = 24        # respiro entre o nome da marca e o chip
+
+# Cabeçalho (x, y, diâmetro do avatar, respiro até o nome) de cada formato.
+# Viraram constantes porque o chip precisa saber ONDE o nome termina, e o
+# número copiado é o número que diverge — `_render_story`, `reel_frames`,
+# `_render_feed` e o slide do carrossel passavam os mesmos literais.
+STORY_HEADER = (72, 120, 68, 18)
+FEED_HEADER = (64, 64, 62, 20)
+
+
+def _afiliado_dims(draw: ImageDraw.ImageDraw, size: int = AFILIADO_CHIP_SIZE) -> dict:
+    text = AFILIADO_NA_ARTE.upper()
+    font = _font("mono", size, 500)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return {"text": text, "font": font, "bbox": bbox,
+            "width": (bbox[2] - bbox[0]) + 2 * AFILIADO_CHIP_PAD_X,
+            "height": (bbox[3] - bbox[1]) + 2 * AFILIADO_CHIP_PAD_Y}
+
+
+def _afiliado_geo(draw: ImageDraw.ImageDraw, largura: int, pad: int, header: tuple,
+                  brand_name: str) -> dict:
+    """Onde o chip fica na faixa do cabeçalho: logo depois do nome da marca,
+    centrado na linha do avatar — e NUNCA além da margem direita.
+
+    Depois do nome, e não colado na margem, por dois motivos. Ele lê como parte
+    da identidade da conta (é onde o próprio Instagram põe "parceria paga"), e
+    o canto superior direito do slide do carrossel já é do contador — dois
+    elementos disputando aquela linha é como se perde um deles.
+
+    Um `brand.name` longo empurra o chip para a ESQUERDA, sobre o nome, em vez
+    de para fora do canvas: a sinalização cortada não é uma degradação
+    aceitável (o guarda da pill de preço aprendeu isso cortando uma referência
+    em "R$ 7…")."""
+    x, y, d, gap_nome = header
+    nome_font = _font("sans", 34, 700)
+    nome_bbox = draw.textbbox((0, 0), brand_name, font=nome_font)
+    nome_fim = x + d + gap_nome + (nome_bbox[2] - nome_bbox[0])
+    dims = _afiliado_dims(draw)
+    cx = min(nome_fim + AFILIADO_CHIP_GAP, largura - pad - dims["width"])
+    cy = y + d / 2 - dims["height"] / 2
+    return {**dims, "box": (cx, cy, cx + dims["width"], cy + dims["height"])}
+
+
+def _afiliado_centrado(draw: ImageDraw.ImageDraw, largura: int, top: float) -> dict:
+    """O mesmo chip, centrado numa largura — capa e fecho do carrossel não têm
+    faixa de cabeçalho: a identidade deles é o bloco centralizado."""
+    dims = _afiliado_dims(draw)
+    x = (largura - dims["width"]) / 2
+    return {**dims, "box": (x, top, x + dims["width"], top + dims["height"])}
+
+
+def _draw_afiliado_chip(draw: ImageDraw.ImageDraw, geo: dict) -> None:
+    # `AFILIADO_NA_ARTE` vazio = chip desligado, e o desenho não acontece. É o
+    # mesmo padrão de `pricing.MOSTRAR_SEM_CUPOM`: interruptor, não remoção —
+    # religar é preencher a constante, e a geometria continua testada.
+    if not geo.get("text"):
+        return
+    x0, y0, x1, y1 = geo["box"]
+    # METADE DA ALTURA, nunca 999: raio maior que o lado curto faz o Pillow
+    # devolver uma ELIPSE — o defeito que já saiu no rodapé do story, no fecho
+    # do carrossel e no contador.
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=(y1 - y0) / 2,
+                           fill=SURFACE, outline=PILL_BORDER, width=2)
+    bbox = geo["bbox"]
+    draw.text((x0 + AFILIADO_CHIP_PAD_X - bbox[0], y0 + AFILIADO_CHIP_PAD_Y - bbox[1]),
+              geo["text"], font=geo["font"], fill=SELO_TEXT)
+
+
 # --- Cabeçalho (avatar + nome/handle) -----------------------------------------
 
 def _draw_header_story(draw: ImageDraw.ImageDraw, canvas: Image.Image, x: int, y: int,
-                        d: int, brand_name: str) -> None:
+                        d: int, brand_name: str, afiliado: bool = True) -> None:
     draw.ellipse([x, y, x + d, y + d], fill=GOLD)
     cx, cy = x + d / 2, y + d / 2
     draw_mascot(canvas, cx, cy, d * 0.98, ink=NAVY, skin=CREAM, cap=NAVY)
@@ -262,13 +395,20 @@ def _draw_header_story(draw: ImageDraw.ImageDraw, canvas: Image.Image, x: int, y
     tx = x + d + 18
     ty = cy - (asc + desc) / 2
     draw.text((tx - bbox[0], ty - bbox[1]), brand_name, font=font, fill=TEXT)
+    if afiliado:
+        _draw_afiliado_chip(
+            draw, _afiliado_geo(draw, STORY_SIZE[0], STORY_PAD, STORY_HEADER, brand_name))
 
 
 def _draw_header_feed(draw: ImageDraw.ImageDraw, canvas: Image.Image, x: int, y: int,
-                       d: int, brand_name: str, handle: str | None) -> None:
+                       d: int, brand_name: str, handle: str | None,
+                       afiliado: bool = True) -> None:
     draw.ellipse([x, y, x + d, y + d], fill=GOLD)
     cx, cy = x + d / 2, y + d / 2
     draw_mascot(canvas, cx, cy, d * 0.98, ink=NAVY, skin=CREAM, cap=NAVY)
+    if afiliado:
+        _draw_afiliado_chip(
+            draw, _afiliado_geo(draw, FEED_SIZE[0], FEED_PAD, FEED_HEADER, brand_name))
     name_font = _font("sans", 34, 700)
     name_asc, name_desc = name_font.getmetrics()
     tx = x + d + 20
@@ -949,25 +1089,28 @@ def _draw_feed_footer(draw: ImageDraw.ImageDraw, width: int, pad: int, offer: Of
 # --- Plano do corpo: o que a arte vai desenhar (hook testável) ---------------
 
 def _story_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
-                handle: str | None, cta_figurinha: bool = False) -> dict:
+                handle: str | None, cta_figurinha: bool = False,
+                brand_name: str = DEFAULT_BRAND_NAME) -> dict:
     width, height = STORY_SIZE
     footer = _story_footer_geometry(draw, width, height, handle, offer, cta_figurinha)
     pill_left = _pill_left(offer, verdict)
     title, price, meta, selo = _story_body_options(
         draw, offer, verdict, footer["cta_box"][1] - 36, pill_left)
     return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
-            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict)}
+            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict),
+            "afiliado": _afiliado_geo(draw, width, STORY_PAD, STORY_HEADER, brand_name)}
 
 
 def _feed_plan(draw: ImageDraw.ImageDraw, offer: Offer, verdict: Verdict,
-               handle: str | None) -> dict:
+               handle: str | None, brand_name: str = DEFAULT_BRAND_NAME) -> dict:
     width, height = FEED_SIZE
     footer = _feed_footer_geometry(width, height, FEED_PAD)
     pill_left = _pill_left(offer, verdict)
     title, price, meta, selo = _feed_body_options(
         draw, offer, verdict, footer["divider_y"] - 36, pill_left)
     return {"footer": footer, "title": title, "price": price, "meta": meta, "selo": selo,
-            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict)}
+            "pill_left": pill_left, "badge_pct": _badge_pct(offer, verdict),
+            "afiliado": _afiliado_geo(draw, width, FEED_PAD, FEED_HEADER, brand_name)}
 
 
 def _resumo(plan: dict) -> dict:
@@ -978,24 +1121,33 @@ def _resumo(plan: dict) -> dict:
         "sem_cupom": plan["price"]["nota_text"],
         "title_lines": list(plan["title"]["lines"]),
         "meta": plan["meta"] is not None,
+        # Fase 5U: a sinalização de afiliado e ONDE ela cai. A caixa entra no
+        # resumo porque o que se quer provar por teste não é só que a frase
+        # existe — é que ela mora na faixa do cabeçalho, acima do card, longe
+        # do orçamento que o guarda de overflow reparte entre título, meta e
+        # selo.
+        "afiliado": plan["afiliado"]["text"],
+        "afiliado_box": plan["afiliado"]["box"],
     }
 
 
-def story_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict:
+def story_plan(offer: Offer, verdict: Verdict, handle: str | None = None,
+               brand_name: str = DEFAULT_BRAND_NAME) -> dict:
     """O que `render_story` vai desenhar para este veredito — sem baixar a
     imagem nem pintar: `selo` (rótulo, ou "" quando não há), `badge_pct`,
     `riscado` (a referência riscada na pill, ou ""), `sem_cupom` (o rótulo à
-    direita do preço, ou ""), `title_lines`, `meta`.
+    direita do preço, ou ""), `title_lines`, `meta`, `afiliado`/`afiliado_box`.
     É o hook que prova, por teste e não por pixel, que arte, texto e
     legendas concordam (mesmo `Verdict` -> selo em todos ou em nenhum)."""
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    return _resumo(_story_plan(draw, offer, verdict, handle))
+    return _resumo(_story_plan(draw, offer, verdict, handle, brand_name=brand_name))
 
 
-def feed_plan(offer: Offer, verdict: Verdict, handle: str | None = None) -> dict:
+def feed_plan(offer: Offer, verdict: Verdict, handle: str | None = None,
+              brand_name: str = DEFAULT_BRAND_NAME) -> dict:
     """Idem `story_plan`, para a arte de feed."""
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    return _resumo(_feed_plan(draw, offer, verdict, handle))
+    return _resumo(_feed_plan(draw, offer, verdict, handle, brand_name=brand_name))
 
 
 # --- Render principal -----------------------------------------------------------
@@ -1030,9 +1182,9 @@ def _render_story(offer: Offer, verdict: Verdict, client: httpx.Client | None,
 
     canvas = _story_canvas()
     draw = ImageDraw.Draw(canvas)
-    plan = _story_plan(draw, offer, verdict, handle, cta_figurinha)
+    plan = _story_plan(draw, offer, verdict, handle, cta_figurinha, brand_name)
 
-    _draw_header_story(draw, canvas, 72, 120, 68, brand_name)
+    _draw_header_story(draw, canvas, *STORY_HEADER[:3], brand_name)
     _draw_story_card(canvas, draw, product, plan["badge_pct"])
     _draw_story_body(draw, width, offer, plan["title"], plan["price"], plan["meta"], plan["selo"])
     _draw_story_footer(draw, width, handle, plan["footer"])
@@ -1049,9 +1201,9 @@ def _render_feed(offer: Offer, verdict: Verdict, client: httpx.Client | None,
 
     canvas = _glow_background(width, height, 540, 81, 594, 338)
     draw = ImageDraw.Draw(canvas)
-    plan = _feed_plan(draw, offer, verdict, handle)
+    plan = _feed_plan(draw, offer, verdict, handle, brand_name)
 
-    _draw_header_feed(draw, canvas, 64, 64, 62, brand_name, handle)
+    _draw_header_feed(draw, canvas, *FEED_HEADER[:3], brand_name, handle)
     _draw_card(canvas, draw, product, 64, 158, 952, 600, 26, 20,
                plan["badge_pct"], 42, 12, 20, 26)
     _draw_feed_body(draw, width, offer, plan["title"], plan["price"], plan["meta"], plan["selo"])
@@ -1496,7 +1648,11 @@ def render_grafico_preco(offer: Offer, historico: list[tuple[date, int]],
     pontos = plan["pontos_xy"]
 
     draw = ImageDraw.Draw(canvas)
-    _draw_header_feed(draw, canvas, GRAFICO_PAD, 58, 62, brand_name, None)
+    # `afiliado=False` (fase 5U): esta peça não carrega link — ela é o nosso
+    # histórico de preço e vai ao chat de operações para o dono decidir.
+    # Carimbá-la de "link de afiliado" seria afirmar um link que ela não tem.
+    _draw_header_feed(draw, canvas, GRAFICO_PAD, 58, 62, brand_name, None,
+                      afiliado=False)
     _draw_centered(draw, largura, GRAFICO_KICKER_Y, plan["kicker"],
                    _font("mono", 26, 500), MUTED)
     _draw_title(draw, largura, plan["title_top"], plan["title"])
@@ -1626,14 +1782,22 @@ def _capa_plan(draw: ImageDraw.ImageDraw, titulo: str, subtitulo: str,
     titulo_dims = _texto_dims(draw, titulo, CAPA_TITLE_SIZE, disponivel, 3, 800, 1.06)
     sub_dims = _texto_dims(draw, subtitulo, CAPA_SUB_SIZE, disponivel, 2, 500, 1.2)
     mascote_d = 280
-    mascote_top, titulo_top, sub_top = _centro_do_bloco(
-        [mascote_d, titulo_dims["height"], sub_dims["height"]], [64, 30])
+    # Fase 5U: o chip de sinalização entra no BLOCO, não numa coordenada fixa.
+    # A capa é a primeira visualização do álbum — é a peça que mais precisa
+    # dela —, e `_centro_do_bloco` recentraliza tudo em volta.
+    chip = _afiliado_dims(draw)
+    mascote_top, titulo_top, sub_top, chip_top = _centro_do_bloco(
+        [mascote_d, titulo_dims["height"], sub_dims["height"], chip["height"]],
+        [64, 30, 44])
+    afiliado = _afiliado_centrado(draw, largura, chip_top)
     return {
         "tipo": "capa", "titulo": titulo, "subtitulo": subtitulo,
         "titulo_linhas": list(titulo_dims["lines"]),
         "subtitulo_linhas": list(sub_dims["lines"]),
         "titulo_dims": titulo_dims, "sub_dims": sub_dims,
         "titulo_top": titulo_top, "sub_top": sub_top,
+        "afiliado": afiliado["text"], "afiliado_box": afiliado["box"],
+        "afiliado_dims": afiliado,
         "mascote": (largura / 2, mascote_top + mascote_d / 2, mascote_d),
         "handle": handle or DEFAULT_HANDLE, "handle_y": altura - 118,
     }
@@ -1648,14 +1812,19 @@ def _fecho_plan(draw: ImageDraw.ImageDraw, handle: str | None) -> dict:
     cta_bbox = draw.textbbox((0, 0), CTA_CARROSSEL, font=cta_font)
     cta_h = (cta_bbox[3] - cta_bbox[1]) + 2 * 26
     mascote_d = 240
-    mascote_top, assinatura_top, handle_y, cta_top = _centro_do_bloco(
-        [mascote_d, assinatura["height"], sum(handle_font.getmetrics()), cta_h],
-        [60, 40, 60])
+    chip = _afiliado_dims(draw)
+    mascote_top, assinatura_top, handle_y, cta_top, chip_top = _centro_do_bloco(
+        [mascote_d, assinatura["height"], sum(handle_font.getmetrics()), cta_h,
+         chip["height"]],
+        [60, 40, 60, 44])
+    afiliado = _afiliado_centrado(draw, largura, chip_top)
     return {
         "tipo": "fecho", "assinatura": ASSINATURA, "cta": CTA_CARROSSEL,
         "assinatura_dims": assinatura, "assinatura_top": assinatura_top,
         "handle": handle or DEFAULT_HANDLE, "handle_y": handle_y,
         "handle_font": handle_font,
+        "afiliado": afiliado["text"], "afiliado_box": afiliado["box"],
+        "afiliado_dims": afiliado,
         "mascote": (largura / 2, mascote_top + mascote_d / 2, mascote_d),
         "cta_font": cta_font, "cta_bbox": cta_bbox,
         "cta_size": ((cta_bbox[2] - cta_bbox[0]) + 2 * 44, cta_h),
@@ -1696,7 +1865,7 @@ def carrossel_plan(posts: list[Post], titulo: str, subtitulo: str,
                for i, post in enumerate(escolhidos, start=1)]
     slides.append({k: v for k, v in fecho.items()
                    if k not in ("assinatura_dims", "cta_font", "cta_bbox",
-                                "handle_font")})
+                                "handle_font", "afiliado_dims")})
     return slides
 
 
@@ -1725,6 +1894,7 @@ def _render_capa(titulo: str, subtitulo: str, handle: str | None) -> bytes:
     _draw_mascote_em_disco(canvas, draw, *plan["mascote"])
     _draw_bloco_centralizado(draw, largura, plan["titulo_top"], plan["titulo_dims"], TEXT)
     _draw_bloco_centralizado(draw, largura, plan["sub_top"], plan["sub_dims"], MUTED)
+    _draw_afiliado_chip(draw, plan["afiliado_dims"])
     _draw_centered(draw, largura, plan["handle_y"], plan["handle"].upper(),
                    _font("mono", 30, 500), GOLD)
     buffer = io.BytesIO()
@@ -1752,20 +1922,33 @@ def _render_fecho(handle: str | None) -> bytes:
     bbox = plan["cta_bbox"]
     draw.text((x0 + 44 - bbox[0], y0 + 26 - bbox[1]), CTA_CARROSSEL,
               font=plan["cta_font"], fill=INK)
+    _draw_afiliado_chip(draw, plan["afiliado_dims"])
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
     return buffer.getvalue()
+
+
+def _contador_box(draw: ImageDraw.ImageDraw, largura: int, indice: int,
+                  total: int) -> tuple[float, float, float, float]:
+    """A caixa do contador no canto superior direito do slide.
+
+    Existe à parte do desenho desde a fase 5U: o chip de sinalização de
+    afiliado mora na MESMA faixa, e "não encostam" é coisa que se afirma por
+    teste, não por leitura de dois literais em funções diferentes."""
+    bbox = draw.textbbox((0, 0), f"{indice}/{total}", font=_font("mono", 26, 500))
+    w = (bbox[2] - bbox[0]) + 2 * 20
+    h = (bbox[3] - bbox[1]) + 2 * 14
+    x0 = largura - FEED_PAD - w
+    y0 = 64 + (62 - h) / 2                     # centrado no avatar do cabeçalho
+    return x0, y0, x0 + w, y0 + h
 
 
 def _draw_contador(draw: ImageDraw.ImageDraw, largura: int, indice: int, total: int) -> None:
     texto = f"{indice}/{total}"
     font = _font("mono", 26, 500)
     bbox = draw.textbbox((0, 0), texto, font=font)
-    w = (bbox[2] - bbox[0]) + 2 * 20
-    h = (bbox[3] - bbox[1]) + 2 * 14
-    x0 = largura - FEED_PAD - w
-    y0 = 64 + (62 - h) / 2                     # centrado no avatar do cabeçalho
-    draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=h / 2,
+    x0, y0, x1, y1 = _contador_box(draw, largura, indice, total)
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=(y1 - y0) / 2,
                            fill=SURFACE, outline=PILL_BORDER, width=2)
     draw.text((x0 + 20 - bbox[0], y0 + 14 - bbox[1]), texto, font=font, fill=MUTED)
 
@@ -1781,8 +1964,8 @@ def _render_slide_oferta(post: Post, product: Image.Image, indice: int, total: i
     width, height = CARROSSEL_SIZE
     canvas = _glow_background(width, height, 540, 81, 594, 338)
     draw = ImageDraw.Draw(canvas)
-    plan = _feed_plan(draw, post.offer, post.verdict, handle)
-    _draw_header_feed(draw, canvas, FEED_PAD, 64, 62, brand_name, handle)
+    plan = _feed_plan(draw, post.offer, post.verdict, handle, brand_name)
+    _draw_header_feed(draw, canvas, *FEED_HEADER[:3], brand_name, handle)
     _draw_contador(draw, width, indice, total)
     _draw_card(canvas, draw, product, 64, 158, 952, 600, 26, 20,
                plan["badge_pct"], 42, 12, 20, 26)
@@ -1792,6 +1975,74 @@ def _render_slide_oferta(post: Post, product: Image.Image, indice: int, total: i
     buffer = io.BytesIO()
     canvas.save(buffer, "PNG")
     return buffer.getvalue()
+
+
+# Fase 5W — o slide de TEXTO, do carrossel temático. Ele não tem produto, não
+# tem preço e não tem foto: é a tese e o corpo, centrados no mesmo miolo em que
+# o slide de oferta põe o card.
+#
+# O título vai em DOURADO e o corpo em texto normal — a mesma hierarquia do
+# resto do design system, onde o dourado é sempre o que se quer que seja lido
+# primeiro (a pill de preço, o botão do rodapé, o handle da capa).
+TEMA_TITULO_SIZE = 66
+TEMA_CORPO_SIZE = 40
+TEMA_RESPIRO = 44          # entre o título e o corpo
+
+
+def _render_slide_tema(titulo: str, corpo: str, indice: int, total: int,
+                       handle: str | None, brand_name: str) -> bytes:
+    largura, altura = CARROSSEL_SIZE
+    canvas = _glow_background(largura, altura, 540, 81, 594, 338)
+    draw = ImageDraw.Draw(canvas)
+    _draw_header_feed(draw, canvas, *FEED_HEADER[:3], brand_name, handle)
+    _draw_contador(draw, largura, indice, total)
+    disponivel = largura - 2 * FEED_PAD
+    # Os máximos de linha são os mesmos que `afiliado.temas` valida ao carregar
+    # — quem passar disso é reprovado ANTES de chegar aqui, porque `_wrap_title`
+    # corta em silêncio e um slide truncado é a peça mentindo sobre si mesma.
+    t_dims = _texto_dims(draw, titulo, TEMA_TITULO_SIZE, disponivel,
+                         temas.TITULO_MAX_LINHAS, 800, 1.08)
+    c_dims = _texto_dims(draw, corpo, TEMA_CORPO_SIZE, disponivel,
+                         temas.CORPO_MAX_LINHAS, 500, 1.38)
+    topo_t, topo_c = _centro_do_bloco([t_dims["height"], c_dims["height"]],
+                                      [TEMA_RESPIRO])
+    _draw_bloco_centralizado(draw, largura, topo_t, t_dims, GOLD)
+    _draw_bloco_centralizado(draw, largura, topo_c, c_dims, TEXT)
+    _draw_feed_footer_tema(draw, largura, handle)
+    buffer = io.BytesIO()
+    canvas.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _draw_feed_footer_tema(draw: ImageDraw.ImageDraw, largura: int,
+                           handle: str | None) -> None:
+    """O rodapé do slide temático: só a assinatura e o handle.
+
+    O slide de oferta fecha com "LINK NA SHOPEE" porque ele TEM um destino;
+    este não tem — mandar para a loja num slide que fala de método seria a peça
+    prometendo o que ela não entrega. Quem tem o destino é o fecho do álbum.
+    """
+    y = CARROSSEL_SIZE[1] - 132
+    _draw_centered(draw, largura, y, ASSINATURA, _font("sans", 34, 700), TEXT)
+    _draw_centered(draw, largura, y + 52, (handle or DEFAULT_HANDLE).upper(),
+                   _font("mono", 26, 500), MUTED)
+
+
+def render_carrossel_tema(tema, handle: str | None = None,
+                          brand_name: str = DEFAULT_BRAND_NAME) -> list[bytes]:
+    """Os PNGs do carrossel TEMÁTICO: capa, um slide de texto por tese, fecho.
+
+    Reusa a capa e o fecho do carrossel de ofertas sem uma linha nova — o que
+    muda é o miolo. É de propósito: o álbum temático tem de parecer o mesmo
+    perfil, e não uma segunda marca.
+    """
+    total = len(tema.slides) + 2
+    imagens = [_render_capa(tema.titulo, tema.subtitulo, handle)]
+    for i, slide in enumerate(tema.slides, start=2):
+        imagens.append(_render_slide_tema(slide.titulo, slide.corpo, i, total,
+                                          handle, brand_name))
+    imagens.append(_render_fecho(handle))
+    return imagens
 
 
 def render_carrossel(fotos: list[tuple[Post, Image.Image]], titulo: str, subtitulo: str,
@@ -1847,47 +2098,65 @@ def render_carrossel(fotos: list[tuple[Post, Image.Image]], titulo: str, subtitu
 
 REEL_SIZE = STORY_SIZE          # 9:16 sem redimensionar nada
 REEL_FPS = 24
-REEL_DURACAO_S = 8.0            # a aba Reels aceita de 5 a 90 s
+# A duração do clipe é um PISO, não um número fixo: quando há narração, quem
+# manda é a fala (ver `duracao_do_clipe`). A aba Reels aceita de 5 a 90 s.
+#
+# 8 s é o piso porque o watch time MEDIDO de Reel é 8,5 s (Metricool, 24,3 M de
+# posts) e o sinal de ranqueamento que Mosseri nomeou é completion: uma peça
+# que cabe dentro da atenção média é assistida inteira e ainda entra em loop.
+# O teto de 15 s existe para a fala nunca esticar o clipe até a faixa em que a
+# conclusão despenca — se um roteiro passar disso, o defeito é do ROTEIRO.
+REEL_DURACAO_S = 8.0
+REEL_DURACAO_MAX_S = 15.0
+# O silêncio DEPOIS da última palavra. Sem ele o clipe termina junto com a voz,
+# e o corte em cima da sílaba final lê como arquivo truncado.
+REEL_RESPIRO_DEPOIS_S = 1.0
 # Zoom da foto do produto, do primeiro ao último frame. 8% em 8 s é lento o
 # bastante para não parecer efeito e vivo o bastante para o clipe não parecer
 # uma imagem parada — que é o que a aba despreza.
 REEL_ZOOM = 1.08
-# Subida do título enquanto ele aparece (px). Fade puro lê como "faltou
-# carregar"; fade + um empurrãozinho para cima lê como entrada.
-REEL_TITULO_SUBIDA = 12
-REEL_PILL_ESCALA = 0.9          # a pill de preço cresce de 0,9 até 1,0
 
-# (início, duração) de cada entrada, em SEGUNDOS. A ordem é a da leitura — o
-# título diz o QUE é, o preço diz QUANTO, a meta e o selo dizem por que
-# acreditar. Tudo assenta em ~2,3 s: o resto do clipe é a peça inteira parada
-# com o zoom correndo, que é o que faz o loop não ter costura.
-REEL_ENTRADAS = {
-    "titulo": (0.10, 0.70),
-    "preco": (0.70, 0.70),
-    "meta": (1.30, 0.50),
-    "selo": (1.70, 0.60),
-}
+# A ÊNFASE, que em 2026-08-31 substituiu a ENTRADA.
+#
+# Até aqui o Reel MONTAVA a peça na frente de quem assiste: no frame zero havia
+# só o fundo, o cabeçalho e a foto, e o PREÇO — o único motivo pelo qual alguém
+# pararia — só terminava de aparecer em 1,4 s. Gastávamos a fração mais cara do
+# vídeo carregando.
+#
+# O que mudou lá fora: em abril/2026 o Instagram trocou `view rate` por
+# **`skip rate`** — quantos saem nos 3 PRIMEIROS SEGUNDOS — e em janeiro/2026
+# Mosseri nomeou watch time + completion como o sinal de ranqueamento principal
+# dos Reels. Um frame zero sem preço joga o gancho fora por construção.
+# (docs/superpowers/reviews/2026-08-31-reels-e-carrossel.md, §1 e §4.)
+#
+# Agora a peça está INTEIRA desde o frame zero — ela É a arte de story, parada,
+# desde o primeiro instante — e o movimento virou ênfase: o zoom da foto, que
+# já existia e corre o clipe todo, mais um pulso na pill de preço que **nunca a
+# esconde**, só traz o olho de volta a ela.
+#
+# O pulso é DECISÃO SOB INCERTEZA e está marcado como tal: não há evidência de
+# que ele ajude (tudo que se publica sobre "hook" é blog sem amostra). O que
+# tem evidência é a peça estar inteira desde o começo. `REEL_PULSO_ESCALA = 1.0`
+# desliga o pulso sem tocar em mais nada, e a peça continua correta.
+REEL_PULSO_INICIO = 0.50       # s — depois de o olho já ter pousado na peça
+REEL_PULSO_DURACAO = 0.60      # s
+REEL_PULSO_ESCALA = 1.05       # o pico do pulso; 1.0 desliga
 
-# Folga em volta da faixa redesenhada de cada elemento: o antialias de uma
-# letra sangra um pixel para fora da caixa medida.
-REEL_FOLGA = 6
 
+def _pulso(t: float) -> float:
+    """A escala da pill de preço no instante `t`.
 
-def _ease_out(t: float) -> float:
-    """Cúbica de saída: entra rápido e assenta. Movimento linear lê como
-    máquina; movimento que desacelera lê como peso."""
-    t = min(1.0, max(0.0, t))
-    return 1 - (1 - t) ** 3
-
-
-def _entrada(t: float, chave: str) -> float:
-    """Quanto do elemento `chave` já entrou no instante `t` (0 a 1)."""
-    inicio, duracao = REEL_ENTRADAS[chave]
-    if t < inicio:
-        return 0.0
-    if duracao <= 0:
+    Vale 1,0 fora da janela do pulso, sobe até `REEL_PULSO_ESCALA` no meio dela
+    e volta. Meia onda de seno, e não uma rampa: ela começa e termina em 1,0
+    **com derivada zero**, então não há solavanco na entrada nem na saída — o
+    pulso lê como respiração, não como salto.
+    """
+    if REEL_PULSO_ESCALA <= 1.0 or REEL_PULSO_DURACAO <= 0:
         return 1.0
-    return _ease_out((t - inicio) / duracao)
+    p = (t - REEL_PULSO_INICIO) / REEL_PULSO_DURACAO
+    if not 0.0 < p < 1.0:
+        return 1.0
+    return 1.0 + (REEL_PULSO_ESCALA - 1.0) * math.sin(math.pi * p)
 
 
 def _produto_com_zoom(ajustado: Image.Image, escala: float) -> Image.Image:
@@ -1937,18 +2206,6 @@ def _corpo_do_reel(width: int, plan: dict) -> _Corpo:
     return _Corpo(1050, preco_xy, meta_xy, selo_xy)
 
 
-def _faixa(canvas: Image.Image, topo: float, base: float) -> tuple[Image.Image, int]:
-    """A faixa horizontal do frame entre `topo` e `base`, com folga."""
-    y0 = max(0, int(topo) - REEL_FOLGA)
-    y1 = min(canvas.height, int(base) + REEL_FOLGA)
-    return canvas.crop((0, y0, canvas.width, y1)), y0
-
-
-def _mistura(canvas: Image.Image, faixa: Image.Image, pintada: Image.Image,
-             y0: int, alfa: float) -> None:
-    canvas.paste(Image.blend(faixa, pintada, alfa), (0, y0))
-
-
 def _pill_em_escala(pintada: Image.Image, price: dict, x: float, y: float,
                     escala: float, radius: int = 16) -> None:
     """A pill de preço desenhada e depois AMPLIADA a partir do centro.
@@ -1971,59 +2228,26 @@ def _pill_em_escala(pintada: Image.Image, price: dict, x: float, y: float,
                   silhueta.resize((largura, altura), Image.BICUBIC))
 
 
-def _desenha_corpo_animado(canvas: Image.Image, draw: ImageDraw.ImageDraw, t: float,
-                           width: int, offer: Offer, plan: dict, corpo: _Corpo) -> None:
-    """Título, preço, meta e selo no instante `t`.
+def _desenha_corpo(draw: ImageDraw.ImageDraw, width: int, offer: Offer,
+                   plan: dict, corpo: _Corpo, com_pill: bool = True) -> None:
+    """Título, preço, prova social e selo — a peça inteira, pelas MESMAS funções
+    do story. Não existe versão "de vídeo" de nenhum elemento: o frame parado do
+    Reel é a arte de story, e é isso que o teste de igualdade prova.
 
-    Elemento que já chegou (`p >= 1`) é desenhado DIRETO, pelas funções do
-    story: é isso que faz o frame parado ser a arte de story, e não uma
-    aproximação dela.
+    `com_pill=False` desenha tudo menos a pill, para o pulso ter um fundo limpo
+    onde redesenhá-la em escala.
     """
     title, price, meta, selo = plan["title"], plan["price"], plan["meta"], plan["selo"]
-
-    p = _entrada(t, "titulo")
-    if p >= 1:
-        _draw_title(draw, width, corpo.titulo_y, title)
-    elif p > 0:
-        subida = REEL_TITULO_SUBIDA * (1 - p)
-        faixa, y0 = _faixa(canvas, corpo.titulo_y - REEL_TITULO_SUBIDA,
-                           corpo.titulo_y + title["height"])
-        pintada = faixa.copy()
-        _draw_title(ImageDraw.Draw(pintada), width, corpo.titulo_y + subida - y0, title)
-        _mistura(canvas, faixa, pintada, y0, p)
-
-    px, py = corpo.preco
-    p = _entrada(t, "preco")
-    if p >= 1:
+    _draw_title(draw, width, corpo.titulo_y, title)
+    if com_pill:
+        px, py = corpo.preco
         _draw_price_pill(draw, px, py, price)
-    elif p > 0:
-        escala = REEL_PILL_ESCALA + (1 - REEL_PILL_ESCALA) * p
-        faixa, y0 = _faixa(canvas, py, py + price["height"])
-        pintada = faixa.copy()
-        _pill_em_escala(pintada, price, px, py - y0, escala)
-        _mistura(canvas, faixa, pintada, y0, p)
-
     if meta is not None and corpo.meta is not None:
         mx, my = corpo.meta
-        p = _entrada(t, "meta")
-        if p >= 1:
-            _draw_meta(draw, mx, my, offer, meta["font"], MUTED)
-        elif p > 0:
-            faixa, y0 = _faixa(canvas, my, my + meta["height"])
-            pintada = faixa.copy()
-            _draw_meta(ImageDraw.Draw(pintada), mx, my - y0, offer, meta["font"], MUTED)
-            _mistura(canvas, faixa, pintada, y0, p)
-
+        _draw_meta(draw, mx, my, offer, meta["font"], MUTED)
     if selo is not None and corpo.selo is not None:
         sx, sy = corpo.selo
-        p = _entrada(t, "selo")
-        if p >= 1:
-            _draw_selo(draw, sx, sy, selo)
-        elif p > 0:
-            faixa, y0 = _faixa(canvas, sy, sy + selo["height"])
-            pintada = faixa.copy()
-            _draw_selo(ImageDraw.Draw(pintada), sx, sy - y0, selo)
-            _mistura(canvas, faixa, pintada, y0, p)
+        _draw_selo(draw, sx, sy, selo)
 
 
 def reel_plan(offer: Offer, verdict: Verdict, handle: str | None = None,
@@ -2054,51 +2278,85 @@ def reel_frames(offer: Offer, verdict: Verdict, client: httpx.Client | None = No
 
     base = _story_canvas()
     draw_base = ImageDraw.Draw(base)
-    plan = _story_plan(draw_base, offer, verdict, handle)
-    _draw_header_story(draw_base, base, 72, 120, 68, brand_name)
+    plan = _story_plan(draw_base, offer, verdict, handle, brand_name=brand_name)
+    _draw_header_story(draw_base, base, *STORY_HEADER[:3], brand_name)
     _draw_story_footer(draw_base, width, handle, plan["footer"])
 
     corpo = _corpo_do_reel(width, plan)
     _, _, card_w, card_h = STORY_CARD_BOX
     ajustado = _fit_card(product, card_w - 2 * 24, card_h - 2 * 24)
 
-    # Depois de `assentado` a peça não muda mais: é a arte de story parada, com
-    # o zoom correndo. Pintar o corpo UMA vez para esses ~3/4 dos frames tira
-    # seis desenhos de texto de cada um deles — e o card, que é o que ainda se
-    # mexe, não encosta no corpo (ele termina em y=1014; o título começa em
-    # 1050), então a ordem "corpo antes do card" não muda um pixel.
-    assentado = max(inicio + duracao for inicio, duracao in REEL_ENTRADAS.values())
-    pronto = base.copy()
-    _desenha_corpo_animado(pronto, ImageDraw.Draw(pronto), assentado, width, offer,
-                           plan, corpo)
+    # As duas telas prontas, pintadas UMA vez. O corpo é o passo caro (seis
+    # desenhos de texto), e ele é idêntico em todos os frames: o que se mexe é
+    # a foto (zoom) e a pill (pulso), e nem uma nem outra encosta no resto — o
+    # card termina em y=1014 e o título começa em 1050.
+    #
+    # `sem_pill` existe para o pulso ter fundo limpo onde redesenhar a pill em
+    # escala; `pronto` é a peça completa, que serve todos os frames fora da
+    # janela do pulso.
+    sem_pill = base.copy()
+    _desenha_corpo(ImageDraw.Draw(sem_pill), width, offer, plan, corpo, com_pill=False)
+    pronto = sem_pill.copy()
+    px, py = corpo.preco
+    _draw_price_pill(ImageDraw.Draw(pronto), px, py, plan["price"])
 
     total = max(1, round(fps * duracao_s))
     for i in range(total):
         # O último frame fecha o zoom em REEL_ZOOM; o primeiro abre em 1,00.
         fracao = i / (total - 1) if total > 1 else 1.0
-        t = i / fps
-        entrando = t < assentado
-        canvas = (base if entrando else pronto).copy()
+        escala = _pulso(i / fps)
+        pulsando = escala != 1.0
+        canvas = (sem_pill if pulsando else pronto).copy()
         draw = ImageDraw.Draw(canvas)
         _draw_story_card(canvas, draw,
                          _produto_com_zoom(ajustado, 1 + (REEL_ZOOM - 1) * fracao),
                          plan["badge_pct"])
-        if entrando:
-            _desenha_corpo_animado(canvas, draw, t, width, offer, plan, corpo)
+        if pulsando:
+            _pill_em_escala(canvas, plan["price"], px, py, escala)
         yield canvas
+
+
+def duracao_do_clipe(narracao_wav: bytes | None) -> float:
+    """Quanto o clipe dura: o que a FALA pedir, entre o piso e o teto.
+
+    Sem narração devolve o piso, que é exatamente o que o Reel fazia antes de
+    existir voz. Com narração, a conta é o respiro da frente (que o encode
+    aplica com `adelay`) + a fala + o respiro do fim — e o resultado é preso
+    entre `REEL_DURACAO_S` e `REEL_DURACAO_MAX_S`.
+
+    Esta é a direção que importa: a fala dimensiona a peça, e não o contrário.
+    Espremer a locução num clipe de tamanho fixo é como se corta uma sílaba.
+    """
+    if not narracao_wav:
+        return REEL_DURACAO_S
+    fala = video.duracao_wav(narracao_wav)
+    if fala <= 0:
+        return REEL_DURACAO_S
+    pedido = video.RESPIRO_ANTES_DA_VOZ_S + fala + REEL_RESPIRO_DEPOIS_S
+    return min(REEL_DURACAO_MAX_S, max(REEL_DURACAO_S, pedido))
 
 
 def render_reel(offer: Offer, copy: CopyParts, verdict: Verdict,
                 client: httpx.Client | None = None, handle: str | None = None,
                 brand_name: str = DEFAULT_BRAND_NAME, fps: int = REEL_FPS,
-                duracao_s: float = REEL_DURACAO_S) -> bytes:
-    """Os bytes do `.mp4` do Reel: 1080×1920, H.264, com faixa de som silenciosa.
+                duracao_s: float | None = None,
+                narracao_wav: bytes | None = None) -> bytes:
+    """Os bytes do `.mp4` do Reel: 1080×1920, H.264.
+
+    Com `narracao_wav` a faixa de áudio é a VOZ e o clipe dura o que a fala
+    pedir; sem ela, a faixa silenciosa de sempre e o piso de duração. O WAV
+    chega pronto de fora (`afiliado.narracao`) e não é sintetizado aqui — é o
+    que impede o ciclo de import, e é o que deixa o teste montar a peça com um
+    áudio dublê, sem voz instalada na máquina.
 
     Levanta `video.SemFFmpeg` quando não há ffmpeg nesta máquina — o extra
     `reel` é OPCIONAL, e quem chama transforma isso em canal desarmado com
     aviso, nunca em run derrubado (o molde é o `playwright` da fase 5P).
     """
     del copy  # como no story e no feed: o texto do post é montado à parte
+    if duracao_s is None:
+        duracao_s = duracao_do_clipe(narracao_wav)
     frames = reel_frames(offer, verdict, client=client, handle=handle,
                          brand_name=brand_name, fps=fps, duracao_s=duracao_s)
-    return video.encode_h264((frame.tobytes() for frame in frames), REEL_SIZE, fps)
+    return video.encode_h264((frame.tobytes() for frame in frames), REEL_SIZE, fps,
+                             narracao=narracao_wav)

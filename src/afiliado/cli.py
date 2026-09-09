@@ -10,16 +10,20 @@ from pathlib import Path
 
 import httpx
 
-from afiliado import (categorias, config, creative, flagrante, llm, pipeline, preco_real,
-                      pricing, selection, shopee_checkout, video)
+from afiliado import (categorias, config, creative, flagrante, llm, narracao, painel,
+                      pipeline, preco_real, pricing, selection, shopee_checkout, temas,
+                      video)
 from afiliado.channels import instagram_story_link
 from afiliado.channels.instagram_common import (GRAPH_HOSTS, cota_de_publicacao,
-                                                graph_error)
-from afiliado.channels.instagram_feed import InstagramFeedChannel, sanitiza_titulo
+                                                graph_error, le_seguidores)
+from afiliado.channels.instagram_feed import (InstagramFeedChannel,
+                                             rodape_de_hashtags, sanitiza_titulo)
 from afiliado.channels.instagram_reel import InstagramReelChannel
 from afiliado.channels.instagram_story import InstagramStoryChannel
 from afiliado.channels.instagram_story_link import InstagramStoryLinkChannel
 from afiliado.channels.story_dispatch import StoryDispatchChannel
+from afiliado.channels import x as canal_x
+from afiliado.channels.x import XChannel
 from afiliado.channels.telegram import TelegramChannel, send_photo_bytes, send_text
 from afiliado.errors import SourceError
 from afiliado.models import CopyParts, Post, format_brl
@@ -31,7 +35,7 @@ from afiliado.watchlist import load_watchlist
 
 # --- Fase 5D: a peça de feed -------------------------------------------------
 
-FEED_TIPOS = ("termometro", "flagrante")
+FEED_TIPOS = ("termometro", "flagrante", "tema")
 
 # Onde `--dry-run` grava as artes para o dono olhar antes de publicar.
 PREVIEWS_DIR = Path(".claude/previews")
@@ -100,7 +104,22 @@ TAREFA_STORIES = "FiscalDaPromo-Stories"
 # SILÊNCIO, que é o defeito que esta fase existe para acabar.
 TAREFA_FEED = "FiscalDaPromo-Feed"
 TAREFA_FLAGRANTE = "FiscalDaPromo-Flagrante"
-TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_STORIES, TAREFA_FEED, TAREFA_FLAGRANTE)
+# `TAREFA_STORIES` saiu da lista em 2026-08-30, com o canal `instagram_story_link`
+# que ela servia. Story agora sai pela Graph API, dentro do `afiliado run`.
+# Manter a tarefa na lista faria o doctor pedir uma tarefa que o script REMOVE —
+# um ❌ permanente num sistema saudável, que é a forma mais rápida de ensinar o
+# dono a ignorar o ❌ (o mesmo critério do data feed da 5L).
+# Fase 5V: a leitura diária do painel de observação. Ela não publica nada, mas
+# entra na lista pelo mesmo motivo das outras — se ninguém a chamar, o
+# `price_log` para de ganhar profundidade e a régua nunca sai do zero, EM
+# SILÊNCIO.
+TAREFA_PAINEL = "FiscalDaPromo-Painel"
+# Fase 5W: o carrossel EDITORIAL. Ele divide a vaga diária do
+# `instagram_carrossel` com o termômetro e roda depois dele — hoje, com
+# `price_refs` em 0, o termômetro se cala e a vaga é sempre do tema.
+TAREFA_TEMA = "FiscalDaPromo-Tema"
+TAREFAS_DA_PRODUCAO = (TAREFA_RUN, TAREFA_FEED, TAREFA_FLAGRANTE, TAREFA_PAINEL,
+                       TAREFA_TEMA)
 SCRIPT_DO_AGENDADOR = "deploy/agendar-windows.ps1"
 RUNBOOK_DA_PRODUCAO = "docs/runbooks/producao-windows.md"
 
@@ -140,7 +159,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pfeed.add_argument("--tipo", choices=FEED_TIPOS, default=FEED_TIPOS[0],
                        help="termometro (padrão): carrossel do dia, publicado. "
                             "flagrante: gráfico do 'de' que não se sustenta, "
-                            "despachado ao chat de operações SEM publicar")
+                            "despachado ao chat de operações SEM publicar. "
+                            "tema: carrossel editorial (data/temas.yaml), o "
+                            "único conteúdo inteiramente nosso do feed")
     pfeed.add_argument("--config", default="config.yaml")
     # Fase 5P: exercitar a leitura do preço de checkout À MÃO, com a leitura
     # ainda DESLIGADA no config. É o instrumento da decisão: o dono roda isto,
@@ -154,6 +175,18 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="o preço da API em reais (ex.: 599,00) — obrigatório "
                              "quando o alvo é uma URL; é a ÂNCORA da leitura")
     ppreco.add_argument("--config", default="config.yaml")
+    # Fase 5V: a passada de observação do painel. Comando próprio, UMA vez por
+    # dia — ela não publica nada e não compete com o `run`; o que ela faz é
+    # ler o preço dos mesmos itens todo dia para o `price_log` ganhar
+    # PROFUNDIDADE, que é o que a régua exige e o que a descoberta rotativa,
+    # por construção, nunca ia entregar (ver afiliado.painel).
+    ppainel = sub.add_parser("painel",
+                             help="lê o preço dos itens do painel de observação "
+                                  "(1×/dia; não publica nada)")
+    ppainel.add_argument("--dry-run", action="store_true",
+                         help="consulta a API de verdade e imprime, sem gravar "
+                              "no price_log nem mexer no painel")
+    ppainel.add_argument("--config", default="config.yaml")
     return p
 
 
@@ -215,6 +248,17 @@ AVISO_STORY_OFICIAL_FORA_DO_STORIES = (
     "⚠️ canal instagram_story ligado, mas ignorado por `afiliado stories` — ele é da "
     "Graph API e sai pelo `afiliado run`; montá-lo aqui daria dois tetos diários e "
     "dois dedupes sobre a mesma conta")
+
+# Fase 5U: e o mesmo fato quando ele NÃO é um problema. Com o
+# `instagram_story_link` desligado, `afiliado stories` não tem canal nenhum — o
+# story passou a sair pela Graph API, no `afiliado run`. É o estado DESEJADO, e
+# repetir o ⚠️ de cima todo dia sobre uma troca deliberada é como se ensina o
+# dono a ignorar avisos; o próximo, o de verdade, morre junto.
+AVISO_STORIES_OCIOSO = (
+    "ℹ️ `afiliado stories` não tem canal ligado: o story sai pela Graph API, pelo "
+    "`afiliado run` (fase 5U). A tarefa FiscalDaPromo-Stories fica ociosa de "
+    "propósito — ela volta a servir no dia em que o instagram_story_link for "
+    "religado")
 
 # I3: a regra de ouro deixa de ser conselho. Com os dois canais ligados, o
 # mesmo post saía pela API privada e pela oficial dentro da MESMA iteração do
@@ -438,7 +482,8 @@ def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[
                        "(ou TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID p/ hospedagem) ausente")
         return
     ch = cls(ig_user, ig_token, bot_token, ops, brand_handle=brand_handle,
-             brand_name=brand_name, api=_instagram_api(cfg), art_host_bot_token=art_host)
+             brand_name=brand_name, api=_instagram_api(cfg), art_host_bot_token=art_host,
+             hashtags=cfg.get("hashtags"))
     if max_per_day is not None:
         ch.max_per_day = int(max_per_day)
     channels.append(ch)
@@ -447,6 +492,97 @@ def _monta_instagram(cls, ch_cfg: dict, cfg: dict, channels: list, avisos: list[
         # enviou, e é ela que vai à Meta. Sem um bot secundário, quem
         # viaja é o token do ADMINISTRADOR do canal público.
         _aviso(avisos, ART_HOST_AVISO_TMPL.format(canal=cls.name))
+
+
+# --- Fase 5U (U3): o teto que a AUDIÊNCIA autoriza ----------------------------
+
+# A marca do dia local que guarda o número de seguidores. `user_info` a cada
+# run seriam ~96 chamadas por dia (cadência de 15 min) para um número que muda
+# devagar. Mesma mecânica do desarme do `instagram_story_link` (day_flags):
+# some sozinha na virada do dia local e sobrevive ao fim do processo.
+CHAVE_SEGUIDORES = "instagram_followers"
+
+# A linha do resumo de operações. O teto efetivo E o motivo — sem o motivo o
+# dono lê "3" e não sabe se é config, ritmo ou defeito.
+LINHA_TETO_AUDIENCIA = ("ℹ️ {canal}: teto por audiência: {efetivo} "
+                        "({configurado} configurado) — {seguidores} seguidor(es) "
+                        "÷ {divisor}, piso {piso}")
+# Falha ABERTA, e diz. O silêncio aqui seria o pior resultado: a conta
+# publicando o teto cheio sem ninguém saber que a régua não foi aplicada.
+AVISO_SEM_SEGUIDORES = ("ℹ️ teto por audiência não aplicado: não consegui ler "
+                        "followers_count da Graph API — vale o max_per_day do "
+                        "config (falha aberta, por desenho)")
+
+
+def seguidores_do_dia(ig_user: str, ig_token: str, api: str,
+                      db: StateDB | None) -> int | None:
+    """O `followers_count` da conta, lido UMA vez por dia local e guardado no
+    `state.db`.
+
+    Leitura que não deu certo NÃO é cacheada: cachear o "não sei" prenderia a
+    conta ao `max_per_day` cheio pelo resto do dia por causa de um timeout. O
+    run seguinte tenta de novo.
+    """
+    if db is not None:
+        marca = db.day_flag(CHAVE_SEGUIDORES)
+        if marca.isdigit():
+            return int(marca)
+    numero = le_seguidores(ig_user, ig_token, api)
+    if numero is not None and db is not None:
+        db.set_day_flag(CHAVE_SEGUIDORES, str(numero))
+    return numero
+
+
+def audiencia_do_canal(raw) -> tuple[int, int] | None:
+    """`(piso, divisor)` de `channels.<canal>.audiencia`, ou None quando o
+    canal não tem a régua. Os dois números são obrigatórios juntos: um
+    `divisor` sem `piso` daria um teto de 0 para uma conta nova, que é
+    exatamente o zero silencioso que a fase 5A caçou."""
+    if not isinstance(raw, dict):
+        return None
+    audiencia = raw.get("audiencia")
+    if not isinstance(audiencia, dict):
+        return None
+    piso, divisor = audiencia.get("piso"), audiencia.get("divisor")
+    if piso is None or divisor is None:
+        return None
+    try:
+        return int(piso), int(divisor)
+    except (TypeError, ValueError):
+        return None
+
+
+def _aplica_teto_por_audiencia(cfg: dict, ch_cfg: dict, channels: list,
+                               avisos: list[str], db: StateDB | None) -> None:
+    """Aperta o `max_per_day` dos canais que declaram `audiencia:` no config.
+
+    Um lugar só, depois de todos os canais montados, por dois motivos: a
+    leitura de `followers_count` é UMA por dia para a CONTA inteira (não uma
+    por canal), e o número que ela aperta é sempre o mesmo atributo
+    (`ch.max_per_day`), que o `pacing_budget` do pipeline já lê.
+
+    Nada acontece quando nenhum canal montado tem a régua — e aí nem a Graph
+    API é consultada.
+    """
+    alvos = [(ch, audiencia_do_canal(ch_cfg.get(ch.name))) for ch in channels]
+    alvos = [(ch, regra) for ch, regra in alvos
+             if regra is not None and getattr(ch, "max_per_day", None) is not None]
+    if not alvos:
+        return
+    seguidores = seguidores_do_dia(_env("IG_USER_ID"), _env("IG_ACCESS_TOKEN"),
+                                   _instagram_api(cfg), db)
+    if seguidores is None:
+        _aviso(avisos, AVISO_SEM_SEGUIDORES)
+        return
+    for ch, (piso, divisor) in alvos:
+        configurado = int(ch.max_per_day)
+        efetivo = pipeline.teto_por_audiencia(configurado, seguidores, piso, divisor)
+        if efetivo == configurado:
+            continue
+        ch.max_per_day = efetivo
+        _aviso(avisos, LINHA_TETO_AUDIENCIA.format(
+            canal=ch.name, efetivo=efetivo, configurado=configurado,
+            seguidores=seguidores, divisor=divisor, piso=piso))
 
 
 def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
@@ -472,8 +608,13 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
     if somente is not None:
         # I1: o canal oficial de story é o único do recorte que o dono pode
         # esperar ver aqui — e ele não vem. Dizer isso é diferente de omitir.
+        # Fase 5U: com o canal privado DESLIGADO, o mesmo fato deixa de ser
+        # aviso e vira informação — a troca foi deliberada e este comando ficou
+        # ocioso de propósito.
         if _channel_settings(ch_cfg.get(InstagramStoryChannel.name))[0]:
-            avisos_do_recorte.append(AVISO_STORY_OFICIAL_FORA_DO_STORIES)
+            privado, _ = _channel_settings(ch_cfg.get(InstagramStoryLinkChannel.name))
+            avisos_do_recorte.append(AVISO_STORY_OFICIAL_FORA_DO_STORIES if privado
+                                     else AVISO_STORIES_OCIOSO)
         ch_cfg = {k: v for k, v in ch_cfg.items() if k in somente}
     brand_cfg = cfg.get("brand") or {}
     brand_handle = brand_cfg.get("handle") or None
@@ -521,10 +662,32 @@ def _build_channels(cfg: dict, somente: tuple[str, ...] | None = None,
         _monta_instagram(cls, ch_cfg, cfg, channels, avisos,
                          brand_handle=brand_handle, brand_name=brand_name)
 
+    # Fase 5Y: o X. Ele NÃO leva link — o destino é o link da BIO —, então não
+    # precisa de nada além do par de chaves OAuth 1.0a. Ver `channels/x.py`:
+    # post com URL custa 13× mais e perde alcance, e é por isso que este canal
+    # é o único que publica só texto.
+    enabled, max_per_day = _channel_settings(ch_cfg.get(XChannel.name))
+    if enabled:
+        chaves = [_env(k) for k in ("X_API_KEY", "X_API_SECRET",
+                                    "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET")]
+        if all(chaves):
+            ch = XChannel(*chaves)
+            if max_per_day is not None:
+                ch.max_per_day = int(max_per_day)
+            channels.append(ch)
+        else:
+            _aviso(avisos, "⚠️ canal x ignorado: falta X_API_KEY/X_API_SECRET/"
+                           "X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET (ver "
+                           "docs/runbooks/x-setup.md)")
+
     # Fase 5F: o story COM figurinha de link, pela API privada. Último de
     # propósito — é o canal de maior risco e o único que não roda em toda parte.
     _monta_story_link(ch_cfg, cfg, channels, avisos, brand_handle=brand_handle,
                       brand_name=brand_name, api_privada=api_privada, db=db)
+
+    # Fase 5U: por último, com todos montados — o teto por audiência é da
+    # CONTA, e a leitura que o sustenta é uma por dia, não uma por canal.
+    _aplica_teto_por_audiencia(cfg, ch_cfg, channels, avisos, db)
 
     return channels, avisos
 
@@ -635,6 +798,24 @@ def _doctor_agendador(consulta=None) -> bool:
     return ok
 
 
+# A pergunta que o doctor faz ao Claude CLI — e a resposta EXATA que prova que
+# ele está vivo, autenticado e devolvendo JSON.
+#
+# Ela já foi `Responda APENAS com JSON: {"ok": true}`, e isso era um FALSO ❌,
+# medido em 2026-08-30: o CLI respondia (returncode 0, sem stderr) RECUSANDO o
+# pedido — "That's a prompt injection technique" —, `parse_json_block` não
+# achava JSON nenhum e o doctor acusava um CLI que estava perfeito. Um comando
+# que manda "responda APENAS com X" tem a FORMA de uma injeção, e o modelo é
+# treinado para não obedecer a essa forma.
+#
+# A troca é por uma PERGUNTA de verdade, cuja resposta ele sabe, com o formato
+# pedido como formato e não como ordem de bypass. Ela continua provando as três
+# coisas: chegou ao modelo, ele respondeu, e respondeu em JSON válido.
+PERGUNTA_DO_DOCTOR = ('Quantos lados tem um triângulo? '
+                      'Responda no formato JSON {"lados": <número>}.')
+RESPOSTA_DO_DOCTOR = {"lados": 3}
+
+
 def doctor(cfg: dict) -> int:
     ok = True
     try:
@@ -709,9 +890,8 @@ def doctor(cfg: dict) -> int:
     else:
         ok = False
         print("❌ Telegram: TELEGRAM_BOT_TOKEN/TELEGRAM_OPS_CHAT_ID ausentes")
-    resp = llm.ask_json('Responda APENAS com JSON: {"ok": true}',
-                        model=cfg["llm"]["model"])
-    if resp == {"ok": True}:
+    resp = llm.ask_json(PERGUNTA_DO_DOCTOR, model=cfg["llm"]["model"])
+    if resp == RESPOSTA_DO_DOCTOR:
         print("✅ Claude CLI: respondendo")
     else:
         ok = False
@@ -764,6 +944,9 @@ def doctor(cfg: dict) -> int:
         ok = False
 
     _doctor_preco_checkout(cfg, _watchlist(cfg))
+    _doctor_painel(cfg)
+    ok = _doctor_temas(cfg) and ok
+    ok = _doctor_x(cfg) and ok
 
     # Por último de propósito: é o item que responde "quem me chama?", e ele
     # fala do MUNDO (o agendador), não das credenciais.
@@ -807,6 +990,90 @@ def _doctor_preco_real(cfg: dict) -> bool:
           f"(channel={opcoes['browser_channel'] or 'chromium empacotado'}, "
           f"teto={opcoes['timeout_s']:.0f}s, desarma em {opcoes['max_falhas']} "
           "falhas seguidas)")
+    return True
+
+
+def _doctor_x(cfg: dict) -> bool:
+    """Fase 5Y: o canal do X — credencial presente, e o CUSTO do mês.
+
+    Este é o único canal do projeto que cobra POR POST, então o item não diz só
+    "ligado": diz quanto `max_per_day` custa por mês. Um teto que dobra sem
+    ninguém fazer a conta é uma fatura que dobra.
+
+    Nunca ecoa chave nenhuma — presença, como todo o resto do doctor.
+    """
+    enabled, max_per_day = _channel_settings((cfg.get("channels") or {}).get(XChannel.name))
+    teto = int(max_per_day or 0)
+    mes = teto * 30 * canal_x.CUSTO_SEM_LINK_USD
+    com_link = teto * 30 * canal_x.CUSTO_COM_LINK_USD
+    if not enabled:
+        print(f"ℹ️ x: desligado — ligaria a US$ {mes:.2f}/mês com {teto} post(s)/dia "
+              f"(ver docs/runbooks/x-setup.md)")
+        return True
+    faltam = [k for k in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN",
+                          "X_ACCESS_TOKEN_SECRET") if not _env(k)]
+    if faltam:
+        print(f"❌ x: ligado e sem credencial — falta {', '.join(faltam)} "
+              f"(ver docs/runbooks/x-setup.md)")
+        return False
+    print(f"✅ x: {teto} post(s)/dia · ~US$ {mes:.2f}/mês · texto puro, sem URL "
+          f"(com link seriam US$ {com_link:.2f})")
+    return True
+
+
+def _doctor_temas(cfg: dict) -> bool:
+    """Fase 5W/5X: o acervo do carrossel editorial cobre o descanso?
+
+    Um tema descansa `DIAS_DE_DESCANSO` dias depois de sair, então o acervo
+    precisa de pelo menos esse tanto de temas para o carrossel sair todo dia.
+    Abaixo disso ele fica CALADO na diferença — que é o certo (silêncio é
+    melhor que repetição), mas o dono tem de saber o tamanho do buraco em vez
+    de descobrir pelo feed vazio.
+    """
+    try:
+        acervo = temas.carrega((cfg.get("temas") or {}).get("path", temas.CAMINHO))
+    except SourceError as exc:
+        # Erro de REDAÇÃO no arquivo de conteúdo é vermelho: nenhum carrossel
+        # temático sai enquanto ele existir.
+        print(f"❌ temas: {exc}")
+        return False
+    cobre = temas.cobertura(acervo)
+    if cobre >= temas.DIAS_DE_DESCANSO:
+        print(f"✅ temas: {len(acervo)} no acervo · cobre os "
+              f"{temas.DIAS_DE_DESCANSO} dias de descanso")
+        return True
+    print(f"⚠️ temas: {len(acervo)} no acervo · cobre {cobre} de "
+          f"{temas.DIAS_DE_DESCANSO} dias — o carrossel fica calado nos outros "
+          f"{temas.DIAS_DE_DESCANSO - cobre}; escreva mais em {temas.CAMINHO}")
+    return True
+
+
+def _doctor_painel(cfg: dict) -> bool:
+    """Fase 5V: o painel de observação está enchendo? SEM rede — só o banco.
+
+    Ele NUNCA fica vermelho, e é decisão: um painel novo tem 0 itens prontos
+    por construção, e ficar 14 dias com ❌ é a forma mais rápida de ensinar o
+    dono a ignorar o ❌ que importa. O que ele faz é DIZER O NÚMERO — e quem
+    olha vê se ele anda de um dia para o outro.
+    """
+    conf = painel.config_de(cfg)
+    if not conf.get("enabled", True):
+        print("ℹ️ painel: desligado no config — a régua fica dependendo do JoomPulse")
+        return True
+    db = _abre_estado(cfg)
+    try:
+        tamanho, prontos, minimo = painel.progresso(db, cfg)
+    except Exception as exc:      # noqa: BLE001 - um item de diagnóstico não derruba o doctor
+        print(f"⚠️ painel: não consegui ler o estado ({exc})")
+        return True
+    finally:
+        db.close()
+    if not tamanho:
+        print(f"⚠️ painel: vazio — rode `afiliado painel` (ou espere a tarefa "
+              f"{TAREFA_PAINEL}); sem ele a régua não sai do zero")
+        return True
+    print(f"✅ painel: {tamanho} item(ns) observados · {prontos} com os {minimo} "
+          f"dias que a régua exige para o modo A")
     return True
 
 
@@ -1053,16 +1320,23 @@ def _preview_do_reel(cfg: dict, avisos: list[str]):
             with _cliente_http() as client:
                 mp4 = creative.render_reel(post.offer, post.copy, post.verdict,
                                            client=client, handle=handle,
-                                           brand_name=nome_da_marca)
+                                           brand_name=nome_da_marca,
+                                           narracao_wav=narracao.narra(post.offer,
+                                                                       post.verdict))
         except Exception as exc:      # noqa: BLE001 - preview NUNCA derruba o dry-run
             print(f"⚠️ preview do Reel: {exc}")
             return
         caminho = _grava_preview(PREVIEW_DO_REEL, mp4)
         feitos.append(caminho)
         largura, altura = creative.REEL_SIZE
+        # A duração é MEDIDA no arquivo, não copiada da constante: desde que a
+        # narração dimensiona o clipe, `REEL_DURACAO_S` é só o piso — imprimir
+        # a constante diria "8 s" num arquivo de 9,5 s.
+        segundos = video.duracao_mp4(mp4)
+        som = "com narração" if narracao.voz_disponivel() else "MUDO (sem voz nesta máquina)"
         print(f"🎬 preview do Reel: {caminho} "
               f"({len(mp4) / 1024 / 1024:.2f} MB · {largura}x{altura} · "
-              f"{creative.REEL_DURACAO_S:.0f} s · {creative.REEL_FPS} fps · H.264)")
+              f"{segundos:.1f} s · {creative.REEL_FPS} fps · H.264 · {som})")
 
     return preview
 
@@ -1202,7 +1476,8 @@ def capa_do_termometro(posts: list[Post]) -> tuple[str, str]:
     return titulo, SUBTITULO_TERMOMETRO
 
 
-def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
+def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str,
+                        hashtags: dict | None = None) -> str:
     """A legenda do álbum — página de busca, não pedido de curtida.
 
     Um item por linha com o nome COMPLETO e o preço, as categorias por nome, e
@@ -1213,8 +1488,14 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
     O preço sai por `pricing.preco_publicado`, que carrega o "sem cupom" dos
     itens da Shopee quando o rótulo está ligado (fase 5K; desligado desde a
     5N): cada slide é a arte de feed, e ela desenha o rótulo na pill — a
-    legenda não pode discordar do álbum que acompanha, nos dois estados."""
-    linhas = [titulo, subtitulo, ""]
+    legenda não pode discordar do álbum que acompanha, nos dois estados.
+
+    Fase 5U: a sinalização de afiliado (`creative.AFILIADO`) abre a legenda,
+    pelo mesmo motivo do feed — o "mais" do Instagram esconde tudo depois de
+    ~125 caracteres, e a identificação tem de ser visível na primeira
+    visualização."""
+    linhas = ([creative.AFILIADO] if creative.AFILIADO else []) \
+             + [titulo, subtitulo, ""]
     for i, post in enumerate(posts, start=1):
         offer = post.offer
         nome = sanitiza_titulo(offer.title)
@@ -1229,7 +1510,119 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str) -> str:
     if janelas:
         linhas.append(f"Preço verificado nos últimos {min(janelas)} dias.")
     linhas.append(creative.ASSINATURA)
-    return "\n".join(linhas)
+    # Fase 5U: as hashtags das categorias de TODAS as ofertas do álbum, sem
+    # repetir e com o mesmo teto — é uma legenda só, não seis.
+    return "\n".join(linhas) + rodape_de_hashtags(
+        hashtags, [p.offer.category for p in posts])
+
+
+def _feed_tema(cfg: dict, args, db: StateDB) -> int:
+    """Fase 5W — o carrossel TEMÁTICO.
+
+    Ele divide o teto e o ritmo do `instagram_carrossel` com o termômetro, de
+    propósito: são o mesmo espaço no feed, e dois álbuns no mesmo dia é o
+    dobro do que o canal se propõe a publicar. Quem sair primeiro no dia gasta
+    a vaga — e como o termômetro hoje não sai (sem régua, ele não tem o que
+    mostrar), na prática a vaga é do tema.
+    """
+    avisos: list[str] = []
+    canal = None
+    if not args.dry_run:
+        pode, motivo = _carrossel_pode_sair(cfg, db)
+        if not pode:
+            print(f"ℹ️ carrossel temático não sai agora — {motivo}")
+            return 0
+        canal = _canal_do_carrossel(cfg, avisos)
+        if canal is None:
+            print("❌ carrossel temático: canal do Instagram não montado "
+                  "(ver docs/runbooks/meta-setup.md)")
+            return 1
+
+    try:
+        acervo = temas.carrega((cfg.get("temas") or {}).get("path", temas.CAMINHO))
+    except SourceError as exc:
+        # Erro de REDAÇÃO no arquivo de conteúdo: vermelho, e com o motivo. Se
+        # isto só fosse ao log, o feed pararia sem ninguém notar.
+        print(f"❌ carrossel temático: {exc}")
+        if not args.dry_run:
+            _notifica_ops(cfg, f"❌ Carrossel temático não foi gerado: {exc}")
+        return 1
+    tema = temas.escolhe(acervo, db)
+    if tema is None:
+        # Ou o acervo está vazio, ou TODOS estão descansando. O segundo caso é
+        # o normal com acervo pequeno, e é silêncio de propósito: repetir um
+        # post de método a cada dois dias foi o que o dono chamou de saturado.
+        if not acervo:
+            print(f"ℹ️ carrossel temático: nenhum tema em {temas.CAMINHO}")
+        else:
+            print(f"ℹ️ carrossel temático não sai: os {len(acervo)} tema(s) do "
+                  f"acervo saíram nos últimos {temas.DIAS_DE_DESCANSO} dias. "
+                  f"O acervo cobre {temas.cobertura(acervo)} de "
+                  f"{temas.DIAS_DE_DESCANSO} dias — escreva mais um em "
+                  f"{temas.CAMINHO}.")
+        return 0
+
+    handle, nome_marca = _marca(cfg)
+    imagens = creative.render_carrossel_tema(tema, handle=handle, brand_name=nome_marca)
+    legenda = legenda_do_tema(tema, cfg.get("hashtags"))
+
+    if args.dry_run:
+        caminhos = _grava_previews(f"tema-{tema.slug}", imagens)
+        print(f"--- DRY-RUN: tema '{tema.slug}', {len(imagens)} slides ---")
+        for caminho in caminhos:
+            print(f"  {caminho}")
+        print(f"\n{legenda}\n")
+        for aviso in avisos:
+            print(aviso)
+        return 0
+
+    resultado = canal.publish_carrossel(imagens, legenda)
+    avisos.extend(pipeline.drena_avisos(canal))
+    for aviso in avisos:
+        print(aviso)
+    # Fase 5X: as marcas são gravadas quando a peça PODE estar na conta, e não
+    # só quando a publicação deu certo. `publicado` é o canal dizendo "chamei o
+    # `media_publish` e não sei o que aconteceu" — e nesse estado repetir é o
+    # risco maior. Em 2026-09-02 a conta ganhou CINCO carrosséis idênticos por
+    # gravar só no caminho feliz.
+    if resultado.ok or resultado.publicado:
+        temas.marca_publicado(db, tema)
+        # E ele conta para o teto do canal — é a mesma vaga do termômetro.
+        db.record_peca("tema", tema.slug, CANAL_CARROSSEL, tema.titulo,
+                       resultado.message_id)
+    if not resultado.ok:
+        print(f"❌ carrossel temático não publicado: {resultado.error}")
+        _notifica_ops(cfg, "\n".join(
+            [f"❌ Carrossel temático '{tema.slug}' não publicado: {resultado.error}",
+             *avisos]))
+        return 1
+    print(f"✅ carrossel temático '{tema.slug}' publicado ({resultado.message_id})")
+    _notifica_ops(cfg, "\n".join(
+        [f"✅ Carrossel temático '{tema.slug}' publicado: {tema.titulo}", *avisos]))
+    return 0
+
+
+def legenda_do_tema(tema, hashtags: dict | None = None) -> str:
+    """A legenda do carrossel TEMÁTICO.
+
+    Ela NÃO abre com `creative.AFILIADO`, e isso não é esquecimento. Aquela
+    linha diz "o link direciona para a página do produto na loja" — e neste
+    álbum não há link de produto nenhum: ele não vende nada, não tem oferta e
+    não leva a lugar de compra. Repeti-la aqui seria afirmar uma coisa falsa
+    para cumprir um hábito.
+
+    O corpo repete as teses dos slides em texto: o Instagram é indexado pelo
+    Google desde 10/07/2025, e é este bloco que faz o post responder a quem
+    procurou "como saber se o desconto é falso".
+    """
+    linhas = [tema.titulo, tema.subtitulo, ""]
+    for i, slide in enumerate(tema.slides, start=1):
+        linhas.append(f"{i}. {slide.titulo} — {slide.corpo}")
+    linhas += ["", creative.ASSINATURA]
+    # As hashtags da marca, sem categoria: o álbum não fala de categoria
+    # nenhuma, e etiquetar "Beleza" num post de método seria endereçá-lo para
+    # quem não o procurou.
+    return "\n".join(linhas) + rodape_de_hashtags(hashtags, [])
 
 
 def _notifica_ops(cfg: dict, texto: str) -> None:
@@ -1267,6 +1660,27 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
         print("ℹ️ carrossel: nenhuma oferta sobreviveu à atualização de preço")
         return 0
 
+    # Fase 5W: SEM NENHUMA APROVADA, o termômetro não sai.
+    #
+    # A capa dele nesse estado é "NENHUMA DAS 6 PASSOU" — um álbum que lista
+    # seis produtos, com nome e preço, e termina sem oferta nenhuma. O dono já
+    # tinha dito que a ideia "não está sendo boa", a pesquisa de 2026-08-29
+    # concluiu o mesmo por outro caminho (a peça contradiz a bio, e nomear
+    # reprovada é a exposição que tirou o flagrante do feed), e enquanto
+    # `price_refs` está em 0 esse é o ÚNICO estado possível: 100% das ofertas
+    # caem em modo B.
+    #
+    # A vaga não fica vazia — quem a ocupa é o carrossel TEMÁTICO
+    # (`--tipo tema`), que é conteúdo nosso e não depende de régua. E no dia em
+    # que o painel de observação fechar os 14 dias, o termômetro volta sozinho,
+    # com o que a capa sempre quis dizer: as que PASSARAM.
+    aprovadas = sum(1 for p in posts if p.verdict.mode == "A" or p.verdict.seal)
+    if not aprovadas:
+        print(f"ℹ️ termômetro não sai: nenhuma das {len(posts)} ofertas passou na "
+              f"régua, e a peça \"NENHUMA DAS N PASSOU\" contradiz a bio. "
+              f"Use `afiliado feed --tipo tema`.")
+        return 0
+
     handle, nome_marca = _marca(cfg)
     # As fotos primeiro, a capa e a legenda depois (F4): produto cuja imagem
     # não baixa é pulado, e uma capa que diz "6 OFERTAS" ou uma legenda que
@@ -1276,7 +1690,8 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
             fotos = creative.carrossel_fotos(posts, client, avisos)
             posts = [post for post, _ in fotos]
             titulo, subtitulo = capa_do_termometro(posts)
-            legenda = legenda_do_carrossel(posts, titulo, subtitulo)
+            legenda = legenda_do_carrossel(posts, titulo, subtitulo,
+                                           cfg.get("hashtags"))
             imagens = creative.render_carrossel(fotos, titulo, subtitulo, handle=handle,
                                                 brand_name=nome_marca)
         except SourceError as exc:
@@ -1311,17 +1726,18 @@ def _feed_termometro(cfg: dict, args, db: StateDB) -> int:
     avisos.extend(pipeline.drena_avisos(canal))
     for aviso in avisos:
         print(aviso)
+    # Fase 5X: grava quando a peça PODE estar na conta — ver `_feed_tema`. UMA
+    # linha no canal que conta para o teto (um carrossel é um post) e uma por
+    # oferta no canal de item, para o dedupe não repetir os mesmos produtos.
+    if resultado.ok or resultado.publicado:
+        db.record_post(posts[0], CANAL_CARROSSEL, resultado.message_id)
+        for post in posts:
+            db.record_post(post, CANAL_CARROSSEL_ITEM, resultado.message_id)
     if not resultado.ok:
         print(f"❌ carrossel: publicação falhou — {resultado.error}")
         _notifica_ops(cfg, "\n".join(
             [f"❌ Carrossel do feed falhou: {resultado.error}", *avisos]))
         return 1
-
-    # UMA linha no canal que conta para o teto (um carrossel é um post) e uma
-    # por oferta no canal de item, para o dedupe não repetir os mesmos produtos.
-    db.record_post(posts[0], CANAL_CARROSSEL, resultado.message_id)
-    for post in posts:
-        db.record_post(post, CANAL_CARROSSEL_ITEM, resultado.message_id)
     print(f"✅ carrossel publicado ({resultado.message_id}): {titulo}")
     _notifica_ops(cfg, "\n".join(
         [f"🎠 Carrossel publicado — {titulo}",
@@ -1347,6 +1763,57 @@ def _alvo_no_estoque(db: StateDB, item_id: str):
         if offer.item_id == item_id:
             return offer
     return None
+
+
+def passada_do_painel(cfg: dict, args) -> int:
+    """Fase 5V — a leitura diária do painel de observação.
+
+    Ela NÃO publica nada e não decide nada: lê o preço vivo dos mesmos itens
+    todo dia e grava no `price_log`, para que a régua honesta tenha de onde
+    sair. O motivo inteiro está em `afiliado.painel` — em resumo, a descoberta
+    rotativa mede LARGURA (16.523 itens em 6 dias) e a régua precisa de
+    PROFUNDIDADE (14 dias do mesmo item), que nenhum item tinha.
+
+    Sai com 0 mesmo quando falha item nenhum: uma leitura que não deu é um
+    número no relatório, não um run derrubado. O que faz o comando falhar é o
+    painel não conseguir sequer subir.
+    """
+    conf = painel.config_de(cfg)
+    if not conf.get("enabled", True):
+        print("ℹ️ painel desligado no config (painel.enabled: false) — nada a fazer")
+        return 0
+    db = _abre_estado(cfg)
+    try:
+        # Em dry-run o painel não ganha membro nem perde: a passada é só para
+        # ver o que ela FARIA, e mexer no painel já seria fazer.
+        entraram = 0 if args.dry_run else painel.completa(db, cfg, _watchlist(cfg))
+        saíram = [] if args.dry_run else db.painel_expurgar(painel.FONTE,
+                                                            int(conf["max_falhas"]))
+        if not db.painel(painel.FONTE):
+            if args.dry_run:
+                print("(dry-run) painel vazio — ele só é preenchido fora do dry-run")
+                return 0
+            print("⚠️ painel vazio: não há candidatas no estoque para preenchê-lo — "
+                  "rode um `afiliado run` primeiro")
+            return 0
+        if entraram:
+            print(f"➕ {entraram} item(ns) entraram no painel")
+        if saíram:
+            print(f"➖ {len(saíram)} item(ns) saíram por {conf['max_falhas']} leituras "
+                  f"seguidas falhando (saíram da listagem de afiliados)")
+        lidos, falharam = painel.observa(db, _shopee(db), cfg, dry_run=args.dry_run)
+        tamanho, prontos, minimo = painel.progresso(db, cfg)
+        marca = "(dry-run) " if args.dry_run else ""
+        print(f"{marca}📈 painel: {lidos} preço(s) lido(s), {falharam} falha(s) · "
+              f"{tamanho} item(ns) no painel")
+        print(f"   {prontos} de {tamanho} já têm os {minimo} dias que a régua exige "
+              f"para o modo A")
+        if not prontos:
+            print("   (é o esperado enquanto o painel for novo — a régua não "
+                  "acelera com mais itens, só com mais DIAS)")
+    finally:
+        db.close()
+    return 0
 
 
 def preco_real_a_mao(cfg: dict, args) -> int:
@@ -1579,6 +2046,8 @@ def feed(cfg: dict, args) -> int:
     try:
         if args.tipo == "flagrante":
             return _feed_flagrante(cfg, args, db)
+        if args.tipo == "tema":
+            return _feed_tema(cfg, args, db)
         return _feed_termometro(cfg, args, db)
     finally:
         db.close()
@@ -1651,6 +2120,8 @@ def main(argv: list[str] | None = None) -> int:
         return feed(cfg, args)
     if args.cmd == "preco-real":
         return preco_real_a_mao(cfg, args)
+    if args.cmd == "painel":
+        return passada_do_painel(cfg, args)
 
     # `stories` (fase 5F) é o MESMO run — mesmo ritmo, dedupe, teto diário e
     # resumo de operações — com os canais recortados nos de story. O nome do

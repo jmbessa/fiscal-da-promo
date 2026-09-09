@@ -109,6 +109,18 @@ selection:
   # 100 mais vendidos. tests/test_config.py trava os dois números e o efeito.
   price_max_brl: 150
   dedupe_days: 30
+  # Fase 5X — dedupe por TÍTULO, em dias. O `dedupe_days` acima é por
+  # `(fonte, item_id)` e está certo para o que faz; o que ele não pega é o
+  # MESMO produto anunciado por vendedores diferentes, que tem id diferente.
+  # Medido no `posted` em 2026-09-02: "Boneca Bebê Reborn Unicórnio Menina
+  # Original Realista..." saiu 3 vezes, com 3 ids — e quem lê o canal não vê
+  # três ofertas, vê o mesmo post de novo.
+  #
+  # 7 dias, e não os 30 do id: a chave é ampla de propósito (ela ignora
+  # tamanho, cor e vendedor), então uma janela longa apagaria categorias
+  # inteiras do estoque. Uma semana é o que separa "de novo isso?" de
+  # "aquele produto voltou". 0 desliga o portão.
+  dedupe_titulo_dias: 7
   # Fase 4/5B — régua honesta de preço. O desconto do vendedor (o "de" inflado)
   # deixou de decidir SE publicamos e passa a decidir só O QUE o post alega:
   # o corte de preço aqui é apenas não anunciar item mais caro que o típico.
@@ -146,16 +158,33 @@ selection:
   # loja da fila até o próximo run (pipeline.MAX_FALHAS_SEGUIDAS_POR_FONTE).
   # 0 desliga o teto — não faça isso com o estoque ligado.
   max_descartes_por_run: 50
-  # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
-  # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
-  # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.
+  # FOCO EM UM NICHO SÓ — COZINHA (decisão do dono em 2026-09-08), a partir da
+  # pesquisa JoomPulse de agosto/2026 (último mês fechado nas duas lojas):
+  #
+  #   Shopee  Artigos de Cozinha (100717)   6,95 M pedidos — o MAIOR da loja
+  #           Utensilios de Cozinha (100041) 2,50 M pedidos / R$ 314 M
+  #   ML      Cozinha (MLB1618)              6,71 M pedidos / R$ 572 M
+  #
+  # ≈ 16,2 M pedidos/mês somando as duas, monopolização baixa nas duas
+  # (0,086 no ML; `low` na Shopee), ticket R$ 40–126. É o único nicho que é
+  # top-2 em VOLUME nos dois marketplaces ao mesmo tempo.
+  #
+  # 100010 (Eletrodomésticos) entra por um motivo estrutural, não por gosto:
+  # "Utensilios de Cozinha" (100041) pendura em 100010, e NÃO em 100636 — sem
+  # ele, metade do nicho (R$ 314 M/mês) era descartada aqui em silêncio.
+  #
+  # LIMITE CONHECIDO: `offer.category` é a categoria RAIZ (ver
+  # `sources/shopee.py:_parse_node`), então este portão só sabe filtrar raiz.
+  # Quem estreita para cozinha de verdade é a DESCOBERTA (`shopee.subcategory_ids`
+  # + `shopee.keywords`, abaixo). Sobra vazamento: as páginas de raiz e a fatia
+  # do data feed ainda trazem móveis, TV e jardim, e eles passam por aqui.
   # Faixa de foco de impulso: R$25-150.
   # Fase 3: por fonte (dict) — a Shopee usa IDs numéricos e o ML usa IDs
   # "MLB...", então um allowlist único descartaria toda oferta de uma das
   # fontes. Lista simples (formato antigo) continua valendo para todas as
   # fontes; vazio/ausente = todas as categorias passam.
   category_ids:
-    shopee: ["100630", "100636", "100001", "100637", "100632"]
+    shopee: ["100636", "100010"]
     meli: []      # vazio: o pool curado (meli.offers_path) já vem pré-filtrado
   # Pesos do score de valor esperado (fase 1.5):
   #   EV = (comissão em R$ ** commission_exp) × (1 + popularity × log10(vendas+1))
@@ -305,33 +334,37 @@ shopee:
   # sobe de 19% para ~47% e a mediana de vendas de 282 para milhares.
   # Uma página de raiz por run, por categoria: as 5 janelas inteiras a cada 40
   # runs (~3h20).
-  category_ids: ["100630", "100636", "100001", "100637", "100632"]
+  category_ids: ["100636", "100010"]
   # Subcategorias de nível 2: cada uma tem a SUA janela de 2.000, disjunta da
   # raiz nas páginas fundas (300/300 itens inéditos nas p10/p40 de 5 delas) —
   # mas a p1 é quase o topo da raiz (0-1 inédito em 50), por isso a rotação
   # começa na p2. As IDs são as que têm >= 25 itens no top-500 da própria raiz.
-  subcategories_per_run: 2
+  # 4 subcategorias por run: com 2 raízes × 1 sortType + 4 subs + 1 keyword o
+  # plano dá 7 fatias e cabe inteiro em `calls_per_run: 8` — nada é truncado,
+  # e 5 das 7 chamadas do run caem dentro do nicho.
+  subcategories_per_run: 4
   subcategory_first_page: 2
+  # SÓ COZINHA (2026-09-08). Os números são pedidos de agosto/2026 no JoomPulse.
   subcategory_ids: [
-    100663, 100659, 100662, 100664, 100658, 102002,                    # Beleza
-    100716, 100717, 100711, 100715, 100710, 100709, 100721, 100718,    # Casa
-    100018, 100002, 100019,                                            # Saúde
-    100727, 100725, 100726, 100728,                                    # Esportes
-    100684, 100678, 100675, 100679, 100683,                            # Mãe e Bebê
+    100717,    # Artigos de Cozinha (Casa) — 6,95 M pedidos, o maior da Shopee
+    100041,    # Utensilios de Cozinha (Eletrodom.) — 2,50 M ped., R$ 314 M
+    100721,    # Organizadores para Casa (Casa) — 3,48 M ped.; a espinha do
+               #   sub-nicho que mais cresce (armazenamento/organização)
+    100718,    # Louça (Casa) — 3,00 M ped., ticket R$ 36
   ]
   # 40 termos × páginas 1-2 = 80 fatias, 1 por run. `keyword` funciona junto com
   # `productCatId` mas NÃO é filtro estrito (8% dos nós vêm de outra categoria):
   # quem descarta é o allowlist de selection.category_ids. Cada lista está
   # ordenada por elegíveis inéditos medidos; os últimos de cada linha renderam
   # 0-14 e são os primeiros a sair se a cota de chamadas apertar.
-  keywords_per_run: 1
+  # 2 por run (era 1): com 2 raízes e 4 subcategorias o plano dava 7 fatias e
+  # deixava uma das 8 de `calls_per_run` ociosa. A vaga que sobrou vai para as
+  # keywords do nicho — o orçamento medido de 8 chamadas/run continua igual.
+  keywords_per_run: 2
   keyword_pages: 2
   keywords:
-    "100001": [creatina, whey, colágeno, massageador, vitamina, balança, termômetro, escova dental]
-    "100630": [sérum, protetor solar, shampoo, perfume, depilador, batom, hidratante, maquiagem]
-    "100636": [lixeira, panela, protetor colchão, mop, lençol, cortina, travesseiro, organizador]
-    "100637": [halteres, legging, guarda chuva, camisa térmica, tênis, conjunto fitness, bicicleta, dry fit]
-    "100632": [patinete, mamadeira, carrinho bebê, toalha umedecida, lençol berço, mordedor, brinquedo sensorial, fralda]
+    "100636": [pote hermético, organizador de geladeira, escorredor de louça, tábua de corte, porta temperos, organizador de armário, jogo de potes, faca de cozinha]
+    "100010": [air fryer, panela elétrica, cafeteira, liquidificador, filtro de água, processador de alimentos, panela de pressão elétrica, mixer]
 
 # Fase 3B: descoberta no Mercado Livre lê um pool curado (offers_path) em vez
 # de buscar ao vivo — /sites/MLB/search e /items/{id} devolvem 403 na API real
@@ -450,6 +483,33 @@ preco_checkout:
   # vencida vira aviso ao chat de operações.
   idade_max_dias: 3
 
+# Fase 5V — O PAINEL DE OBSERVAÇÃO. Lido uma vez por dia por `afiliado painel`,
+# que não publica nada: ele só lê o preço dos MESMOS itens todo dia para o
+# `price_log` ganhar profundidade.
+#
+# O defeito que ele conserta, medido em 2026-08-31: a régua honesta exige
+# `selection.ref_min_observations` (14) DIAS DISTINTOS do mesmo item, e a
+# descoberta rotativa nunca ia entregar isso. Ela mede LARGURA e faz bem —
+# 16.523 itens distintos em 6 dias — mas **nenhum** item tinha sido visto nos
+# 6; o melhor tinha 5 dias, e eram 14 itens em 16 mil. `price_refs` não estava
+# esperando o tempo passar: estava esperando o que não ia acontecer.
+#
+# Isso travava, junto: o modo A (0% dos posts), o selo, o carrossel do
+# termômetro reenquadrado, o flagrante com dado real e o Reel do gráfico.
+painel:
+  enabled: true
+  # 200 leituras/dia, uma chamada cada, contra as ~608 que o pipeline já faz —
+  # e a VPS da 5C rodava a ~1.920/dia sem um único 429.
+  #
+  # Subir este número NÃO acelera a régua: o que a régua espera é TEMPO, e ele
+  # é o mesmo para 20 itens ou 2.000. O que o tamanho decide é quantos itens
+  # chegam lá JUNTOS, daqui a 14 dias.
+  tamanho: 200
+  # Leituras SEGUIDAS falhando antes de o item sair do painel. A Shopee
+  # rotaciona a própria oferta de afiliado, e um item pode sumir por um dia e
+  # voltar — sair na primeira falha esvaziaria o painel a cada soluço da API.
+  max_falhas: 3
+
 validation:
   # Fase 5A: o portão de link é OFFLINE — só confere https + host do próprio
   # link de afiliado (igual a um destes domínios ou subdomínio dele) + ausência
@@ -463,6 +523,41 @@ validation:
 
 copy:
   tone: "empolgado, direto, sem exageros enganosos, pt-BR"
+
+# Fase 5U (U4) — HASHTAGS, e o que elas NÃO são.
+#
+# Nenhum dos 5 posts publicados até 2026-08-29 tinha hashtag. Numa conta sem
+# audiência isso é um sinal de categorização a menos: a hashtag é o que diz ao
+# Instagram DE QUE o post é, para quem ainda não segue.
+#
+# De 4 a 6 derivadas da categoria da oferta + as 2 fixas da marca, no FIM da
+# legenda, depois do bloco indexável (que é conteúdo; hashtag é endereçamento).
+# Nada de bloco de 30 genéricas: além de ser o padrão que o Instagram trata
+# como spam, ele dilui o sinal das poucas certas. Os tetos estão em
+# `afiliado.categorias` (MAX_DERIVADAS/MAX_FIXAS) e são de desenho, não de
+# operação; o CONTEÚDO das listas é decisão de negócio e mora aqui.
+#
+# Categoria desconhecida não quebra o post: cai só nas fixas. O ID vem de
+# dados de terceiros e a Shopee cria categoria nova sem avisar ninguém.
+#
+# As chaves são as MESMAS de `selection.category_ids` (Shopee) e as raízes do
+# pool do ML que aparecem em `afiliado.categorias.NOMES` — um teste cobra a
+# cobertura das duas listas.
+hashtags:
+  fixas: ["#fiscaldapromo", "#achadinhos"]
+  por_categoria:
+    # Shopee
+    "100630": ["#beleza", "#skincare", "#maquiagem", "#autocuidado"]
+    "100636": ["#casa", "#organizacao", "#utilidadesdomesticas", "#cozinha"]
+    "100010": ["#cozinha", "#eletroportateis", "#airfryer", "#utilidadesdomesticas"]
+    "100001": ["#saude", "#suplementos", "#bemestar", "#vidasaudavel"]
+    "100637": ["#fitness", "#treino", "#academia", "#esportes"]
+    "100632": ["#maternidade", "#bebe", "#enxovaldebebe", "#maternidadereal"]
+    # Mercado Livre — as raízes do pool curado
+    "MLB1246": ["#beleza", "#skincare", "#cuidadopessoal", "#autocuidado"]
+    "MLB1276": ["#fitness", "#treino", "#academia", "#esportes"]
+    "MLB1574": ["#casa", "#organizacao", "#decoracao", "#utilidadesdomesticas"]
+    "MLB264586": ["#saude", "#suplementos", "#bemestar", "#vidasaudavel"]
 
 # Identidade: nome e handle desenhados nas artes de story/feed (ver docs/brand-guidelines.md).
 brand:
@@ -491,6 +586,31 @@ channels:
   telegram:
     enabled: true
     max_per_day: 60          # meta: 60 ofertas/dia, espalhadas das 08:00 às 23:15 (~1 a cada 15 min)
+  # Fase 5Y — O X, como superfície de AQUISIÇÃO. Texto puro, SEM URL nenhuma:
+  # o destino é o link da BIO, e o motivo são duas penalidades somadas.
+  #
+  # DINHEIRO: em 06/02/2026 o X trocou os planos por pay-per-use e acabou com o
+  # tier grátis para desenvolvedor novo; em 20/04/2026 o post COM link foi de
+  # US$ 0,01 para US$ 0,20, contra US$ 0,015 sem link — 13× mais caro.
+  # ALCANCE: o X reduz a distribuição de post com link para segurar quem lê na
+  # plataforma, e em conta SEM Premium o engajamento mediano de post com link
+  # fica perto de zero.
+  # Somadas: com link a gente paga 13× para alcançar menos.
+  #
+  # E sem link de afiliado aqui, não importa se o X está ou não na lista de
+  # canais declarados no painel da Shopee — publicar link de afiliado em canal
+  # não declarado custa a monetização inteira, não uma multa.
+  #
+  # NASCE DESLIGADO. Ele cobra POR POST e depende de um app de desenvolvedor
+  # que o dono precisa criar, com cartão. Ligar antes disso seria acumular
+  # falha a cada 15 min. Ver docs/runbooks/x-setup.md.
+  #
+  # O CUSTO de `max_per_day` posts/dia, a US$ 0,015 cada:
+  #   10/dia  ->  ~US$ 4,50/mês        30/dia  ->  ~US$ 13,50/mês
+  #   60/dia  ->  ~US$ 27/mês          (com link, os mesmos 60 dariam ~US$ 360)
+  x:
+    enabled: false
+    max_per_day: 10
   # Fase 5E: DESLIGADO. Este canal só entrega a arte no chat de operações para
   # o dono postar à mão — 6 gestos por dia. Ele existia porque o projeto
   # acreditava que a API não publicava story; ela publica (medido ao vivo em
@@ -501,9 +621,35 @@ channels:
   story_dispatch:
     enabled: false           # SEMI-automático: arte de story + link prontos no chat de operações; você posta
     max_per_day: 6           # artes de story por dia, ~uma a cada 2h40
+  # Fase 5U (U3) — O TETO QUE A AUDIÊNCIA AUTORIZA, e por que ele existe.
+  #
+  #     teto efetivo = min(max_per_day, max(piso, seguidores ÷ divisor))
+  #
+  # Medido na conta real em 2026-08-29 pela Graph API: **2 seguidores**, 5
+  # posts, alcance de **1 conta** em 7 dias, 0 interações. Publicar 60 stories
+  # por dia para duas pessoas não gera alcance — gasta a cota da Meta (100/24 h,
+  # COMPARTILHADA por feed, story e Reel), enche o dedupe e queima o estoque de
+  # candidatas. Com os números abaixo, o dia de hoje é: story 3 (60
+  # configurado), feed 2, Reel 1.
+  #
+  # `piso` e `divisor` são CHUTE, e é por isso que estão aqui e não no código:
+  # número chutado dentro do código é número que ninguém revisa. Revise-os
+  # quando a conta tiver audiência de verdade — o teto sobe sozinho conforme
+  # `seguidores ÷ divisor` passa do piso, e volta a ser o `max_per_day` acima
+  # quando o alcança (60 stories/dia pedem 6.000 seguidores).
+  #
+  # `followers_count` vem do `user_info` da Graph API e é lido UMA VEZ POR DIA
+  # local, guardado no `state.db` (não é uma chamada por run: a cadência é de
+  # 15 min). Sem o número — API fora, token vencido, cache vazio — a régua
+  # FALHA ABERTA: vale o `max_per_day` daqui, e o resumo de operações diz que
+  # ela não foi aplicada. Um erro de leitura não pode calar a conta.
+  #
+  # Tirar a seção `audiencia:` de um canal desliga o teto DAQUELE canal em
+  # silêncio; um teste cobra a presença dela nos três (não os valores).
   instagram_feed:
     enabled: true             # Variante B configurada em 2026-08-25 (token de Página permanente)
     max_per_day: 2           # 1 de manhã, a 2ª só a partir da metade da janela
+    audiencia: {piso: 2, divisor: 500}
   # Fase 5D: o CARROSSEL (`afiliado feed`, tipo termometro). Publica pelo mesmo
   # canal e pela mesma cota da Meta que o instagram_feed acima (100/24 h), mas
   # tem teto próprio porque é um post por vez e não deve competir com o feed de
@@ -523,9 +669,19 @@ channels:
   # Fase 5E: story publicado pela API oficial (media_type=STORIES, sem legenda
   # e sem sticker de link — a API não tem um). A cota de publicação da Meta é
   # COMPARTILHADA com o feed: 100 por 24 h; 2 + 6 usam 8.
+  #
+  # LIGADO EM 2026-08-30 (fase 5U), trocando de lugar com o
+  # `instagram_story_link` abaixo. O QUE SE PERDE nessa troca: a figurinha de
+  # link — a Graph API nega figurinhas, então o story sai sem nada tocável e o
+  # seguidor precisa ir ao link da bio. O QUE SUSTENTA a troca: **0 toques no
+  # link do perfil em 7 dias**, com 2 seguidores. A figurinha só vale o que
+  # entrega, e hoje ela entrega perto de zero — contra uma credencial de senha
+  # numa conta que segura o token da Graph API, a integração de afiliado e o
+  # histórico.
   instagram_story:
-    enabled: false
-    max_per_day: 60           # DESLIGADO: quem publica story é o instagram_story_link abaixo
+    enabled: true
+    max_per_day: 60
+    audiencia: {piso: 3, divisor: 100}
   # Fase 5T: o REEL — a única superfície de AQUISIÇÃO que a conta não tem.
   # Medido na conta real em 2026-08-29 pela Graph API: 2 seguidores, 5 posts,
   # ZERO do tipo REEL, alcance de 1 conta em 7 dias. O feed serve quem já
@@ -533,6 +689,12 @@ channels:
   #
   # NASCE DESLIGADO, e é assim de propósito: quem liga é o dono, depois de VER
   # a peça. `afiliado run --dry-run` grava o .mp4 em `.claude/previews/`.
+  #
+  # LIGADO EM 2026-08-31, depois de o dono ver a peça e de o passo que nunca
+  # tinha sido exercitado ser testado ao vivo: `sendVideo` devolveu o arquivo
+  # como `video` (mime video/mp4, 8 s, 1080×1920) e a URL do `getFile`
+  # respondeu 200 com os bytes exatos. O que ainda NÃO foi provado é a Meta
+  # baixar essa URL — ela chega com `content-type: application/octet-stream`.
   #
   # Ele precisa do extra `reel` (`pip install -e .[reel]`) ou de um ffmpeg no
   # PATH. Sem isso o canal não sobe e o run avisa uma vez — o resto do
@@ -543,8 +705,9 @@ channels:
   # a janela é móvel. O `max_per_day` daqui é o teto do PROJETO, e sai do
   # mesmo balde dos outros — some os três antes de subir qualquer um.
   instagram_reel:
-    enabled: false
-    max_per_day: 2           # 1 de manhã, o 2º só a partir da metade da janela
+    enabled: true
+    max_per_day: 2         # 1 de manhã, o 2º só a partir da metade da janela
+    audiencia: {piso: 1, divisor: 1000}
   # Fase 5F: story COM figurinha de link, pelo instagrapi (API PRIVADA). Existe
   # porque a Graph API NEGA figurinhas e o Meta Business Suite só põe link em
   # story do Facebook — ver docs/superpowers/reviews/2026-08-27-sticker-de-link.md.
@@ -558,8 +721,29 @@ channels:
   # E ele NÃO roda no GitHub Actions nem na VPS: só no `afiliado stories`, na
   # máquina do dono (IP residencial, sessão e device estáveis). O `afiliado run`
   # ignora este canal com aviso, mesmo ligado.
+  #
+  # DESLIGADO EM 2026-08-30 (fase 5U). O canal continua inteiro — código,
+  # testes, runbook e o comando `afiliado stories` —, e o que saiu de cena foi
+  # o INTERRUPTOR: ele volta no dia em que a conta tiver alcance que justifique
+  # o risco. Enquanto isso, `afiliado stories` fica ocioso (a tarefa
+  # FiscalDaPromo-Stories do agendador roda e não publica nada; o run diz isso
+  # uma vez por dia, sem ⚠️).
+  #
+  # O que ele entregava e deixou de entregar: a figurinha de link, a única
+  # superfície do projeto com um destino tocável dentro do Instagram.
+  # O número que decidiu: **0 toques no link do perfil em 7 dias**, com 2
+  # seguidores (medido na conta real em 2026-08-29 pela Graph API, junto do
+  # alcance de 1 conta em 7 dias). Zero toques é o teto do que a figurinha
+  # poderia ter melhorado — e o preço dela é a SENHA da conta, entregue a uma
+  # API privada, na conta que segura o token da Graph API, a integração de
+  # afiliado e o histórico. Com alcance real o cálculo muda; hoje não há
+  # cálculo, há só o risco.
   instagram_story_link:
-    enabled: true           # o dono liga depois de rodar `afiliado ig-login`
+    enabled: false          # o dono liga depois de rodar `afiliado ig-login`
+    # A mesma régua do `instagram_story`: é a MESMA superfície e a mesma
+    # audiência. Fica aqui desde já para que religar o canal não devolva 60
+    # stories/dia para 2 seguidores por esquecimento.
+    audiencia: {piso: 3, divisor: 100}
     # 60/dia = um a cada ~15 min na janela de 08:00-23:15. Cabe na cota da
     # Meta (100/24h, compartilhada com o feed), mas este canal é API PRIVADA:
     # volume alto é justamente o que atrai verificação de segurança, e o ativo

@@ -1,4 +1,4 @@
-from afiliado import pricing
+from afiliado import creative, pricing
 from afiliado.message import build_message
 from afiliado.models import NO_CLAIM, CopyParts, Verdict
 from tests.test_models import make_offer, make_offer_ref
@@ -8,7 +8,7 @@ LINK = "https://shope.ee/abc123"
 
 # Modo A: desconto verificado contra a NOSSA referência (499,98 -> 249,99),
 # com a marcação HTML do Telegram: referência riscada, preço em negrito.
-ESPERADO_MODO_A = """🚨 Promo Nike: 50% OFF
+ESPERADO_MODO_A = f"""🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
@@ -19,7 +19,7 @@ Corre que acaba rápido 👇
 
 # Modo B: sem referência conhecida — o preço é o herói (negrito), prova
 # social em texto puro logo abaixo, sem alegar desconto.
-ESPERADO_MODO_B = """🚨 Promo Nike: 50% OFF
+ESPERADO_MODO_B = f"""🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;
@@ -29,7 +29,7 @@ Tênis Nike SB Chron 2 &quot;Black White&quot;
 Corre que acaba rápido 👇
 👉 https://shope.ee/abc123"""
 
-ESPERADO_COM_SELO = """🚨 Promo Nike: 50% OFF
+ESPERADO_COM_SELO = f"""🚨 Promo Nike: 50% OFF
 Nike SB com custo benefício.
 
 Tênis Nike SB Chron 2 &quot;Black White&quot;

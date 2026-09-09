@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS discovery_cursor (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS painel (
+    source TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    entrou_em TEXT NOT NULL,
+    lido_em TEXT,
+    falhas INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (source, item_id)
+) WITHOUT ROWID;
 """
 
 # Campos que existem HOJE em Offer: um payload gravado por uma versão anterior
@@ -221,6 +229,24 @@ class StateDB:
         )
         self.conn.commit()
 
+    def record_peca(self, source: str, item_id: str, channel: str, title: str,
+                    message_id: str) -> None:
+        """Registra a entrega de uma peça que NÃO é oferta — hoje, o carrossel
+        temático da 5W.
+
+        Ela precisa entrar em `posted` pelo mesmo motivo que o álbum de ofertas
+        entra: é `count_posts_today(channel)` que faz o teto e o ritmo do canal
+        valerem, e uma peça que publica sem contar deixaria dois álbuns saírem
+        no mesmo dia. O que ela não tem é `Offer` — daí não dar para usar
+        `record_post`, que lê preço e título de um produto que aqui não existe.
+        """
+        self.conn.execute(
+            "INSERT OR REPLACE INTO posted (source, item_id, channel, title, "
+            "price_cents, message_id, posted_at, manual) VALUES (?,?,?,?,?,?,?,?)",
+            (source, item_id, channel, title, 0, message_id, _now().isoformat(), 0),
+        )
+        self.conn.commit()
+
     # -- histórico próprio de preços (fase 4: régua honesta) ----------------
 
     def record_price(self, source: str, item_id: str, price_cents: int,
@@ -346,6 +372,91 @@ class StateDB:
         ).fetchall()
         ofertas = (_oferta_de_payload(r[0]) for r in rows)
         return [o for o in ofertas if o is not None]
+
+    # -- painel de observação (fase 5V: profundidade, não largura) -----------
+    #
+    # A descoberta rotativa é otimizada para LARGURA e faz isso muito bem:
+    # medido em 2026-08-31, 16.523 itens distintos em 6 dias. O problema é que
+    # a régua honesta precisa do contrário — 14 dias DO MESMO item —, e na
+    # mesma medição **nenhum** item tinha sido visto nos 6 dias (o melhor tinha
+    # 5, e eram 14 itens em 16 mil). Do jeito que estava, `price_refs` nunca ia
+    # se semear sozinho, por mais tempo que passasse.
+    #
+    # O painel é a lista dos itens que passam a ser lidos TODO DIA, publicáveis
+    # ou não, só para o `price_log` ganhar profundidade. Ele é ESTÁVEL de
+    # propósito: entra e não sai (a não ser por falha repetida), porque trocar
+    # os membros é voltar a medir largura.
+
+    def painel(self, source: str) -> list[tuple[str, str, int]]:
+        """Os itens do painel da fonte: `(item_id, entrou_em, falhas)`, os que
+        entraram primeiro na frente — quem tem mais história é lido primeiro
+        quando a leitura do dia é interrompida no meio."""
+        return [(r[0], r[1], r[2]) for r in self.conn.execute(
+            "SELECT item_id, entrou_em, falhas FROM painel WHERE source=? "
+            "ORDER BY entrou_em ASC, item_id ASC", (source,)).fetchall()]
+
+    def painel_incluir(self, source: str, item_ids: list[str],
+                       day: str | None = None) -> int:
+        """Põe itens no painel, sem tocar nos que já estão — a data de entrada
+        de um membro antigo é o que mede a história dele, e regravá-la
+        apagaria isso. Devolve quantos ENTRARAM."""
+        if not item_ids:
+            return 0
+        dia = day or self.local_today().isoformat()
+        antes = self.conn.execute("SELECT COUNT(*) FROM painel WHERE source=?",
+                                  (source,)).fetchone()[0]
+        self.conn.executemany(
+            "INSERT INTO painel (source, item_id, entrou_em) VALUES (?,?,?) "
+            "ON CONFLICT(source,item_id) DO NOTHING",
+            [(source, str(i), dia) for i in item_ids])
+        self.conn.commit()
+        depois = self.conn.execute("SELECT COUNT(*) FROM painel WHERE source=?",
+                                   (source,)).fetchone()[0]
+        return depois - antes
+
+    def painel_leitura(self, source: str, item_id: str, ok: bool,
+                       day: str | None = None) -> None:
+        """Registra o resultado da leitura do dia. Sucesso ZERA as falhas: o
+        que tira um item do painel é falhar de forma consecutiva, não ter
+        falhado um dia qualquer no passado."""
+        dia = day or self.local_today().isoformat()
+        if ok:
+            self.conn.execute(
+                "UPDATE painel SET lido_em=?, falhas=0 WHERE source=? AND item_id=?",
+                (dia, source, str(item_id)))
+        else:
+            self.conn.execute(
+                "UPDATE painel SET falhas=falhas+1 WHERE source=? AND item_id=?",
+                (source, str(item_id)))
+        self.conn.commit()
+
+    def painel_expurgar(self, source: str, max_falhas: int) -> list[str]:
+        """Tira do painel quem falhou `max_falhas` vezes seguidas — item que
+        saiu da listagem de afiliados não volta, e insistir nele é gastar uma
+        chamada por dia para sempre. Devolve os que saíram."""
+        saem = [r[0] for r in self.conn.execute(
+            "SELECT item_id FROM painel WHERE source=? AND falhas>=?",
+            (source, int(max_falhas))).fetchall()]
+        if saem:
+            self.conn.execute("DELETE FROM painel WHERE source=? AND falhas>=?",
+                              (source, int(max_falhas)))
+            self.conn.commit()
+        return saem
+
+    def dias_observados(self, source: str, item_ids: list[str],
+                        days: int) -> dict[str, int]:
+        """Quantos DIAS distintos de `price_log` cada item tem na janela. É a
+        medida de progresso do painel: a régua exige
+        `selection.ref_min_observations` deles."""
+        if not item_ids:
+            return {}
+        cutoff = (self.local_today() - timedelta(days=days)).isoformat()
+        marcas = ",".join("?" * len(item_ids))
+        rows = self.conn.execute(
+            f"SELECT item_id, COUNT(DISTINCT day) FROM price_log "  # noqa: S608
+            f"WHERE source=? AND day>=? AND item_id IN ({marcas}) GROUP BY item_id",
+            (source, cutoff, *[str(i) for i in item_ids])).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def prune_candidates(self, max_age_days: int, source: str | None = None) -> None:
         """Apaga candidatas mais velhas que a janela (de uma fonte, ou de todas)."""

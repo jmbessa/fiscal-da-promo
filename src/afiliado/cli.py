@@ -1494,7 +1494,8 @@ def legenda_do_carrossel(posts: list[Post], titulo: str, subtitulo: str,
     pelo mesmo motivo do feed — o "mais" do Instagram esconde tudo depois de
     ~125 caracteres, e a identificação tem de ser visível na primeira
     visualização."""
-    linhas = [creative.AFILIADO, titulo, subtitulo, ""]
+    linhas = ([creative.AFILIADO] if creative.AFILIADO else []) \
+             + [titulo, subtitulo, ""]
     for i, post in enumerate(posts, start=1):
         offer = post.offer
         nome = sanitiza_titulo(offer.title)

@@ -25,7 +25,7 @@ def build_message(offer: Offer, copy: CopyParts, link: str, verdict: Verdict) ->
     if verdict.seal:
         bloco.append(verdict.seal)
     return (
-        f"{creative.AFILIADO}\n"
+        f"{creative.linha_afiliado()}"
         f"{html.escape(copy.headline)}\n"
         f"{html.escape(copy.description)}\n"
         f"\n"

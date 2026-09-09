@@ -117,19 +117,25 @@ ASSINATURA = "Quem conferiu? O Fiscal."
 # a natureza publicitária") e exige identificação **visível na primeira
 # visualização**, não em nota de rodapé.
 #
-# O TEXTO EM VIGOR — decisão do dono em 2026-08-30, e ele NÃO é sinalização de
-# afiliado. A frase anterior ("Link de afiliado — ganho comissão, o preço é o
-# mesmo para você") foi retirada a pedido dele: "não gostei e afasta a
-# possibilidade de compra por parte do usuário".
+# DESLIGADA — decisão do dono em 2026-09-08. **Vazia = a linha não sai**, no
+# mesmo molde de `AFILIADO_NA_ARTE` logo abaixo e de `pricing.MOSTRAR_SEM_CUPOM`:
+# preencher esta constante religa as QUATRO superfícies de uma vez (Telegram,
+# feed, Reel e carrossel), na primeira linha, sem tocar em mais nada.
 #
-# **O risco do A7 continua NÃO MITIGADO.** Esta frase descreve o destino do
-# link; ela não identifica o post como publicidade nem revela a comissão, que é
-# o que o CDC art. 36, o guia CONAR de 01/06/2026 e os Termos da Shopee pedem.
-# Quem for reavaliar: não leia a existência desta linha como conformidade — ela
-# é informação ao leitor, e a exposição contratual descrita acima segue de pé,
-# aceita conscientemente. Ver A7 em
+# Histórico: a frase que estava no ar era "O link direciona para a página do
+# produto na loja" (decisão de 2026-08-30, que por sua vez já havia substituído
+# "Link de afiliado — ganho comissão, o preço é o mesmo para você").
+#
+# **O risco do A7 continua NÃO MITIGADO — e agora sem linha nenhuma na legenda.**
+# Registre-se com precisão o que mudou: a frase retirada NÃO era sinalização de
+# afiliado. Ela descrevia o destino do link; não identificava o post como
+# publicidade nem revelava a comissão — que é o que o CDC art. 36, o guia CONAR
+# de 01/06/2026 e os Termos da Shopee pedem. Ou seja: tirá-la não derrubou
+# conformidade, porque não havia conformidade para derrubar. A exposição
+# contratual (Shopee, Termos 2.3 e 7.2: rescisão unilateral com 7 dias de
+# aviso) segue de pé, aceita conscientemente pelo dono. Ver A7 em
 # `docs/superpowers/reviews/2026-08-26-analise-adversarial.md`.
-AFILIADO = "O link direciona para a página do produto na loja"
+AFILIADO = ""
 
 # A forma para a ARTE. **Vazia = chip desligado** (ver `_draw_afiliado_chip`),
 # e é o estado atual: na peça, o botão de rodapé já diz "LINK NA SHOPEE" / "LINK
@@ -138,6 +144,19 @@ AFILIADO = "O link direciona para a página do produto na loja"
 # Preencher esta constante liga o chip de volta, com a geometria que a fase 5U
 # calibrou e que os testes continuam guardando.
 AFILIADO_NA_ARTE = ""
+
+
+def linha_afiliado() -> str:
+    """A linha de abertura das legendas — vazia quando `AFILIADO` está desligada.
+
+    Existe para que "um lugar só decide" continue verdadeiro TAMBÉM no estado
+    desligado. Sem ela, cada superfície teria de lembrar sozinha de não escrever
+    a quebra de linha, e a legenda abriria com uma linha em branco — que gasta
+    o corte do "mais" do Instagram (~125 caracteres) sem dizer nada.
+
+    Lê a constante no momento da chamada, de propósito: é o que faz religar a
+    frase valer para as quatro superfícies sem tocar em nenhuma delas."""
+    return f"{AFILIADO}\n" if AFILIADO else ""
 
 
 # --- Fontes -------------------------------------------------------------------

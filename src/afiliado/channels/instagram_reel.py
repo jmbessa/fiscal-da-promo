@@ -174,7 +174,7 @@ class InstagramReelChannel(InstagramBase):
         bloco_preco = "\n".join(p for p in (linha_preco, prova_social,
                                             post.verdict.seal) if p)
         return (
-            f"{creative.AFILIADO}\n"
+            f"{creative.linha_afiliado()}"
             f"{post.copy.headline}\n\n"
             f"{titulo}\n"
             f"{bloco_preco}\n\n"

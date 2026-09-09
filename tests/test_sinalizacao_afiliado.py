@@ -13,9 +13,11 @@ Estes testes afirmam duas coisas, e é por elas que a fase existe:
 1. **um lugar só decide** o texto (`creative.AFILIADO` / `creative.AFILIADO_NA_ARTE`),
    como `pricing.sem_cupom` faz com o rótulo do preço — trocar a frase é mexer
    em UMA linha e todas as superfícies acompanham;
-2. **a frase é a PRIMEIRA linha** de todo texto publicado. É a única colocação
-   que sobrevive ao corte do "mais" (~125 caracteres no Instagram) e à prévia
-   da notificação do Telegram.
+2. **quando ligada, a frase é a PRIMEIRA linha** de todo texto publicado — a
+   única colocação que sobrevive ao corte do "mais" (~125 caracteres no
+   Instagram) e à prévia da notificação do Telegram; **e quando desligada
+   (o estado de hoje, por decisão do dono em 2026-09-08) ela não sai em
+   superfície nenhuma, nem como linha em branco.**
 """
 
 import httpx
@@ -62,43 +64,59 @@ def _textos(post: Post) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("superficie", ["telegram", "feed", "reel", "carrossel"])
-def test_a_frase_de_afiliado_abre_todo_texto_publicado(superficie):
+def test_desligada_a_frase_nao_deixa_linha_em_branco(superficie):
+    """Desligada, ela não sai — e não deixa a cicatriz de uma linha vazia.
+
+    Uma legenda que abre com quebra de linha gasta, no corte do "mais",
+    exatamente o que a frase gastava — sem dizer nada. Quem abre o texto passa
+    a ser a primeira linha de conteúdo."""
     texto = _textos(_post())[superficie]
-    assert texto.startswith(creative.AFILIADO), texto[:120]
-    # E ela cabe INTEIRA no que o Instagram mostra antes do "mais".
-    assert texto.index(creative.AFILIADO) + len(creative.AFILIADO) <= CORTE_DO_MAIS
+    assert not texto.startswith("\n"), repr(texto[:40])
+    assert texto.lstrip() == texto, repr(texto[:40])
 
 
-def test_a_segunda_linha_do_reel_ainda_e_o_gancho():
-    """O Reel mostra DUAS linhas sobre o vídeo. A primeira passa a ser a
-    sinalização; a segunda continua sendo o gancho — uma linha em branco ali
-    gastaria metade do que o formato deixa ler."""
+def test_a_primeira_linha_do_reel_volta_a_ser_o_gancho():
+    """O Reel mostra DUAS linhas sobre o vídeo. Com a sinalização desligada,
+    as duas voltam a ser conteúdo — o gancho na primeira."""
     linhas = _canal(InstagramReelChannel).legenda(_post()).split("\n")
-    assert linhas[0] == creative.AFILIADO
-    assert linhas[1] == COPY.headline
+    assert linhas[0] == COPY.headline
 
 
-def test_um_lugar_so_decide_a_frase(monkeypatch):
+def test_um_lugar_so_decide_a_frase_e_religa_as_quatro(monkeypatch):
     """`pricing.sem_cupom` é o molde: a régua decide num lugar e as superfícies
-    importam. Trocar `creative.AFILIADO` tem de mudar as quatro de uma vez —
-    se alguma reimplementou a frase, este teste a encontra."""
-    monkeypatch.setattr(creative, "AFILIADO", "Isto é publicidade paga")
+    importam. PREENCHER `creative.AFILIADO` tem de religar as quatro de uma vez
+    — se alguma reimplementou a frase, ou se alguma deixou de ler a constante
+    quando ela voltou a ter texto, este teste a encontra."""
+    frase = "Isto é publicidade paga"
+    monkeypatch.setattr(creative, "AFILIADO", frase)
     for superficie, texto in _textos(_post()).items():
-        assert texto.startswith("Isto é publicidade paga"), superficie
+        assert texto.startswith(frase), superficie
+    # E ela cabe INTEIRA no que o Instagram mostra antes do "mais".
+    assert len(frase) <= CORTE_DO_MAIS
+    # Religada, ela entra na legenda de TODO post, inclusive os de modo B —
+    # onde `copywriter.alega_desconto` proíbe palavra de desconto. Se a frase
+    # escolhida tropeçasse nessa régua, o post de modo B ficaria inválido.
+    from afiliado import copywriter
+    assert not copywriter.alega_desconto(
+        CopyParts(headline=frase, description="", cta=""))
 
 
-def test_a_frase_descreve_o_destino_do_link():
-    """O TEXTO EM VIGOR, decidido pelo dono em 2026-08-30 — e ele NÃO é
-    sinalização de afiliado.
+def test_a_frase_esta_desligada():
+    """DECISÃO DO DONO EM 2026-09-08: a frase sai das legendas. Vazia =
+    desligada, no mesmo molde de `AFILIADO_NA_ARTE` e de
+    `pricing.MOSTRAR_SEM_CUPOM`.
 
-    A frase anterior dizia "ganho comissão"; o dono a retirou ("afasta a
-    possibilidade de compra"). O que ficou descreve para onde o link leva.
-    Este teste afirma o que a frase É, para que ninguém a leia como
-    conformidade: o risco do A7 segue NÃO mitigado, e está escrito assim no
-    documento e na constante."""
-    assert "link" in creative.AFILIADO.lower()
-    assert "comissão" not in creative.AFILIADO.lower()
-    assert "#publi" not in creative.AFILIADO.lower()
+    A frase que estava no ar — "O link direciona para a página do produto na
+    loja" — NUNCA foi sinalização de afiliado: descrevia o destino do link, não
+    identificava o post como publicidade nem revelava a comissão. Tirá-la
+    portanto não derruba conformidade nenhuma, porque não havia. **O risco do
+    A7 segue NÃO mitigado**, agora sem nenhuma linha de legenda a respeito —
+    exposição aceita conscientemente pelo dono. Ver
+    `docs/superpowers/reviews/2026-08-26-analise-adversarial.md`.
+
+    Preencher a constante religa as quatro superfícies; é o que o teste acima
+    guarda."""
+    assert creative.AFILIADO == ""
 
 
 def test_o_chip_da_arte_esta_desligado_e_religa_por_uma_constante():
@@ -113,15 +131,6 @@ def test_o_chip_da_arte_esta_desligado_e_religa_por_uma_constante():
     from PIL import Image, ImageDraw
     d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     creative._draw_afiliado_chip(d, {"text": "", "box": (0, 0, 0, 0)})
-
-
-def test_a_frase_nao_vira_alegacao_de_desconto():
-    """Ela entra na legenda de TODO post, inclusive os de modo B — onde
-    `copywriter.alega_desconto` proíbe palavra de desconto. Se a frase
-    escolhida tropeçasse nessa régua, o post de modo B ficaria inválido."""
-    from afiliado import copywriter
-    copy = CopyParts(headline=creative.AFILIADO, description="", cta="")
-    assert not copywriter.alega_desconto(copy)
 
 
 # =============================================================================

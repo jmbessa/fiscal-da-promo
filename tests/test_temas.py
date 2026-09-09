@@ -165,10 +165,14 @@ def test_o_desenho_usa_os_MESMOS_maximos_que_o_carregamento_valida(monkeypatch):
 
 # -- a legenda -----------------------------------------------------------------
 
-def test_a_legenda_NAO_abre_com_a_sinalizacao_de_afiliado():
-    """`creative.AFILIADO` diz "o link direciona para a página do produto na
-    loja" — e este álbum não tem link de produto nenhum. Repeti-la aqui seria
-    afirmar uma coisa falsa para cumprir um hábito."""
+def test_a_legenda_NAO_abre_com_a_sinalizacao_de_afiliado(monkeypatch):
+    """A sinalização, quando ligada, fala do destino de um link de produto — e
+    este álbum não tem link de produto nenhum. Repeti-la aqui seria afirmar uma
+    coisa falsa para cumprir um hábito.
+
+    O teste LIGA a constante de propósito: com ela vazia (o estado de hoje) a
+    afirmação passaria por vacuidade — string vazia está contida em tudo."""
+    monkeypatch.setattr(creative, "AFILIADO", "Isto é publicidade paga")
     legenda = cli.legenda_do_tema(_tema("x"))
     assert creative.AFILIADO not in legenda
     assert legenda.startswith("TÍTULO")

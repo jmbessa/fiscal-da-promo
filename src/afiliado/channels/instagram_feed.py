@@ -236,7 +236,7 @@ class InstagramFeedChannel(InstagramBase):
             # CONAR de 01/06/2026 pede identificação visível na PRIMEIRA
             # visualização — qualquer outra posição dependeria de o leitor
             # expandir a legenda. Quem decide o texto é `creative.AFILIADO`.
-            f"{creative.AFILIADO}\n"
+            f"{creative.linha_afiliado()}"
             f"{copy.headline}\n{copy.description}\n\n"
             f"{titulo}\n"
             f"{bloco_preco}\n\n"

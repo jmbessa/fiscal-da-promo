@@ -20,18 +20,33 @@ def test_load_config_reads_project_yaml():
 
 def test_config_carrega_a_descoberta_medida_em_2026_08_26():
     """Fase 5C (C1): o que a medição de 147 chamadas reais recomendou tem de
-    estar no config, senão o volume volta a 8 posts/dia sustentáveis."""
+    estar no config, senão o volume volta a 8 posts/dia sustentáveis.
+
+    2026-09-08 — FOCO EM COZINHA: a FORMA da descoberta (janela de 40 páginas,
+    50 por página, sortType 2, p1 da subcategoria pulada) continua sendo a
+    medida da 5C e não mudou. O que mudou foi o ALVO: 5 raízes viraram 2
+    (100636 Casa + 100010 Eletrodomésticos, esta última porque "Utensilios de
+    Cozinha" pendura nela) e 26 subcategorias viraram as 4 de cozinha. O plano
+    do run passa a ser 2 raízes + 4 subs + 1 keyword = 7 fatias, dentro do teto
+    de 8 de `calls_per_run` — nada truncado."""
     sh = load_config("config.yaml")["shopee"]
     assert sh["pages"] == 40                  # a janela real por listagem
     assert sh["page_size"] == 50              # limit máximo aceito
     assert sh["sort_types"] == [2] and sh["list_type"] == 0
     assert sh["calls_per_run"] == 8
     assert sh["candidate_max_age_days"] == 3
-    assert len(sh["category_ids"]) == 5
-    assert len(sh["subcategory_ids"]) == 26   # as de >= 25 itens no top-500 da raiz
+    assert sh["category_ids"] == ["100636", "100010"]
+    assert sh["subcategory_ids"] == [100717, 100041, 100721, 100718]  # só cozinha
+    assert sh["subcategories_per_run"] == 4
+    # 2 raízes + 4 subs + 2 keywords = 8 fatias = `calls_per_run`: o plano
+    # ocupa o orçamento INTEIRO e nada é truncado.
+    assert sh["keywords_per_run"] == 2
+    assert (len(sh["category_ids"]) * len(sh["sort_types"])
+            + sh["subcategories_per_run"]
+            + sh["keywords_per_run"]) == sh["calls_per_run"] == 8
     assert sh["subcategory_first_page"] == 2  # a p1 da subcategoria ≈ topo da raiz
     termos = [t for lista in sh["keywords"].values() for t in lista]
-    assert len(termos) == 40 == len(set(termos))
+    assert len(termos) == 16 == len(set(termos))
     assert set(sh["keywords"]) == set(load_config("config.yaml")["selection"]
                                       ["category_ids"]["shopee"])
 

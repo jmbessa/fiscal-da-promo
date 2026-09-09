@@ -158,16 +158,33 @@ selection:
   # loja da fila até o próximo run (pipeline.MAX_FALHAS_SEGUIDAS_POR_FONTE).
   # 0 desliga o teto — não faça isso com o estoque ligado.
   max_descartes_por_run: 50
-  # Prioridade definida pela análise JoomPulse de 2026-08-23 (dados de jul/2026):
-  # Beleza (100630, +12% m/m) e Casa (100636, maior volume) como núcleo;
-  # Saúde (100001), Esportes (100637) e Mãe e Bebê (100632) como complemento.
+  # FOCO EM UM NICHO SÓ — COZINHA (decisão do dono em 2026-09-08), a partir da
+  # pesquisa JoomPulse de agosto/2026 (último mês fechado nas duas lojas):
+  #
+  #   Shopee  Artigos de Cozinha (100717)   6,95 M pedidos — o MAIOR da loja
+  #           Utensilios de Cozinha (100041) 2,50 M pedidos / R$ 314 M
+  #   ML      Cozinha (MLB1618)              6,71 M pedidos / R$ 572 M
+  #
+  # ≈ 16,2 M pedidos/mês somando as duas, monopolização baixa nas duas
+  # (0,086 no ML; `low` na Shopee), ticket R$ 40–126. É o único nicho que é
+  # top-2 em VOLUME nos dois marketplaces ao mesmo tempo.
+  #
+  # 100010 (Eletrodomésticos) entra por um motivo estrutural, não por gosto:
+  # "Utensilios de Cozinha" (100041) pendura em 100010, e NÃO em 100636 — sem
+  # ele, metade do nicho (R$ 314 M/mês) era descartada aqui em silêncio.
+  #
+  # LIMITE CONHECIDO: `offer.category` é a categoria RAIZ (ver
+  # `sources/shopee.py:_parse_node`), então este portão só sabe filtrar raiz.
+  # Quem estreita para cozinha de verdade é a DESCOBERTA (`shopee.subcategory_ids`
+  # + `shopee.keywords`, abaixo). Sobra vazamento: as páginas de raiz e a fatia
+  # do data feed ainda trazem móveis, TV e jardim, e eles passam por aqui.
   # Faixa de foco de impulso: R$25-150.
   # Fase 3: por fonte (dict) — a Shopee usa IDs numéricos e o ML usa IDs
   # "MLB...", então um allowlist único descartaria toda oferta de uma das
   # fontes. Lista simples (formato antigo) continua valendo para todas as
   # fontes; vazio/ausente = todas as categorias passam.
   category_ids:
-    shopee: ["100630", "100636", "100001", "100637", "100632"]
+    shopee: ["100636", "100010"]
     meli: []      # vazio: o pool curado (meli.offers_path) já vem pré-filtrado
   # Pesos do score de valor esperado (fase 1.5):
   #   EV = (comissão em R$ ** commission_exp) × (1 + popularity × log10(vendas+1))
@@ -317,33 +334,37 @@ shopee:
   # sobe de 19% para ~47% e a mediana de vendas de 282 para milhares.
   # Uma página de raiz por run, por categoria: as 5 janelas inteiras a cada 40
   # runs (~3h20).
-  category_ids: ["100630", "100636", "100001", "100637", "100632"]
+  category_ids: ["100636", "100010"]
   # Subcategorias de nível 2: cada uma tem a SUA janela de 2.000, disjunta da
   # raiz nas páginas fundas (300/300 itens inéditos nas p10/p40 de 5 delas) —
   # mas a p1 é quase o topo da raiz (0-1 inédito em 50), por isso a rotação
   # começa na p2. As IDs são as que têm >= 25 itens no top-500 da própria raiz.
-  subcategories_per_run: 2
+  # 4 subcategorias por run: com 2 raízes × 1 sortType + 4 subs + 1 keyword o
+  # plano dá 7 fatias e cabe inteiro em `calls_per_run: 8` — nada é truncado,
+  # e 5 das 7 chamadas do run caem dentro do nicho.
+  subcategories_per_run: 4
   subcategory_first_page: 2
+  # SÓ COZINHA (2026-09-08). Os números são pedidos de agosto/2026 no JoomPulse.
   subcategory_ids: [
-    100663, 100659, 100662, 100664, 100658, 102002,                    # Beleza
-    100716, 100717, 100711, 100715, 100710, 100709, 100721, 100718,    # Casa
-    100018, 100002, 100019,                                            # Saúde
-    100727, 100725, 100726, 100728,                                    # Esportes
-    100684, 100678, 100675, 100679, 100683,                            # Mãe e Bebê
+    100717,    # Artigos de Cozinha (Casa) — 6,95 M pedidos, o maior da Shopee
+    100041,    # Utensilios de Cozinha (Eletrodom.) — 2,50 M ped., R$ 314 M
+    100721,    # Organizadores para Casa (Casa) — 3,48 M ped.; a espinha do
+               #   sub-nicho que mais cresce (armazenamento/organização)
+    100718,    # Louça (Casa) — 3,00 M ped., ticket R$ 36
   ]
   # 40 termos × páginas 1-2 = 80 fatias, 1 por run. `keyword` funciona junto com
   # `productCatId` mas NÃO é filtro estrito (8% dos nós vêm de outra categoria):
   # quem descarta é o allowlist de selection.category_ids. Cada lista está
   # ordenada por elegíveis inéditos medidos; os últimos de cada linha renderam
   # 0-14 e são os primeiros a sair se a cota de chamadas apertar.
-  keywords_per_run: 1
+  # 2 por run (era 1): com 2 raízes e 4 subcategorias o plano dava 7 fatias e
+  # deixava uma das 8 de `calls_per_run` ociosa. A vaga que sobrou vai para as
+  # keywords do nicho — o orçamento medido de 8 chamadas/run continua igual.
+  keywords_per_run: 2
   keyword_pages: 2
   keywords:
-    "100001": [creatina, whey, colágeno, massageador, vitamina, balança, termômetro, escova dental]
-    "100630": [sérum, protetor solar, shampoo, perfume, depilador, batom, hidratante, maquiagem]
-    "100636": [lixeira, panela, protetor colchão, mop, lençol, cortina, travesseiro, organizador]
-    "100637": [halteres, legging, guarda chuva, camisa térmica, tênis, conjunto fitness, bicicleta, dry fit]
-    "100632": [patinete, mamadeira, carrinho bebê, toalha umedecida, lençol berço, mordedor, brinquedo sensorial, fralda]
+    "100636": [pote hermético, organizador de geladeira, escorredor de louça, tábua de corte, porta temperos, organizador de armário, jogo de potes, faca de cozinha]
+    "100010": [air fryer, panela elétrica, cafeteira, liquidificador, filtro de água, processador de alimentos, panela de pressão elétrica, mixer]
 
 # Fase 3B: descoberta no Mercado Livre lê um pool curado (offers_path) em vez
 # de buscar ao vivo — /sites/MLB/search e /items/{id} devolvem 403 na API real
@@ -527,7 +548,8 @@ hashtags:
   por_categoria:
     # Shopee
     "100630": ["#beleza", "#skincare", "#maquiagem", "#autocuidado"]
-    "100636": ["#casa", "#organizacao", "#utilidadesdomesticas", "#decoracao"]
+    "100636": ["#casa", "#organizacao", "#utilidadesdomesticas", "#cozinha"]
+    "100010": ["#cozinha", "#eletroportateis", "#airfryer", "#utilidadesdomesticas"]
     "100001": ["#saude", "#suplementos", "#bemestar", "#vidasaudavel"]
     "100637": ["#fitness", "#treino", "#academia", "#esportes"]
     "100632": ["#maternidade", "#bebe", "#enxovaldebebe", "#maternidadereal"]

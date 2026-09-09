@@ -69,7 +69,7 @@ def _ofertas(n: int = 3) -> list:
     allowlist de categoria e acima do piso de EV. Todas em modo B (o preço de
     hoje não está abaixo do p25) — nenhuma "passa" na capa."""
     return [make_offer(item_id=f"i{k}", title=f"Produto de Teste {k}",
-                       category="100630", price_current_cents=2490 + k,
+                       category="100636", price_current_cents=2490 + k,
                        price_ref_cents=2600, price_p25_cents=2400,
                        price_window_days=90, sales=3000 + k, rating=4.8,
                        commission_pct=12.0,
@@ -85,7 +85,7 @@ def _ofertas_que_passam(n: int = 3) -> list:
     publicar precisam de um álbum que teria o que mostrar. Quem testa o
     contrário usa `_ofertas`."""
     return [make_offer(item_id=f"i{k}", title=f"Produto de Teste {k}",
-                       category="100630", price_current_cents=2300 + k,
+                       category="100636", price_current_cents=2300 + k,
                        price_ref_cents=2600, price_p25_cents=2400,
                        price_window_days=90, sales=3000 + k, rating=4.8,
                        commission_pct=12.0,
@@ -597,7 +597,7 @@ def test_feed_capa_conta_quantas_passaram(tmp_path, monkeypatch, rede, previews,
     """A capa vende o conceito, e o número dela é o que a RÉGUA diz — não um
     número escolhido pelo marketing."""
     aprovada = make_offer(item_id="ok", title="Aprovada de Verdade",
-                          category="100630", price_current_cents=2000,
+                          category="100636", price_current_cents=2000,
                           price_ref_cents=2600, price_p25_cents=2400,
                           price_window_days=90, sales=9000, rating=4.9,
                           commission_pct=12.0)

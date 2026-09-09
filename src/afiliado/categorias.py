@@ -14,8 +14,12 @@ que não medimos.
 
 NOMES = {
     # Shopee — as raízes de `selection.category_ids` (ver config.yaml).
-    "100630": "Beleza",
+    # ATIVAS desde o foco em cozinha (2026-09-08): 100636 e 100010.
     "100636": "Casa",
+    "100010": "Eletrodomésticos",
+    # Fora do allowlist hoje, mantidas porque o histórico de `posted` ainda as
+    # cita e religar uma raiz é mexer só no config.
+    "100630": "Beleza",
     "100001": "Saúde",
     "100637": "Esportes",
     "100632": "Mãe e Bebê",

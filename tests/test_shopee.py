@@ -459,8 +459,13 @@ def test_quarenta_runs_cobrem_as_raizes_sem_redescobrir(tmp_path):
 
 def test_o_config_real_varre_as_raizes_inteiras_em_40_runs(tmp_path):
     """Com o `config.yaml` DE VERDADE: 8 chamadas por run e, em 40 runs
-    (~3h20 na VPS, 1,25 dia no Actions), as 5 janelas-raiz inteiras — 200
-    fatias, nenhuma repetida. É o que sustenta 60 posts/dia a dedupe 30."""
+    (~3h20 na VPS, 1,25 dia no Actions), as janelas-raiz INTEIRAS, nenhuma
+    fatia repetida.
+
+    Foco em cozinha (2026-09-08): são 2 raízes em vez de 5, então as 80 fatias
+    de raiz cobrem as duas janelas de 40 páginas com folga de sobra — e o run
+    gasta as outras 6 chamadas onde o nicho mora (4 subcategorias + 2
+    keywords)."""
     from afiliado.config import load_config
     cfg = load_config("config.yaml")
     chamadas = []
@@ -472,12 +477,20 @@ def test_o_config_real_varre_as_raizes_inteiras_em_40_runs(tmp_path):
               and str(c["productCatId"]) in cfg["shopee"]["category_ids"]]
     assert {(str(c["productCatId"]), c["page"]) for c in raizes} == {
         (cat, pag) for cat in cfg["shopee"]["category_ids"] for pag in range(1, 41)}
-    assert len(raizes) == 200                      # nenhuma fatia de raiz repetida
+    assert len(raizes) == 80                       # 2 raízes × 40 páginas
     subs = [c for c in chamadas if not c.get("keyword") and c not in raizes]
-    assert len({(c["productCatId"], c["page"]) for c in subs}) == len(subs) == 80
+    # As 4 subcategorias do nicho entram TODAS em todo run, então cada uma
+    # percorre a própria janela (p2..p40 = 39 páginas) em 39 runs e recomeça no
+    # 40º: o nicho inteiro é varrido a cada ~39 runs, e só aí algo se repete.
+    assert len(subs) == 160
+    assert len({(c["productCatId"], c["page"]) for c in subs}) == 156
     assert all(c["page"] >= 2 for c in subs)       # subcategoria começa na p2
     kws = [c for c in chamadas if c.get("keyword")]
-    assert len({(c["keyword"], c["page"]) for c in kws}) == len(kws) == 40
+    # 16 termos de cozinha × 2 páginas = 32 fatias, e o run consome 2: o espaço
+    # de keyword inteiro sai a cada 16 runs (~1h20 na VPS) e recomeça. É o preço
+    # de focar — a lista de termos é curta de propósito.
+    assert len(kws) == 80
+    assert len({(c["keyword"], c["page"]) for c in kws}) == 32
     db.close()
 
 
@@ -883,7 +896,7 @@ def test_o_config_real_gasta_duas_chamadas_de_feed_e_guarda_dez(tmp_path):
     from afiliado.config import load_config
     cfg = load_config("config.yaml")
     chamadas = []
-    linhas = [_linha(i, cat="100630", like=i) for i in range(1, 61)]
+    linhas = [_linha(i, cat="100636", like=i) for i in range(1, 61)]
     src, db = _fonte_com_cursor(_api_com_feed(chamadas, linhas=linhas), tmp_path)
     ofertas = src.fetch_offers(cfg)
     assert len([c for c in chamadas if c["query"] == "productOfferV2"]) == 8
